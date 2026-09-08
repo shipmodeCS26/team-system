@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Shipmode's five-client logistics workspace for shipment exceptions, inventory, and invoices.">
+  <meta name="csrf-token" content="{{ csrf }}">
+  <title>Shipmode • Operations workspace</title>
+  <link rel="stylesheet" href="/static/workspace.css">
+  <script src="/static/workspace.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to workspace</a>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="Shipmode home"><span class="brand-mark">S</span>shipmode<span class="brand-dot">.</span></a>
+    <div class="workspace-label">OPERATIONS WORKSPACE</div>
+    <div class="owner"><span class="avatar">S</span><div><strong>My workspace</strong><small>5 client stores</small></div></div>
+    <div class="nav-label">WORKSPACE</div>
+    <nav aria-label="Workspace sections">
+      <button data-section="movement" class="nav-item active"><span class="nav-icon">↗</span>No Movement<span id="nav-count" class="nav-count">—</span></button>
+      <button data-section="inventory" class="nav-item"><span class="nav-icon">▦</span>Inventory</button>
+      <button data-section="invoices" class="nav-item"><span class="nav-icon">▤</span>Invoices</button>
+    </nav>
+    <div class="sidebar-bottom"><span class="connection-dot"></span><strong>ShipSidekick</strong><small id="side-connection">Not connected</small><button class="text-button" id="connection-details">Connection details ↗</button></div>
+    <div class="account"><span class="avatar small">S</span><div><strong>Shipmode</strong><small>Personal workspace</small></div><span class="version">V1</span></div>
+  </aside>
+  <div class="shell">
+    <header class="topbar"><div class="breadcrumb">Workspace <span>/</span> <strong id="crumb">No Movement</strong></div><div class="client-control"><label for="client-select">CLIENT STORE</label><select id="client-select"><option value="all">All 5 clients</option></select></div></header>
+    <main id="main">
+      <div class="notice" id="mode-notice"><span class="notice-icon">i</span><div><strong>Sample workspace</strong><span>Illustrative shipments only. Live carrier tracking is not connected.</span></div><button id="setup-button">Set up live tracking <span>→</span></button></div>
+      <div class="page-heading"><div><div class="eyebrow" id="eyebrow">SHIPMENT EXCEPTIONS</div><h1 id="title">No Movement<span class="title-dot"></span></h1><p id="subtitle">Catch stalled shipments before your customers do.</p></div><div class="heading-actions" id="movement-actions"><button class="button secondary" id="export-button">↓ Export queue</button><button class="button primary" id="import-button">＋ Import shipments</button></div></div>
+      <div id="load-error" class="error" role="alert" hidden></div>
+      <section id="movement-section">
+        <div class="metrics" aria-label="Shipment aging filters">
+          <button class="metric" data-tier="exceptions"><div class="metric-label">Needs attention <span>↗</span></div><strong id="count-exceptions">—</strong><small>5+ days without a carrier scan</small></button>
+          <button class="metric watch" data-tier="watch"><div class="metric-label"><span class="dot"></span>Watch · 5–6 days</div><strong id="count-watch">—</strong><small>Check carrier acceptance</small></button>
+          <button class="metric urgent" data-tier="urgent"><div class="metric-label"><span class="dot"></span>Urgent · 7–9 days</div><strong id="count-urgent">—</strong><small>Investigate with the carrier</small></button>
+          <button class="metric critical" data-tier="critical"><div class="metric-label"><span class="dot"></span>Critical · 10+ days</div><strong id="count-critical">—</strong><small>Escalate today</small></button>
+        </div>
+        <div class="policy-strip"><span class="policy-icon">◷</span><strong>Carrier scans drive this queue.</strong><span>“Fulfilled” does not mean the package moved. Ten days is the escalation point, never a cutoff.</span></div>
+        <section class="queue-card" aria-label="Shipment queue">
+          <div class="queue-heading"><div><h2>Shipment queue <span id="queue-total" class="counter">—</span></h2><p id="queue-description">Oldest exceptions first, across all clients.</p></div><span id="as-of" class="muted">Loading workspace…</span></div>
+          <div class="filters"><div class="tabs" aria-label="Queue filter"><button data-filter="exceptions" class="active">Needs attention</button><button data-filter="all">All shipments</button><button data-filter="never">Never scanned</button><button data-filter="data_gap">Missing data</button></div><div class="search-row"><label class="search"><span>⌕</span><input id="search" type="search" placeholder="Search order or tracking" aria-label="Search order or tracking number"></label><select id="carrier-filter" aria-label="Filter by carrier"><option value="all">All carriers</option><option value="usps">USPS</option><option value="ups">UPS</option><option value="fedex">FedEx</option></select></div></div>
+          <div class="table-scroll"><table><thead><tr><th>Order / client</th><th>Tracking / carrier</th><th>Carrier status</th><th>Last movement</th><th>Age / priority</th><th>Follow-up</th><th><span class="sr-only">Details</span></th></tr></thead><tbody id="shipment-rows"><tr><td colspan="7" class="empty-cell">Loading shipment queue…</td></tr></tbody></table></div>
+          <div class="table-footer"><span id="showing">—</span><div><button id="previous" aria-label="Previous page">←</button><span id="page-number">1 / 1</span><button id="next" aria-label="Next page">→</button></div></div>
+        </section>
+        <div class="bottom-info"><span><span class="dot blue"></span>All dates shown in your local time · Aging uses full 24-hour days</span><span id="monitoring-count">—</span></div>
+      </section>
+      <section id="inventory-section" hidden><div class="inventory-cards"><div><span>Products tracked</span><strong>—</strong></div><div><span>Units on hand</span><strong>—</strong></div><div><span>Need reordering</span><strong>—</strong></div><div><span>Out of stock</span><strong>—</strong></div></div><div class="queue-card"><div class="queue-heading"><div><h2>Inventory for <span class="selected-client-name">all clients</span></h2><p>Stock, demand, and replenishment in one view.</p></div><span class="badge">Source not connected</span></div><div class="table-scroll"><table><thead><tr><th>Product / SKU</th><th>Starting stock</th><th>Units shipped</th><th>Remaining</th><th>Daily demand</th><th>Days of cover</th><th>Reorder status</th></tr></thead><tbody><tr><td colspan="7" class="empty-cell"><strong>Your inventory view is ready for its data source</strong>Incoming stock, physical counts, and adjustments will support this view.<br>No inventory balances have been imported.</td></tr></tbody></table></div></div><div class="module-footnote">Based on the workflow in your inventory reports. Calculations and source reconciliation will be implemented in the inventory phase.</div></section>
+      <section id="invoices-section" class="module-empty" hidden><div class="module-icon">▤</div><div class="eyebrow">INVOICES</div><h2>Invoices for <span class="selected-client-name">all clients</span></h2><p>This section is reserved for client invoices and billing status. No invoice source is connected yet.</p><div class="module-footnote">Your client selection stays with you across the workspace.</div></section>
+    </main>
+    <footer class="footer"><strong>Shipmode operations</strong><span>One workspace. Five clients.</span></footer>
+  </div>
+  <dialog id="detail-dialog" class="detail-dialog"><div class="dialog-header"><span class="eyebrow">SHIPMENT DETAILS</span><button class="icon-button close-dialog" aria-label="Close shipment details">×</button></div><div id="detail-content"></div></dialog>
+  <dialog id="setup-dialog"><div class="dialog-header"><span class="eyebrow">LIVE TRACKING SETUP</span><button class="icon-button close-dialog" aria-label="Close setup">×</button></div><h2>Connect your shipment data</h2><p>The workspace is ready to review. Automatic monitoring needs these connections before it can protect real shipments.</p><ol class="setup-list"><li><strong>Private access & permanent storage</strong><p>Connect a PostgreSQL database and configure your workspace sign-in. Real imports remain disabled until then.</p></li><li><strong>Import existing shipments</strong><p>Start with a ShipSidekick export mapped to the shipment template. Include every open shipment, even when its order is fulfilled.</p></li><li><strong>Connect carrier tracking updates</strong><p>Configure verified ShipSidekick tracking webhooks for each client. Test with a real label-created shipment and a shipment that has moved.</p></li></ol><div class="setup-note">Webhooks alone do not backfill old shipments. A reconciliation feed and reliable hosting are needed to catch missed updates. No email or background alerts are active yet.</div><a class="button secondary" href="/api/template.csv" download>↓ Download import template</a></dialog>
+  <dialog id="import-dialog"><div class="dialog-header"><span class="eyebrow">IMPORT SHIPMENTS</span><button class="icon-button close-dialog" aria-label="Close import">×</button></div><h2>Add shipments to the queue</h2><p>Choose a client, then upload a CSV using the template columns. Existing tracking numbers are updated, not duplicated.</p><label class="field-label" for="import-client">Client store</label><select id="import-client"></select><label class="field-label" for="import-file">CSV file · maximum 5 MB</label><input id="import-file" type="file" accept=".csv,text/csv"><p class="muted">Dates must use ISO format. Blank scan dates stay visible as missing evidence.</p><a href="/api/template.csv" download>Download blank template</a><div class="dialog-actions"><button class="button primary" id="confirm-import">Import shipments</button></div><p id="import-result" role="status"></p></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
