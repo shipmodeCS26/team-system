@@ -12,7 +12,7 @@
 <body>
   <a class="skip" href="#main">Skip to workspace</a>
   <aside class="sidebar">
-    <a class="brand" href="/" aria-label="Shipmode home"><span class="brand-mark">S</span>shipmode<span class="brand-dot">.</span></a>
+    <a class="brand" href="/" aria-label="Shipmode home"><img class="brand-logo" src="/static/shipmode-logo.png" alt="" width="48" height="46"><span>Shipmode</span></a>
     <div class="workspace-label">OPERATIONS WORKSPACE</div>
     <div class="owner"><span class="avatar">S</span><div><strong>My workspace</strong><small>5 client stores</small></div></div>
     <div class="nav-label">WORKSPACE</div>
@@ -46,7 +46,13 @@
         </section>
         <div class="bottom-info"><span><span class="dot blue"></span>All dates shown in your local time · Aging uses full 24-hour days</span><span id="monitoring-count">—</span></div>
       </section>
-      <section id="inventory-section" hidden><div class="inventory-cards"><div><span>Products tracked</span><strong>—</strong></div><div><span>Units on hand</span><strong>—</strong></div><div><span>Need reordering</span><strong>—</strong></div><div><span>Out of stock</span><strong>—</strong></div></div><div class="queue-card"><div class="queue-heading"><div><h2>Inventory for <span class="selected-client-name">all clients</span></h2><p>Stock, demand, and replenishment in one view.</p></div><span class="badge">Source not connected</span></div><div class="table-scroll"><table><thead><tr><th>Product / SKU</th><th>Starting stock</th><th>Units shipped</th><th>Remaining</th><th>Daily demand</th><th>Days of cover</th><th>Reorder status</th></tr></thead><tbody><tr><td colspan="7" class="empty-cell"><strong>Your inventory view is ready for its data source</strong>Incoming stock, physical counts, and adjustments will support this view.<br>No inventory balances have been imported.</td></tr></tbody></table></div></div><div class="module-footnote">Based on the workflow in your inventory reports. Calculations and source reconciliation will be implemented in the inventory phase.</div></section>
+      <section id="inventory-section" hidden>
+        <div class="inventory-preview-bar"><div><strong>Inventory CSV preview</strong><span>Choose a report to inspect it here. The file stays in this browser session and is not saved or verified.</span></div><label class="button secondary" for="inventory-file">↑ Preview CSV</label><input id="inventory-file" class="sr-only" type="file" accept=".csv,text/csv"><button class="button secondary" id="inventory-clear" hidden>Clear preview</button></div>
+        <div id="inventory-error" class="error" role="alert" hidden></div>
+        <div class="inventory-cards"><div><span>Products in preview</span><strong id="inventory-products">—</strong></div><div><span>Remaining units in preview</span><strong id="inventory-remaining">—</strong></div><div><span>Marked for reorder</span><strong id="inventory-reorder">—</strong></div><div><span>Rows with zero remaining</span><strong id="inventory-out">—</strong></div></div>
+        <div class="queue-card"><div class="queue-heading"><div><h2>Inventory for <span class="selected-client-name">all clients</span></h2><p id="inventory-description">Preview report values without changing inventory records.</p></div><span class="badge">Unverified preview</span></div><div class="table-scroll"><table><thead><tr><th>Product / SKU</th><th>Starting stock</th><th>Units shipped</th><th>Remaining</th><th>Daily demand</th><th>Days of cover</th><th>Reorder status</th></tr></thead><tbody id="inventory-rows"><tr><td colspan="7" class="empty-cell"><strong>No inventory file selected</strong>Preview a CSV report to see its rows. No inventory balances are connected.</td></tr></tbody></table></div></div>
+        <div class="module-footnote">Previewed values come directly from the selected CSV. This workspace does not calculate, reconcile, or publish inventory balances.</div>
+      </section>
       <section id="invoices-section" class="module-empty" hidden><div class="module-icon">▤</div><div class="eyebrow">INVOICES</div><h2>Invoices for <span class="selected-client-name">all clients</span></h2><p>This section is reserved for client invoices and billing status. No invoice source is connected yet.</p><div class="module-footnote">Your client selection stays with you across the workspace.</div></section>
     </main>
     <footer class="footer"><strong>Shipmode operations</strong><span>One workspace. Five clients.</span></footer>

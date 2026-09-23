@@ -1,6 +1,6 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null};
+const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null, inventory:[], inventoryFile:""};
 const PAGE_SIZE = 10;
 const tierNames = {critical:"Critical",urgent:"Urgent",watch:"Watch",monitoring:"Monitoring",delivered:"Delivered",cancelled:"Cancelled",data_gap:"Missing data"};
 const statusNames = {pre_transit:"Label created",in_transit:"In transit",out_for_delivery:"Out for delivery",available_for_pickup:"Ready for pickup",delivered:"Delivered",unknown:"Unknown",failure:"Carrier exception",return_to_sender:"Returning",cancelled:"Cancelled"};
@@ -37,12 +37,58 @@ function render(){
   $("page-number").textContent=`${state.page} / ${pages}`;$("previous").disabled=state.page===1;$("next").disabled=state.page===pages;
   $("monitoring-count").textContent=`${rows.filter(r=>r.tier==="monitoring").length} under 5 days · ${rows.filter(r=>r.tier==="delivered").length} delivered`;
   document.querySelectorAll(".selected-client-name").forEach(el=>el.textContent=state.client==="all"?"all clients":clientName(state.client));
+  renderInventory();
+}
+function parseInventoryCsv(text, selectedClient, clients){
+  const records=[];let row=[],field="",quoted=false;
+  for(let i=0;i<text.length;i++){
+    const ch=text[i];
+    if(quoted){if(ch==='"'&&text[i+1]==='"'){field+='"';i++}else if(ch==='"')quoted=false;else field+=ch}
+    else if(ch==='"'){if(field)throw new Error("Invalid CSV quoting.");quoted=true}
+    else if(ch===","){row.push(field);field=""}
+    else if(ch==="\n"||ch==="\r"){if(ch==="\r"&&text[i+1]==="\n")i++;row.push(field);if(row.some(v=>v.trim()))records.push(row);row=[];field=""}
+    else field+=ch;
+  }
+  if(quoted)throw new Error("CSV has an unclosed quoted value.");
+  if(field||row.length){row.push(field);if(row.some(v=>v.trim()))records.push(row)}
+  if(records.length<2)throw new Error("CSV needs a header and at least one inventory row.");
+  if(records.length>10001)throw new Error("CSV exceeds 10,000 inventory rows.");
+  const headers=records.shift().map(v=>v.replace(/^\uFEFF/,"").trim().toLowerCase().replace(/[^a-z0-9]+/g,"_"));
+  const column=(...names)=>names.map(n=>headers.indexOf(n)).find(i=>i>=0)??-1;
+  const indexes={client:column("client","client_id","client_store"),product:column("product_sku","product","sku"),starting:column("starting_stock","starting_inventory"),shipped:column("units_shipped","units_sold"),remaining:column("remaining","remaining_stock","on_hand"),demand:column("daily_demand","average_daily_demand"),cover:column("days_of_cover","days_cover"),reorder:column("reorder_status","reorder")};
+  if(indexes.product<0||indexes.remaining<0)throw new Error("CSV must include Product / SKU and Remaining columns.");
+  if(indexes.client<0&&selectedClient==="all")throw new Error("Select one client store before previewing a CSV without a Client column.");
+  const known=new Map(clients.flatMap(c=>[[c.id.toLowerCase(),c.id],[c.name.toLowerCase(),c.id]]));
+  const value=(row,index)=>index<0?"":(row[index]||"").trim();
+  const number=(raw,label,line)=>{if(!raw)return null;const n=Number(raw.replace(/,/g,""));if(!Number.isFinite(n)||n<0)throw new Error(`Invalid ${label} on CSV row ${line}.`);return n};
+  return records.map((r,i)=>{
+    if(r.length!==headers.length)throw new Error(`CSV row ${i+2} has the wrong number of columns.`);
+    const rawClient=indexes.client<0?selectedClient:value(r,indexes.client);
+    const client=known.get(rawClient.toLowerCase());
+    if(!client)throw new Error(`Unknown client on CSV row ${i+2}.`);
+    if(selectedClient!=="all"&&client!==selectedClient)throw new Error(`CSV row ${i+2} belongs to a different client.`);
+    const product=value(r,indexes.product);
+    if(!product)throw new Error(`Product / SKU is missing on CSV row ${i+2}.`);
+    return {client,product,starting:number(value(r,indexes.starting),"starting stock",i+2),shipped:number(value(r,indexes.shipped),"units shipped",i+2),remaining:number(value(r,indexes.remaining),"remaining",i+2),demand:number(value(r,indexes.demand),"daily demand",i+2),cover:number(value(r,indexes.cover),"days of cover",i+2),reorder:value(r,indexes.reorder)};
+  });
+}
+function renderInventory(){
+  const rows=state.inventory.filter(r=>state.client==="all"||r.client===state.client);
+  const fmt=n=>n===null?"—":n.toLocaleString();
+  $("inventory-products").textContent=state.inventory.length?fmt(rows.length):"—";
+  $("inventory-remaining").textContent=state.inventory.length?fmt(rows.reduce((sum,r)=>sum+(r.remaining||0),0)):"—";
+  $("inventory-reorder").textContent=rows.some(r=>r.reorder)?fmt(rows.filter(r=>/^(reorder|order now|yes|low stock)$/i.test(r.reorder)).length):"—";
+  $("inventory-out").textContent=state.inventory.length?fmt(rows.filter(r=>r.remaining===0).length):"—";
+  $("inventory-description").textContent=state.inventoryFile?`${state.inventoryFile} · ${rows.length} row${rows.length===1?"":"s"} shown · browser session only`:"Preview report values without changing inventory records.";
+  $("inventory-clear").hidden=!state.inventoryFile;
+  $("inventory-rows").innerHTML=rows.length?rows.map(r=>`<tr><td><strong>${esc(r.product)}</strong><small>${esc(clientName(r.client))}</small></td><td>${fmt(r.starting)}</td><td>${fmt(r.shipped)}</td><td>${fmt(r.remaining)}</td><td>${fmt(r.demand)}</td><td>${fmt(r.cover)}</td><td>${esc(r.reorder||"—")}</td></tr>`).join(""):`<tr><td colspan="7" class="empty-cell"><strong>${state.inventoryFile?"No rows for this client":"No inventory file selected"}</strong>${state.inventoryFile?"Choose another client store.":"Preview a CSV report to see its rows. No inventory balances are connected."}</td></tr>`;
 }
 function section(name){
   state.section=name;
   const title={movement:"No Movement",inventory:"Inventory",invoices:"Invoices"}[name];
   document.querySelectorAll("[data-section]").forEach(el=>{el.classList.toggle("active",el.dataset.section===name);el.setAttribute("aria-current",el.dataset.section===name?"page":"false")});
   for(const key of ["movement","inventory","invoices"])$(key+"-section").hidden=key!==name;
+  $("mode-notice").hidden=name!=="movement";
   $("movement-actions").hidden=name!=="movement";$("crumb").textContent=title;
   $("title").innerHTML=esc(title)+'<span class="title-dot"></span>';
   $("eyebrow").textContent=name==="movement"?"SHIPMENT EXCEPTIONS":"CLIENT OPERATIONS";
@@ -106,6 +152,17 @@ $("shipment-rows").addEventListener("click",e=>{const button=e.target.closest("[
 for(const id of ["setup-button","connection-details"])$(id).addEventListener("click",()=>$("setup-dialog").showModal());
 document.querySelectorAll(".close-dialog").forEach(el=>el.addEventListener("click",()=>el.closest("dialog").close()));
 $("export-button").addEventListener("click",exportQueue);
+$("inventory-file").addEventListener("change",async e=>{
+  const file=e.target.files[0];if(!file)return;
+  try{
+    if(file.size>5*1024*1024)throw new Error("Inventory CSV exceeds 5 MB.");
+    if(!state.data)throw new Error("Wait for the workspace to load before previewing a file.");
+    const rows=parseInventoryCsv(await file.text(),state.client,state.data.clients);
+    state.inventory=rows;state.inventoryFile=file.name;$("inventory-error").hidden=true;renderInventory();
+  }catch(error){$("inventory-error").textContent=error.message;$("inventory-error").hidden=false}
+  e.target.value="";
+});
+$("inventory-clear").addEventListener("click",()=>{state.inventory=[];state.inventoryFile="";$("inventory-error").hidden=true;renderInventory()});
   $("import-button").addEventListener("click",()=>{if(!state.data||state.data.mode==="demo"){$("setup-dialog").showModal();return}if(state.client!=="all")$("import-client").value=state.client;$("import-result").textContent="";$("import-dialog").showModal()});
 $("confirm-import").addEventListener("click",async()=>{
   const file=$("import-file").files[0];if(!file){$("import-result").textContent="Choose a CSV file.";return}

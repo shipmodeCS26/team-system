@@ -1,8 +1,13 @@
 # Shipmode operations workspace
 
 Five client views: ClarityMD, Fascial. Labs, Muravai, Nuerosmile, PuraVita.
-The initial focus is No Movement. Inventory follows the supplied report columns;
-Invoices is reserved for the next phase. Neither module currently imports balances.
+The No Movement and Inventory tabs share one workspace. Inventory can preview a
+CSV report in the browser without uploading or saving it. The preview reads
+`Product / SKU` and `Remaining` plus optional `Starting stock`, `Units shipped`,
+`Daily demand`, `Days of cover`, and `Reorder status` columns. When viewing all
+clients, include a `Client` column; otherwise select one client before choosing
+the file. These values are unverified report values, not system balances.
+Invoices is reserved for the next phase. No inventory source is connected.
 
 ## Current deployment: sample mode
 
