@@ -1,5 +1,7 @@
 # Shipmode operations workspace
 
+Build and release process: [BUILD_WORKFLOW.md](BUILD_WORKFLOW.md).
+
 Six client views: ClarityMD, Fascial. Labs, Muravai, Neurosmile, PuraVita, Onset.
 The No Movement and Inventory tabs share one workspace. Inventory reads the
 displayed `Dashboard` values from each client's Google Sheet when the private
