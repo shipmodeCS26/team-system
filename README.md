@@ -1,6 +1,7 @@
 # Shipmode operations workspace
 
 Build and release process: [BUILD_WORKFLOW.md](BUILD_WORKFLOW.md).
+Full Claude handoff: [SHIPMODE_CLAUDE_BLUEPRINT.md](SHIPMODE_CLAUDE_BLUEPRINT.md).
 
 Six client views: ClarityMD, Fascial. Labs, Muravai, Neurosmile, PuraVita, Onset.
 The No Movement and Inventory tabs share one workspace. Inventory reads the
