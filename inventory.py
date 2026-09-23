@@ -90,8 +90,9 @@ def parse_dashboard(values):
         row = {key: cell(index, pos) if pos is not None else "" for key, pos in positions.items()}
         if not row["status"] and len(values[index]) > 6 and cell(index, 6) == "OUT OF STOCK":
             row["status"] = "OUT OF STOCK"
-        row["flags"] = sorted(key for key, value in row.items() if ERROR_VALUE.search(value))
-        issues += bool(row["flags"])
+        errors = {key for key, value in row.items() if ERROR_VALUE.search(value)}
+        issues += bool(errors)
+        row["flags"] = sorted(errors | ({"remaining"} if row["remaining"].startswith("-") else set()))
         rows.append(row)
 
     warnings = []

@@ -52,6 +52,8 @@ class DashboardAdapterTests(unittest.TestCase):
         result = parse_dashboard(values)
         self.assertIn("Reorder summary disagrees with product rows", result["warnings"])
         self.assertIn("A displayed remaining balance is negative", result["warnings"])
+        self.assertEqual(result["rows"][0]["flags"], ["remaining"])
+        self.assertEqual(result["issue_rows"], 0)
 
     def test_changed_headers_fail_instead_of_guessing(self):
         with self.assertRaises(ValueError):

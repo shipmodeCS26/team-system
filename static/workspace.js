@@ -50,11 +50,11 @@ function renderInventory(){
   ["products","remaining","reorder","out"].forEach((key,i)=>$("inventory-"+key).textContent=state.inventorySources?String(values[i]??"—"):"—");
   $("inventory-status").textContent=selected?selected.report_status:"Source values";
   $("inventory-description").textContent=selected?`Dashboard as of ${selected.as_of||"unknown"} · read ${date(selected.fetched_at,true)}`:"Values are read from each client's Dashboard tab; select a client to see its source totals.";
-  const rows=loaded.flatMap(source=>source.rows.map(row=>({...row,client:source.id,url:source.source_url,as_of:source.as_of})));
-  $("inventory-rows").innerHTML=rows.length?rows.map(r=>`<tr><td><a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer"><strong>${esc(r.product)}</strong></a><small>${esc(clientName(r.client))} · as of ${esc(r.as_of||"unknown")}</small></td>${["starting","shipped","remaining","demand","cover","status"].map(k=>`<td${(r.flags||[]).includes(k)?' class="source-flag" title="Pending or formula-error value in the source sheet"':""}>${esc(r[k]||"—")}</td>`).join("")}</tr>`).join(""):'<tr><td colspan="7" class="empty-cell"><strong>No sheet data available</strong>Check the connection status above.</td></tr>';
-  const problem=sources.filter(s=>s.error||s.report_status==="REVIEW"||s.warnings?.length);
-  if(problem.length){$("inventory-error").textContent=problem.map(s=>`${clientName(s.id)}: ${s.error||[s.report_status==="REVIEW"?"Report marked REVIEW":"",...(s.warnings||[])].filter(Boolean).join(" · ")}`).join(" | ");$("inventory-error").hidden=false}
-  else $("inventory-error").hidden=true;
+  const rows=loaded.flatMap(source=>source.rows.map(row=>({...row,client:source.id,url:source.source_url,as_of:source.as_of,report_status:source.report_status,fetched_at:source.fetched_at})));
+  $("inventory-rows").innerHTML=rows.length?rows.map(r=>`<tr><td><strong>${esc(r.product)}</strong><small>${esc(clientName(r.client))}</small></td>${["starting","shipped","remaining","demand","cover","status"].map(k=>`<td${(r.flags||[]).includes(k)?' class="source-flag" title="Pending, formula-error, or negative value in the source sheet"':""}>${esc(r[k]||"—")}</td>`).join("")}<td class="inventory-source"><span class="badge${r.report_status==="REVIEW"?" watch":""}">${esc(r.report_status)}</span><small>As of ${esc(r.as_of||"unknown")} · read ${esc(date(r.fetched_at,true))}${r.url?` · <a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">Open sheet ↗</a>`:""}</small></td></tr>`).join(""):'<tr><td colspan="8" class="empty-cell"><strong>No sheet data available</strong>Check the connection status above.</td></tr>';
+  const problems=sources.map(s=>({s,text:s.error||[s.report_status==="REVIEW"?"Report marked REVIEW":"",...(s.warnings||[])].filter(Boolean).join(" · ")})).filter(p=>p.text);
+  $("inventory-error").innerHTML=problems.map(({s,text})=>`<div class="source-problem${s.error?" failed":""}"><strong>${esc(clientName(s.id))}${s.error?" — not loaded":""}</strong> ${esc(text)}</div>`).join("");
+  $("inventory-error").hidden=!problems.length;
   $("inventory-sync").textContent=state.inventoryAsOf?`Checked ${date(state.inventoryAsOf,true)} · updates about every minute while this tab is open.`:"Google Sheets access is not connected yet.";
 }
 async function loadInventory(){
