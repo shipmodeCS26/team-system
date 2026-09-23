@@ -1,6 +1,6 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null, inventory:[], inventoryFile:""};
+const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null, inventorySources:null, inventoryAsOf:null, inventoryRequest:0};
 const PAGE_SIZE = 10;
 const tierNames = {critical:"Critical",urgent:"Urgent",watch:"Watch",monitoring:"Monitoring",delivered:"Delivered",cancelled:"Cancelled",data_gap:"Missing data"};
 const statusNames = {pre_transit:"Label created",in_transit:"In transit",out_for_delivery:"Out for delivery",available_for_pickup:"Ready for pickup",delivered:"Delivered",unknown:"Unknown",failure:"Carrier exception",return_to_sender:"Returning",cancelled:"Cancelled"};
@@ -31,57 +31,47 @@ function render(){
   state.page=Math.min(state.page,pages);
   const start=(state.page-1)*PAGE_SIZE, page=found.slice(start,start+PAGE_SIZE);
   $("queue-total").textContent=found.length;
-  $("queue-description").textContent=`${state.filter==="all"?"All shipments, oldest open cases first":"Oldest matching shipments first"} · ${state.client==="all"?"All 5 clients":clientName(state.client)}`;
+  $("queue-description").textContent=`${state.filter==="all"?"All shipments, oldest open cases first":"Oldest matching shipments first"} · ${state.client==="all"?"All 6 clients":clientName(state.client)}`;
   $("shipment-rows").innerHTML=page.length?page.map(r=>`<tr><td><strong>${esc(r.order_number||"Order not linked")}</strong><small>${esc(clientName(r.client_id))}</small></td><td><span class="tracking">${esc(r.tracking_number)}</span><small>${esc(carrierName(r.carrier))} · ${esc(r.fulfillment_status)}</small></td><td><span class="badge ${esc(r.carrier_status)}">${esc(statusNames[r.carrier_status]||r.carrier_status)}</span></td><td>${r.last_movement_at?esc(date(r.last_movement_at)):"<span class=\"muted\">No scan recorded</span>"}<small>${r.last_movement_at?"Last physical scan":r.shipped_at?"Shipped "+esc(date(r.shipped_at)):r.label_created_at?"Label "+esc(date(r.label_created_at)):"Date needed"}</small></td><td>${["delivered","cancelled","data_gap"].includes(r.tier)?"":`<span class="age">${r.days}d</span>`}<span class="badge ${r.tier}">${tierNames[r.tier]}</span></td><td><span class="badge">${esc(caseNames[r.case_status]||"Not started")}</span></td><td><button class="row-open" data-detail="${r.id}" aria-label="View shipment ${esc(r.order_number||r.tracking_number)}">↗</button></td></tr>`).join(""):`<tr><td colspan="7" class="empty-cell"><strong>No shipments match this view</strong>${rows.length?"Try another filter, search, or client store.":"Import this client's shipments after live tracking is configured."}</td></tr>`;
   $("showing").textContent=found.length?`Showing ${start+1}–${Math.min(start+PAGE_SIZE,found.length)} of ${found.length} shipments`:"0 shipments";
   $("page-number").textContent=`${state.page} / ${pages}`;$("previous").disabled=state.page===1;$("next").disabled=state.page===pages;
   $("monitoring-count").textContent=`${rows.filter(r=>r.tier==="monitoring").length} under 5 days · ${rows.filter(r=>r.tier==="delivered").length} delivered`;
   document.querySelectorAll(".selected-client-name").forEach(el=>el.textContent=state.client==="all"?"all clients":clientName(state.client));
-  renderInventory();
-}
-function parseInventoryCsv(text, selectedClient, clients){
-  const records=[];let row=[],field="",quoted=false;
-  for(let i=0;i<text.length;i++){
-    const ch=text[i];
-    if(quoted){if(ch==='"'&&text[i+1]==='"'){field+='"';i++}else if(ch==='"')quoted=false;else field+=ch}
-    else if(ch==='"'){if(field)throw new Error("Invalid CSV quoting.");quoted=true}
-    else if(ch===","){row.push(field);field=""}
-    else if(ch==="\n"||ch==="\r"){if(ch==="\r"&&text[i+1]==="\n")i++;row.push(field);if(row.some(v=>v.trim()))records.push(row);row=[];field=""}
-    else field+=ch;
-  }
-  if(quoted)throw new Error("CSV has an unclosed quoted value.");
-  if(field||row.length){row.push(field);if(row.some(v=>v.trim()))records.push(row)}
-  if(records.length<2)throw new Error("CSV needs a header and at least one inventory row.");
-  if(records.length>10001)throw new Error("CSV exceeds 10,000 inventory rows.");
-  const headers=records.shift().map(v=>v.replace(/^\uFEFF/,"").trim().toLowerCase().replace(/[^a-z0-9]+/g,"_"));
-  const column=(...names)=>names.map(n=>headers.indexOf(n)).find(i=>i>=0)??-1;
-  const indexes={client:column("client","client_id","client_store"),product:column("product_sku","product","sku"),starting:column("starting_stock","starting_inventory"),shipped:column("units_shipped","units_sold"),remaining:column("remaining","remaining_stock","on_hand"),demand:column("daily_demand","average_daily_demand"),cover:column("days_of_cover","days_cover"),reorder:column("reorder_status","reorder")};
-  if(indexes.product<0||indexes.remaining<0)throw new Error("CSV must include Product / SKU and Remaining columns.");
-  if(indexes.client<0&&selectedClient==="all")throw new Error("Select one client store before previewing a CSV without a Client column.");
-  const known=new Map(clients.flatMap(c=>[[c.id.toLowerCase(),c.id],[c.name.toLowerCase(),c.id]]));
-  const value=(row,index)=>index<0?"":(row[index]||"").trim();
-  const number=(raw,label,line)=>{if(!raw)return null;const n=Number(raw.replace(/,/g,""));if(!Number.isFinite(n)||n<0)throw new Error(`Invalid ${label} on CSV row ${line}.`);return n};
-  return records.map((r,i)=>{
-    if(r.length!==headers.length)throw new Error(`CSV row ${i+2} has the wrong number of columns.`);
-    const rawClient=indexes.client<0?selectedClient:value(r,indexes.client);
-    const client=known.get(rawClient.toLowerCase());
-    if(!client)throw new Error(`Unknown client on CSV row ${i+2}.`);
-    if(selectedClient!=="all"&&client!==selectedClient)throw new Error(`CSV row ${i+2} belongs to a different client.`);
-    const product=value(r,indexes.product);
-    if(!product)throw new Error(`Product / SKU is missing on CSV row ${i+2}.`);
-    return {client,product,starting:number(value(r,indexes.starting),"starting stock",i+2),shipped:number(value(r,indexes.shipped),"units shipped",i+2),remaining:number(value(r,indexes.remaining),"remaining",i+2),demand:number(value(r,indexes.demand),"daily demand",i+2),cover:number(value(r,indexes.cover),"days of cover",i+2),reorder:value(r,indexes.reorder)};
-  });
+  if(state.section==="inventory")renderInventory();
 }
 function renderInventory(){
-  const rows=state.inventory.filter(r=>state.client==="all"||r.client===state.client);
-  const fmt=n=>n===null?"—":n.toLocaleString();
-  $("inventory-products").textContent=state.inventory.length?fmt(rows.length):"—";
-  $("inventory-remaining").textContent=state.inventory.length?fmt(rows.reduce((sum,r)=>sum+(r.remaining||0),0)):"—";
-  $("inventory-reorder").textContent=rows.some(r=>r.reorder)?fmt(rows.filter(r=>/^(reorder|order now|yes|low stock)$/i.test(r.reorder)).length):"—";
-  $("inventory-out").textContent=state.inventory.length?fmt(rows.filter(r=>r.remaining===0).length):"—";
-  $("inventory-description").textContent=state.inventoryFile?`${state.inventoryFile} · ${rows.length} row${rows.length===1?"":"s"} shown · browser session only`:"Preview report values without changing inventory records.";
-  $("inventory-clear").hidden=!state.inventoryFile;
-  $("inventory-rows").innerHTML=rows.length?rows.map(r=>`<tr><td><strong>${esc(r.product)}</strong><small>${esc(clientName(r.client))}</small></td><td>${fmt(r.starting)}</td><td>${fmt(r.shipped)}</td><td>${fmt(r.remaining)}</td><td>${fmt(r.demand)}</td><td>${fmt(r.cover)}</td><td>${esc(r.reorder||"—")}</td></tr>`).join(""):`<tr><td colspan="7" class="empty-cell"><strong>${state.inventoryFile?"No rows for this client":"No inventory file selected"}</strong>${state.inventoryFile?"Choose another client store.":"Preview a CSV report to see its rows. No inventory balances are connected."}</td></tr>`;
+  const sources=state.inventorySources||[], loaded=sources.filter(s=>!s.error), selected=state.client==="all"?null:loaded[0];
+  const labels=selected?["Products tracked","Units on hand","Need ordering","Out of stock"]:["Workbooks loaded","Products listed","Workbooks in review","Source errors"];
+  ["products","remaining","reorder","out"].forEach((key,i)=>$("inventory-label-"+key).textContent=labels[i]);
+  const values=selected?[selected.summary.products,selected.summary.on_hand,selected.summary.reorder,selected.summary.out]:[
+    `${loaded.length}/${sources.length||6}`,loaded.reduce((n,s)=>n+s.rows.length,0),
+    sources.filter(s=>s.report_status==="REVIEW"||s.warnings?.length).length,
+    sources.filter(s=>s.error).length];
+  ["products","remaining","reorder","out"].forEach((key,i)=>$("inventory-"+key).textContent=state.inventorySources?String(values[i]??"—"):"—");
+  $("inventory-status").textContent=selected?selected.report_status:"Source values";
+  $("inventory-description").textContent=selected?`Dashboard as of ${selected.as_of||"unknown"} · read ${date(selected.fetched_at,true)}`:"Values are read from each client's Dashboard tab; select a client to see its source totals.";
+  const rows=loaded.flatMap(source=>source.rows.map(row=>({...row,client:source.id,url:source.source_url,as_of:source.as_of})));
+  $("inventory-rows").innerHTML=rows.length?rows.map(r=>`<tr><td><a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer"><strong>${esc(r.product)}</strong></a><small>${esc(clientName(r.client))} · as of ${esc(r.as_of||"unknown")}</small></td><td>${esc(r.starting||"—")}</td><td>${esc(r.shipped||"—")}</td><td>${esc(r.remaining||"—")}</td><td>${esc(r.demand||"—")}</td><td>${esc(r.cover||"—")}</td><td>${esc(r.status||"—")}</td></tr>`).join(""):'<tr><td colspan="7" class="empty-cell"><strong>No sheet data available</strong>Check the connection status above.</td></tr>';
+  const problem=sources.filter(s=>s.error||s.report_status==="REVIEW"||s.warnings?.length);
+  if(problem.length){$("inventory-error").textContent=problem.map(s=>`${clientName(s.id)}: ${s.error||[s.report_status==="REVIEW"?"Report marked REVIEW":"",...(s.warnings||[])].filter(Boolean).join(" · ")}`).join(" | ");$("inventory-error").hidden=false}
+  else $("inventory-error").hidden=true;
+  $("inventory-sync").textContent=state.inventoryAsOf?`Checked ${date(state.inventoryAsOf,true)} · updates about every minute while this tab is open.`:"Google Sheets access is not connected yet.";
+}
+async function loadInventory(){
+  if(!state.data)return;
+  const request=++state.inventoryRequest,client=state.client;
+  state.inventorySources=null;state.inventoryAsOf=null;renderInventory();
+  $("inventory-refresh").disabled=true;
+  $("inventory-sync").textContent="Reading Google Sheets…";
+  try{
+    const result=await api(`/api/inventory?client_id=${encodeURIComponent(client)}`);
+    if(request!==state.inventoryRequest)return;
+    state.inventorySources=result.sources;state.inventoryAsOf=result.as_of;renderInventory();
+  }catch(error){
+    if(request!==state.inventoryRequest)return;
+    state.inventorySources=[];state.inventoryAsOf=null;renderInventory();
+    $("inventory-error").textContent=error.message;$("inventory-error").hidden=false;
+  }finally{if(request===state.inventoryRequest)$("inventory-refresh").disabled=false}
 }
 function section(name){
   state.section=name;
@@ -94,6 +84,7 @@ function section(name){
   $("eyebrow").textContent=name==="movement"?"SHIPMENT EXCEPTIONS":"CLIENT OPERATIONS";
   $("subtitle").textContent={movement:"Catch stalled shipments before your customers do.",inventory:"Stock visibility, organized by client.",invoices:"Client billing, in one place."}[name];
   render();
+  if(name==="inventory")loadInventory();
 }
 function trackingUrl(row){
   if(state.data.mode==="demo")return null;
@@ -132,6 +123,7 @@ async function load(){
     }
     $("as-of").textContent=(state.data.mode==="demo"?"Sample data · ":"Queue calculated · ")+date(state.data.as_of,true);
     render();
+    if(first&&state.section==="inventory")loadInventory();
   }catch(e){$("load-error").textContent=e.message;$("load-error").hidden=false;$("as-of").textContent="Update failed — data may be stale";if(!state.data)$("shipment-rows").innerHTML='<tr><td colspan="7" class="empty-cell">Unable to load shipments. Refresh to retry.</td></tr>'}
 }
 function exportQueue(){
@@ -144,7 +136,7 @@ function exportQueue(){
 }
 document.querySelectorAll("[data-section]").forEach(el=>el.addEventListener("click",()=>section(el.dataset.section)));
 document.querySelectorAll("[data-tier],[data-filter]").forEach(el=>el.addEventListener("click",()=>{state.filter=el.dataset.tier||el.dataset.filter;state.page=1;render()}));
-$("client-select").addEventListener("change",e=>{state.client=e.target.value;state.page=1;try{localStorage.setItem("shipmode-client",state.client)}catch{}render()});
+$("client-select").addEventListener("change",e=>{state.client=e.target.value;state.page=1;try{localStorage.setItem("shipmode-client",state.client)}catch{}render();if(state.section==="inventory")loadInventory()});
 $("search").addEventListener("input",e=>{state.search=e.target.value;state.page=1;render()});
 $("carrier-filter").addEventListener("change",e=>{state.carrier=e.target.value;state.page=1;render()});
 $("previous").addEventListener("click",()=>{state.page--;render()});$("next").addEventListener("click",()=>{state.page++;render()});
@@ -152,17 +144,7 @@ $("shipment-rows").addEventListener("click",e=>{const button=e.target.closest("[
 for(const id of ["setup-button","connection-details"])$(id).addEventListener("click",()=>$("setup-dialog").showModal());
 document.querySelectorAll(".close-dialog").forEach(el=>el.addEventListener("click",()=>el.closest("dialog").close()));
 $("export-button").addEventListener("click",exportQueue);
-$("inventory-file").addEventListener("change",async e=>{
-  const file=e.target.files[0];if(!file)return;
-  try{
-    if(file.size>5*1024*1024)throw new Error("Inventory CSV exceeds 5 MB.");
-    if(!state.data)throw new Error("Wait for the workspace to load before previewing a file.");
-    const rows=parseInventoryCsv(await file.text(),state.client,state.data.clients);
-    state.inventory=rows;state.inventoryFile=file.name;$("inventory-error").hidden=true;renderInventory();
-  }catch(error){$("inventory-error").textContent=error.message;$("inventory-error").hidden=false}
-  e.target.value="";
-});
-$("inventory-clear").addEventListener("click",()=>{state.inventory=[];state.inventoryFile="";$("inventory-error").hidden=true;renderInventory()});
+$("inventory-refresh").addEventListener("click",loadInventory);
   $("import-button").addEventListener("click",()=>{if(!state.data||state.data.mode==="demo"){$("setup-dialog").showModal();return}if(state.client!=="all")$("import-client").value=state.client;$("import-result").textContent="";$("import-dialog").showModal()});
 $("confirm-import").addEventListener("click",async()=>{
   const file=$("import-file").files[0];if(!file){$("import-result").textContent="Choose a CSV file.";return}
@@ -170,4 +152,4 @@ $("confirm-import").addEventListener("click",async()=>{
   $("confirm-import").disabled=true;
   try{const result=await api("/api/import",{method:"POST",body:JSON.stringify({client_id:$("import-client").value,csv:await file.text()})});$("import-result").textContent=`${result.inserted} added, ${result.updated} updated.`;await load()}catch(e){$("import-result").textContent=e.message}finally{$("confirm-import").disabled=false}
 });
-load();setInterval(()=>{if(!document.hidden && !$("detail-dialog").open && !$("import-dialog").open)load()},60000);
+load();setInterval(()=>{if(!document.hidden && !$("detail-dialog").open && !$("import-dialog").open){load();if(state.section==="inventory")loadInventory()}},60000);

@@ -7,8 +7,9 @@ CLIENTS = [
     {"id": "claritymd", "name": "ClarityMD", "initials": "CM"},
     {"id": "fascial-labs", "name": "Fascial. Labs", "initials": "FL"},
     {"id": "muravai", "name": "Muravai", "initials": "MU"},
-    {"id": "nuerosmile", "name": "Nuerosmile", "initials": "NS"},
+    {"id": "nuerosmile", "name": "Neurosmile", "initials": "NS"},
     {"id": "puravita", "name": "PuraVita", "initials": "PV"},
+    {"id": "onset", "name": "Onset", "initials": "ON"},
 ]
 MOVEMENT = {"in_transit", "out_for_delivery", "available_for_pickup", "delivered", "return_to_sender"}
 STATUS = MOVEMENT | {"pre_transit", "unknown", "failure", "cancelled"}

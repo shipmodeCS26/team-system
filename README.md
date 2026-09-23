@@ -1,13 +1,12 @@
 # Shipmode operations workspace
 
-Five client views: ClarityMD, Fascial. Labs, Muravai, Nuerosmile, PuraVita.
-The No Movement and Inventory tabs share one workspace. Inventory can preview a
-CSV report in the browser without uploading or saving it. The preview reads
-`Product / SKU` and `Remaining` plus optional `Starting stock`, `Units shipped`,
-`Daily demand`, `Days of cover`, and `Reorder status` columns. When viewing all
-clients, include a `Client` column; otherwise select one client before choosing
-the file. These values are unverified report values, not system balances.
-Invoices is reserved for the next phase. No inventory source is connected.
+Six client views: ClarityMD, Fascial. Labs, Muravai, Neurosmile, PuraVita, Onset.
+The No Movement and Inventory tabs share one workspace. Inventory reads the
+displayed `Dashboard` values from each client's Google Sheet when the private
+read-only connection is configured. It refreshes about every minute while open.
+It preserves each workbook's as-of date, report status, pending values, and
+formula errors; it does not independently calculate or verify balances.
+Invoices is reserved for the next phase.
 
 ## Current deployment: sample mode
 
@@ -15,7 +14,32 @@ Invoices is reserved for the next phase. No inventory source is connected.
 Client switching, search, carrier/tier filters, pagination, shipment history, and
 CSV export work. Imported records and case-note writes are deliberately disabled.
 Only the selected-client preference is stored in the browser. No real shipment
-data is stored there or committed to this public repository.
+or inventory data is stored there or committed to this public repository.
+
+## Google Sheets inventory connection (not yet configured)
+
+The deployed app cannot use a desktop Google Drive connector. Give it its own
+Google Cloud service account with the **Sheets API enabled** and share only the
+six current client inventory workbooks with that service account as **Viewer**.
+Keep the service-account JSON and spreadsheet IDs in private Render environment
+settings, never in this public repository:
+
+- `INVENTORY_SHEETS_ENABLED=true`
+- `INVENTORY_SERVICE_ACCOUNT_JSON` = complete service-account JSON
+- `INVENTORY_SHEETS_JSON` = JSON object mapping `claritymd`, `fascial-labs`,
+  `muravai`, `nuerosmile`, `puravita`, and `onset` to their spreadsheet IDs
+- `WORKSPACE_USER`, `WORKSPACE_PASSWORD_HASH`, `SECRET_KEY` = private workspace
+  authentication settings. The inventory connection fails closed without them.
+
+`nuerosmile` is the existing app's internal ID; its display name is Neurosmile.
+`APP_MODE` may remain `demo` for shipment tracking while Inventory reads Sheets.
+When inventory is enabled, the whole workspace requires Basic authentication.
+The server fetches only bounded `Dashboard!A1:S39` displayed values via the
+read-only Sheets scope. It caches each read for at most 45 seconds. The browser
+requests new data every 60 seconds while Inventory is open, or when Refresh is
+clicked. A failed or unshared sheet is reported per client; no saved numbers are
+substituted. Verify the six mappings and access in a private environment before
+enabling this on Render.
 
 ## Aging rules
 
@@ -35,7 +59,7 @@ Install `requirements.txt`, then run `flask --app app run` for development.
 Render build: `pip install -r requirements.txt`.
 Render start: `gunicorn app:app --bind 0.0.0.0:$PORT`.
 Health check: `/api/health`. Auto-deploy: On Commit.
-Tests: `python -B -m unittest -v test_tracking`.
+Tests: `python -B -m unittest -v test_tracking test_inventory`.
 
 ## Live mode prerequisites (not activated)
 
@@ -84,8 +108,9 @@ The receiver implements the documented EasyPost-compatible `tracker.created` and
 | ClarityMD | `/api/shipsidekick/claritymd` | `SSK_WEBHOOK_SECRET_CLARITYMD` |
 | Fascial. Labs | `/api/shipsidekick/fascial-labs` | `SSK_WEBHOOK_SECRET_FASCIAL_LABS` |
 | Muravai | `/api/shipsidekick/muravai` | `SSK_WEBHOOK_SECRET_MURAVAI` |
-| Nuerosmile | `/api/shipsidekick/nuerosmile` | `SSK_WEBHOOK_SECRET_NUEROSMILE` |
+| Neurosmile | `/api/shipsidekick/nuerosmile` | `SSK_WEBHOOK_SECRET_NUEROSMILE` |
 | PuraVita | `/api/shipsidekick/puravita` | `SSK_WEBHOOK_SECRET_PURAVITA` |
+| Onset | `/api/shipsidekick/onset` | `SSK_WEBHOOK_SECRET_ONSET` |
 
 Use a distinct secret and correct ShipSidekick organization per endpoint.
 The server verifies `X-SSK-Signature` using HMAC-SHA256 over the exact raw body.

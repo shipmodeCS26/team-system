@@ -46,9 +46,9 @@ class AgingTests(unittest.TestCase):
         a={"carrier_status":"pre_transit","shipped_at":"2026-09-03T08:00:00-04:00"}
         self.assertEqual(classify(a,self.now)["days"],5)
 
-    def test_demo_is_five_clients_and_synthetic(self):
+    def test_demo_is_six_clients_and_synthetic(self):
         rows=sample_shipments()
-        self.assertEqual(len(set(r["client_id"] for r in rows)),5)
+        self.assertEqual(len(set(r["client_id"] for r in rows)),6)
         self.assertTrue(all(r["tracking_number"].startswith("DEMO-") for r in rows))
 
 

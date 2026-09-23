@@ -11,6 +11,7 @@ from flask import Flask, Response, jsonify, render_template, request, session
 from werkzeug.security import check_password_hash
 
 from tracking import CLIENTS, classify, parse_csv, parse_date, sample_shipments, tracker_update, utcnow
+from inventory import read_dashboards
 
 app = Flask(__name__)
 app.config.update(SECRET_KEY=os.getenv("SECRET_KEY", secrets.token_hex(32)),
@@ -22,8 +23,16 @@ def live():
     return os.getenv("APP_MODE", "demo") == "live"
 
 
+def inventory_enabled():
+    return os.getenv("INVENTORY_SHEETS_ENABLED", "false").lower() == "true"
+
+
 def ready():
     return all(os.getenv(k) for k in ("DATABASE_URL", "WORKSPACE_USER", "WORKSPACE_PASSWORD_HASH", "SECRET_KEY"))
+
+
+def inventory_ready():
+    return all(os.getenv(k) for k in ("INVENTORY_SHEETS_JSON", "INVENTORY_SERVICE_ACCOUNT_JSON", "WORKSPACE_USER", "WORKSPACE_PASSWORD_HASH", "SECRET_KEY"))
 
 
 def db():
@@ -49,9 +58,11 @@ def init_db():
 def protected(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if live():
-            if not ready():
+        if live() or inventory_enabled():
+            if live() and not ready():
                 return jsonify(error="Live workspace is not configured. No shipment data is exposed."), 503
+            if inventory_enabled() and not inventory_ready():
+                return jsonify(error="Inventory access is not configured."), 503
             auth = request.authorization
             if not auth or auth.username != os.getenv("WORKSPACE_USER") or not check_password_hash(os.getenv("WORKSPACE_PASSWORD_HASH", ""), auth.password or ""):
                 return Response("Sign in to your Shipmode workspace.", 401, {"WWW-Authenticate": 'Basic realm="Shipmode workspace", charset="UTF-8"'})
@@ -105,6 +116,22 @@ def workspace():
     return {"mode": "live" if live() else "demo", "clients": CLIENTS,
             "shipments": [classify(row) for row in records], "as_of": utcnow().isoformat(),
             "integration": "Awaiting verified ShipSidekick connection"}
+
+
+@app.get("/api/inventory")
+@protected
+def inventory():
+    if not inventory_enabled():
+        return jsonify(error="Google Sheets inventory is not connected."), 503
+    selected = request.args.get("client_id", "all")
+    client_ids = [client["id"] for client in CLIENTS]
+    if selected != "all" and selected not in client_ids:
+        return jsonify(error="Unknown client."), 400
+    try:
+        return {"sources": read_dashboards(client_ids if selected == "all" else [selected]),
+                "as_of": utcnow().isoformat()}
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return jsonify(error="Inventory configuration is invalid or incomplete."), 503
 
 
 @app.get("/api/template.csv")
