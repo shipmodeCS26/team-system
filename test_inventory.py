@@ -1,10 +1,13 @@
 import base64
+import json
 import unittest
 from unittest.mock import patch
 
+import requests
 from werkzeug.security import generate_password_hash
 
 from app import app
+import inventory
 from inventory import parse_dashboard
 
 
@@ -53,6 +56,112 @@ class DashboardAdapterTests(unittest.TestCase):
     def test_changed_headers_fail_instead_of_guessing(self):
         with self.assertRaises(ValueError):
             parse_dashboard(dashboard(["Product", "Unknown balance"], [["A", "10"]]))
+
+
+    def test_formula_errors_are_flagged_per_cell(self):
+        values = dashboard(["Product", "Initial Stock", "Today's Orders", "Remaining stocks", "daily demand", "Status"],
+                           [["Product D", "100", "#NAME?", "#ERROR!", "2", "OK"], ["Product E", "5", "1", "4", "1", "OK"]])
+        result = parse_dashboard(values)
+        self.assertEqual(result["rows"][0]["flags"], ["remaining", "shipped"])
+        self.assertEqual(result["rows"][0]["remaining"], "#ERROR!")
+        self.assertEqual(result["rows"][1]["flags"], [])
+        self.assertEqual(result["issue_rows"], 1)
+
+    def test_blank_as_of_and_empty_dashboard_warn(self):
+        values = dashboard(["Product", "Remaining stocks"], [])
+        values[3][1] = ""
+        result = parse_dashboard(values)
+        self.assertIn("Dashboard as-of date is blank", result["warnings"])
+        self.assertIn("No product rows found on the Dashboard", result["warnings"])
+
+    def test_products_reaching_last_row_warn_about_truncation(self):
+        values = dashboard(["Product", "Remaining stocks"], [[f"P{i}", "1"] for i in range(25)])
+        result = parse_dashboard(values)
+        self.assertEqual(len(result["rows"]), 25)
+        self.assertTrue(any("past row 39" in warning for warning in result["warnings"]))
+        values = dashboard(["Product", "Remaining stocks"], [[f"P{i}", "1"] for i in range(24)] + [["TOTAL", "24"]])
+        self.assertFalse(any("past row 39" in warning for warning in parse_dashboard(values)["warnings"]))
+
+    def test_summary_errors_warn(self):
+        values = dashboard(["Product", "Remaining stocks"], [["A", "1"]])
+        values[6][6] = "#REF!"
+        self.assertIn("Dashboard summary contains pending or formula-error values", parse_dashboard(values)["warnings"])
+
+
+class FakeResponse:
+    def __init__(self, status, values=None):
+        self.status_code = status
+        self._values = values
+
+    def json(self):
+        return {"values": self._values}
+
+
+class SourceIsolationTests(unittest.TestCase):
+    """One broken workbook or mapping must not hide or alter another client's values."""
+    GOOD = dashboard(["Product", "Remaining stocks"], [["Product A", "90"]])
+    IDS = {"claritymd": "a" * 30, "fascial-labs": "b" * 30, "muravai": "c" * 30, "puravita": "d" * 30}
+
+    def setUp(self):
+        inventory._cache.clear()
+        self.addCleanup(inventory._cache.clear)
+        self.env = patch.dict("os.environ", {
+            "INVENTORY_SHEETS_JSON": json.dumps(dict(self.IDS, onset="short")),
+            "INVENTORY_SERVICE_ACCOUNT_JSON": json.dumps({"type": "service_account"})})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        patcher = patch("inventory.service_account.Credentials.from_service_account_info")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def read(self, responses, client_ids):
+        def get(session, url, **kwargs):
+            sheet = url.split("/spreadsheets/")[1].split("/")[0]
+            response = responses[sheet]
+            if isinstance(response, Exception):
+                raise response
+            return response
+        with patch("inventory.AuthorizedSession.get", get), patch("inventory.AuthorizedSession.__init__", return_value=None):
+            with self.assertLogs("inventory", "WARNING") as logs:
+                result = {source["id"]: source for source in inventory.read_dashboards(client_ids)}
+        for line in logs.output:
+            for sheet in self.IDS.values():
+                self.assertNotIn(sheet, line)
+        return result
+
+    def test_failures_are_per_client_and_categorized(self):
+        responses = {"a" * 30: FakeResponse(200, self.GOOD), "b" * 30: FakeResponse(403),
+                     "c" * 30: FakeResponse(404), "d" * 30: FakeResponse(400)}
+        result = self.read(responses, ["claritymd", "fascial-labs", "muravai", "puravita", "nuerosmile", "onset"])
+        self.assertEqual(list(result), ["claritymd", "fascial-labs", "muravai", "puravita", "nuerosmile", "onset"])
+        self.assertEqual(result["claritymd"]["rows"][0]["remaining"], "90")
+        self.assertNotIn("error", result["claritymd"])
+        self.assertEqual(result["fascial-labs"]["error_code"], "access_denied")
+        self.assertEqual(result["muravai"]["error_code"], "not_found")
+        self.assertEqual(result["puravita"]["error_code"], "no_dashboard")
+        self.assertEqual(result["nuerosmile"]["error_code"], "not_configured")
+        self.assertEqual(result["onset"]["error_code"], "not_configured")
+        for failed in ("fascial-labs", "muravai", "puravita", "nuerosmile", "onset"):
+            self.assertNotIn("rows", result[failed])
+            self.assertNotIn("a" * 30, json.dumps(result[failed]))
+
+    def test_layout_change_and_timeouts_do_not_return_values(self):
+        responses = {"a" * 30: FakeResponse(200, dashboard(["Item", "Qty"], [["A", "1"]])),
+                     "b" * 30: requests.Timeout("slow"), "c" * 30: FakeResponse(503)}
+        result = self.read(responses, ["claritymd", "fascial-labs", "muravai"])
+        self.assertEqual(result["claritymd"]["error_code"], "layout_changed")
+        self.assertEqual(result["fascial-labs"]["error_code"], "unavailable")
+        self.assertEqual(result["muravai"]["error_code"], "unavailable")
+        self.assertTrue(all("rows" not in source for source in result.values()))
+
+    def test_failed_read_is_not_cached(self):
+        responses = {"a" * 30: FakeResponse(403)}
+        self.assertEqual(self.read(responses, ["claritymd"])["claritymd"]["error_code"], "access_denied")
+        responses["a" * 30] = FakeResponse(200, self.GOOD)
+        with patch("inventory.AuthorizedSession.get", lambda session, url, **kwargs: responses["a" * 30]), \
+                patch("inventory.AuthorizedSession.__init__", return_value=None):
+            result = inventory.read_dashboards(["claritymd"])
+        self.assertEqual(result[0]["rows"][0]["remaining"], "90")
 
 
 class InventoryApiTests(unittest.TestCase):

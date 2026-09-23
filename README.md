@@ -41,8 +41,17 @@ The server fetches only bounded `Dashboard!A1:S39` displayed values via the
 read-only Sheets scope. It caches each read for at most 45 seconds. The browser
 requests new data every 60 seconds while Inventory is open, or when Refresh is
 clicked. A failed or unshared sheet is reported per client; no saved numbers are
-substituted. Verify the six mappings and access in a private environment before
-enabling this on Render.
+substituted. A missing or malformed mapping for one client fails only that
+client. Each failure carries an `error_code` for staging verification:
+`not_configured` (no valid ID mapped), `access_denied` (not shared with the
+service account), `not_found` (wrong ID), `no_dashboard` (no readable
+`Dashboard!A1:S39`), `layout_changed` (headers not recognized), `unavailable`
+(timeout or Google error), or `read_failed`. The server log records the client,
+code, and HTTP status only, never spreadsheet IDs or credentials. Cells with
+`PENDING` or formula errors are highlighted; a blank as-of date, no product rows,
+possible products past row 39, summary errors, negative balances, and reorder
+summary mismatches are listed as warnings. Verify the six mappings and access in
+a private environment before enabling this on Render.
 
 ## Aging rules
 
