@@ -1,6 +1,6 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null};
+const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null, inventorySources:null, inventoryAsOf:null, inventoryRequest:0, calculated:null, calculatedError:null};
 const PAGE_SIZE = 10;
 const tierNames = {critical:"Critical",urgent:"Urgent",watch:"Watch",monitoring:"Monitoring",delivered:"Delivered",cancelled:"Cancelled",data_gap:"Missing data"};
 const statusNames = {pre_transit:"Label created",in_transit:"In transit",out_for_delivery:"Out for delivery",available_for_pickup:"Ready for pickup",delivered:"Delivered",unknown:"Unknown",failure:"Carrier exception",return_to_sender:"Returning",cancelled:"Cancelled"};
@@ -31,23 +31,76 @@ function render(){
   state.page=Math.min(state.page,pages);
   const start=(state.page-1)*PAGE_SIZE, page=found.slice(start,start+PAGE_SIZE);
   $("queue-total").textContent=found.length;
-  $("queue-description").textContent=`${state.filter==="all"?"All shipments, oldest open cases first":"Oldest matching shipments first"} · ${state.client==="all"?"All 5 clients":clientName(state.client)}`;
+  $("queue-description").textContent=`${state.filter==="all"?"All shipments, oldest open cases first":"Oldest matching shipments first"} · ${state.client==="all"?"All 6 clients":clientName(state.client)}`;
   $("shipment-rows").innerHTML=page.length?page.map(r=>`<tr><td><strong>${esc(r.order_number||"Order not linked")}</strong><small>${esc(clientName(r.client_id))}</small></td><td><span class="tracking">${esc(r.tracking_number)}</span><small>${esc(carrierName(r.carrier))} · ${esc(r.fulfillment_status)}</small></td><td><span class="badge ${esc(r.carrier_status)}">${esc(statusNames[r.carrier_status]||r.carrier_status)}</span></td><td>${r.last_movement_at?esc(date(r.last_movement_at)):"<span class=\"muted\">No scan recorded</span>"}<small>${r.last_movement_at?"Last physical scan":r.shipped_at?"Shipped "+esc(date(r.shipped_at)):r.label_created_at?"Label "+esc(date(r.label_created_at)):"Date needed"}</small></td><td>${["delivered","cancelled","data_gap"].includes(r.tier)?"":`<span class="age">${r.days}d</span>`}<span class="badge ${r.tier}">${tierNames[r.tier]}</span></td><td><span class="badge">${esc(caseNames[r.case_status]||"Not started")}</span></td><td><button class="row-open" data-detail="${r.id}" aria-label="View shipment ${esc(r.order_number||r.tracking_number)}">↗</button></td></tr>`).join(""):`<tr><td colspan="7" class="empty-cell"><strong>No shipments match this view</strong>${rows.length?"Try another filter, search, or client store.":"Import this client's shipments after live tracking is configured."}</td></tr>`;
   $("showing").textContent=found.length?`Showing ${start+1}–${Math.min(start+PAGE_SIZE,found.length)} of ${found.length} shipments`:"0 shipments";
   $("page-number").textContent=`${state.page} / ${pages}`;$("previous").disabled=state.page===1;$("next").disabled=state.page===pages;
   $("monitoring-count").textContent=`${rows.filter(r=>r.tier==="monitoring").length} under 5 days · ${rows.filter(r=>r.tier==="delivered").length} delivered`;
   document.querySelectorAll(".selected-client-name").forEach(el=>el.textContent=state.client==="all"?"all clients":clientName(state.client));
+  if(state.section==="inventory")renderInventory();
+}
+function renderInventory(){
+  const sources=state.inventorySources||[], loaded=sources.filter(s=>!s.error), selected=state.client==="all"?null:loaded[0];
+  const labels=selected?["Products tracked","Units on hand","Need ordering","Out of stock"]:["Workbooks loaded","Products listed","Workbooks in review","Source errors"];
+  ["products","remaining","reorder","out"].forEach((key,i)=>$("inventory-label-"+key).textContent=labels[i]);
+  const values=selected?[selected.summary.products,selected.summary.on_hand,selected.summary.reorder,selected.summary.out]:[
+    `${loaded.length}/${sources.length||6}`,loaded.reduce((n,s)=>n+s.rows.length,0),
+    sources.filter(s=>s.report_status==="REVIEW"||s.warnings?.length).length,
+    sources.filter(s=>s.error).length];
+  ["products","remaining","reorder","out"].forEach((key,i)=>$("inventory-"+key).textContent=state.inventorySources?String(values[i]??"—"):"—");
+  $("inventory-status").textContent=selected?selected.report_status:"Source values";
+  $("inventory-description").textContent=selected?`Dashboard as of ${selected.as_of||"unknown"} · read ${date(selected.fetched_at,true)}`:"Values are read from each client's Dashboard tab; select a client to see its source totals.";
+  const rows=loaded.flatMap(source=>source.rows.map(row=>({...row,client:source.id,url:source.source_url,as_of:source.as_of,report_status:source.report_status,fetched_at:source.fetched_at})));
+  $("inventory-rows").innerHTML=rows.length?rows.map(r=>`<tr><td><strong>${esc(r.product)}</strong><small>${esc(clientName(r.client))}</small></td>${["starting","shipped","remaining","demand","cover","status"].map(k=>`<td${(r.flags||[]).includes(k)?' class="source-flag" title="Pending, formula-error, or negative value in the source sheet"':""}>${esc(r[k]||"—")}</td>`).join("")}<td class="inventory-source"><span class="badge${r.report_status==="REVIEW"?" watch":""}">${esc(r.report_status)}</span><small>As of ${esc(r.as_of||"unknown")} · read ${esc(date(r.fetched_at,true))}${r.url?` · <a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">Open sheet ↗</a>`:""}</small></td></tr>`).join(""):'<tr><td colspan="8" class="empty-cell"><strong>No sheet data available</strong>Check the connection status above.</td></tr>';
+  const problems=sources.map(s=>({s,text:s.error||[s.report_status==="REVIEW"?"Report marked REVIEW":"",...(s.warnings||[])].filter(Boolean).join(" · ")})).filter(p=>p.text);
+  $("inventory-error").innerHTML=problems.map(({s,text})=>`<div class="source-problem${s.error?" failed":""}"><strong>${esc(clientName(s.id))}${s.error?" — not loaded":""}</strong> ${esc(text)}</div>`).join("");
+  $("inventory-error").hidden=!problems.length;
+  $("inventory-sync").textContent=state.inventoryAsOf?`Checked ${date(state.inventoryAsOf,true)} · updates about every minute while this tab is open.`:"Google Sheets access is not connected yet.";
+}
+function renderCalculated(){
+  const clients=state.calculated||[], fmt=n=>n==null?"—":Number(n).toLocaleString();
+  const badge={VERIFIED:"delivered",REVIEW:"watch",INCOMPLETE:"data_gap"};
+  const rows=clients.filter(c=>!c.error).flatMap(c=>c.skus.map(r=>({...r,client:c.client_id})));
+  $("calculated-rows").innerHTML=rows.length?rows.map(r=>`<tr><td><strong>${esc(r.sku)} · ${esc(r.label)}</strong><small>${esc(clientName(r.client))}</small></td><td>${r.baseline?`${fmt(r.baseline.quantity)}<small>${esc(r.baseline.date)} · ${esc(r.baseline.timing.replace("_"," "))} · ${esc(r.baseline.approved_by)}</small>`:"—"}</td><td>${fmt(r.baseline?r.usage:null)}</td><td>${fmt(r.baseline?r.receipts:null)}</td><td>${fmt(r.baseline?r.adjustments:null)}</td><td><strong>${fmt(r.calculated)}</strong></td><td class="inventory-source"><span class="badge ${badge[r.status]||""}">${esc(r.status)}</span>${(r.reasons||[]).map(t=>`<small>${esc(t)}</small>`).join("")}</td></tr>`).join(""):'<tr><td colspan="7" class="empty-cell"><strong>No calculated inventory</strong>'+esc(state.calculatedError||"No client has rules and a readable export yet.")+'</td></tr>';
+  const problems=clients.filter(c=>c.error).map(c=>`<div class="source-problem failed"><strong>${esc(clientName(c.client_id))}</strong> ${esc(c.error)}</div>`);
+  $("calculated-error").innerHTML=problems.join("");$("calculated-error").hidden=!problems.length;
+  $("calculated-eod").innerHTML=clients.filter(c=>c.latest_eod).map(c=>{const e=c.latest_eod;return `<div class="eod-card"><strong>${esc(clientName(c.client_id))} — latest EOD ${esc(e.date)}</strong><span>${fmt(e.orders)} orders · ${fmt(e.missions)} missions · ${fmt(e.total_units)} units${e.needs_review?" · needs review":""}</span><small>${esc(e.audit)}</small>${(e.findings||[]).slice(0,5).map(f=>`<small class="finding">${esc(f)}</small>`).join("")}</div>`}).join("");
+  const counts=rows.reduce((m,r)=>(m[r.status]=(m[r.status]||0)+1,m),{});
+  $("calculated-status").textContent=rows.length?Object.entries(counts).map(([k,v])=>`${v} ${k.toLowerCase()}`).join(" · "):"Read-only";
+}
+async function loadCalculated(){
+  try{const result=await api(`/api/inventory/calculated?client_id=${encodeURIComponent(state.client)}`);state.calculated=result.clients;state.calculatedError=null}
+  catch(error){state.calculated=[];state.calculatedError=error.message}
+  renderCalculated();
+}
+async function loadInventory(){
+  if(!state.data)return;
+  const request=++state.inventoryRequest,client=state.client;
+  state.inventorySources=null;state.inventoryAsOf=null;renderInventory();
+  $("inventory-refresh").disabled=true;
+  $("inventory-sync").textContent="Reading Google Sheets…";
+  try{
+    const result=await api(`/api/inventory?client_id=${encodeURIComponent(client)}`);
+    if(request!==state.inventoryRequest)return;
+    state.inventorySources=result.sources;state.inventoryAsOf=result.as_of;renderInventory();loadCalculated();
+  }catch(error){
+    if(request!==state.inventoryRequest)return;
+    state.inventorySources=[];state.inventoryAsOf=null;renderInventory();loadCalculated();
+    $("inventory-error").textContent=error.message;$("inventory-error").hidden=false;
+  }finally{if(request===state.inventoryRequest)$("inventory-refresh").disabled=false}
 }
 function section(name){
   state.section=name;
   const title={movement:"No Movement",inventory:"Inventory",invoices:"Invoices"}[name];
   document.querySelectorAll("[data-section]").forEach(el=>{el.classList.toggle("active",el.dataset.section===name);el.setAttribute("aria-current",el.dataset.section===name?"page":"false")});
   for(const key of ["movement","inventory","invoices"])$(key+"-section").hidden=key!==name;
+  $("mode-notice").hidden=name!=="movement";
   $("movement-actions").hidden=name!=="movement";$("crumb").textContent=title;
   $("title").innerHTML=esc(title)+'<span class="title-dot"></span>';
   $("eyebrow").textContent=name==="movement"?"SHIPMENT EXCEPTIONS":"CLIENT OPERATIONS";
   $("subtitle").textContent={movement:"Catch stalled shipments before your customers do.",inventory:"Stock visibility, organized by client.",invoices:"Client billing, in one place."}[name];
   render();
+  if(name==="inventory")loadInventory();
 }
 function trackingUrl(row){
   if(state.data.mode==="demo")return null;
@@ -86,6 +139,7 @@ async function load(){
     }
     $("as-of").textContent=(state.data.mode==="demo"?"Sample data · ":"Queue calculated · ")+date(state.data.as_of,true);
     render();
+    if(first&&state.section==="inventory")loadInventory();
   }catch(e){$("load-error").textContent=e.message;$("load-error").hidden=false;$("as-of").textContent="Update failed — data may be stale";if(!state.data)$("shipment-rows").innerHTML='<tr><td colspan="7" class="empty-cell">Unable to load shipments. Refresh to retry.</td></tr>'}
 }
 function exportQueue(){
@@ -98,7 +152,7 @@ function exportQueue(){
 }
 document.querySelectorAll("[data-section]").forEach(el=>el.addEventListener("click",()=>section(el.dataset.section)));
 document.querySelectorAll("[data-tier],[data-filter]").forEach(el=>el.addEventListener("click",()=>{state.filter=el.dataset.tier||el.dataset.filter;state.page=1;render()}));
-$("client-select").addEventListener("change",e=>{state.client=e.target.value;state.page=1;try{localStorage.setItem("shipmode-client",state.client)}catch{}render()});
+$("client-select").addEventListener("change",e=>{state.client=e.target.value;state.page=1;try{localStorage.setItem("shipmode-client",state.client)}catch{}render();if(state.section==="inventory")loadInventory()});
 $("search").addEventListener("input",e=>{state.search=e.target.value;state.page=1;render()});
 $("carrier-filter").addEventListener("change",e=>{state.carrier=e.target.value;state.page=1;render()});
 $("previous").addEventListener("click",()=>{state.page--;render()});$("next").addEventListener("click",()=>{state.page++;render()});
@@ -106,6 +160,7 @@ $("shipment-rows").addEventListener("click",e=>{const button=e.target.closest("[
 for(const id of ["setup-button","connection-details"])$(id).addEventListener("click",()=>$("setup-dialog").showModal());
 document.querySelectorAll(".close-dialog").forEach(el=>el.addEventListener("click",()=>el.closest("dialog").close()));
 $("export-button").addEventListener("click",exportQueue);
+$("inventory-refresh").addEventListener("click",loadInventory);
   $("import-button").addEventListener("click",()=>{if(!state.data||state.data.mode==="demo"){$("setup-dialog").showModal();return}if(state.client!=="all")$("import-client").value=state.client;$("import-result").textContent="";$("import-dialog").showModal()});
 $("confirm-import").addEventListener("click",async()=>{
   const file=$("import-file").files[0];if(!file){$("import-result").textContent="Choose a CSV file.";return}
@@ -113,4 +168,4 @@ $("confirm-import").addEventListener("click",async()=>{
   $("confirm-import").disabled=true;
   try{const result=await api("/api/import",{method:"POST",body:JSON.stringify({client_id:$("import-client").value,csv:await file.text()})});$("import-result").textContent=`${result.inserted} added, ${result.updated} updated.`;await load()}catch(e){$("import-result").textContent=e.message}finally{$("confirm-import").disabled=false}
 });
-load();setInterval(()=>{if(!document.hidden && !$("detail-dialog").open && !$("import-dialog").open)load()},60000);
+load();setInterval(()=>{if(!document.hidden && !$("detail-dialog").open && !$("import-dialog").open){load();if(state.section==="inventory")loadInventory()}},60000);

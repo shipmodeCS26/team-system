@@ -1,0 +1,72 @@
+/* ShipMode brand layer. See BRAND.md. Loaded after workspace.css and only
+   restyles; it does not change layout or behavior. Status colors
+   (watch / urgent / critical) are intentionally left as they are. */
+
+@font-face{font-family:"Barlow";src:url("/static/fonts/barlow-latin-400-normal.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Barlow";src:url("/static/fonts/barlow-latin-600-normal.woff2") format("woff2");font-weight:600;font-style:normal;font-display:swap}
+@font-face{font-family:"Barlow";src:url("/static/fonts/barlow-latin-700-normal.woff2") format("woff2");font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:"Barlow Condensed";src:url("/static/fonts/barlow-condensed-latin-800-italic.woff2") format("woff2");font-weight:800;font-style:italic;font-display:swap}
+
+:root{
+  --sm-black:#07080A;
+  --sm-white:#FFFFFF;
+  --sm-blue:#2563D6;
+  --sm-blue-light:#4775BB;
+  --sm-blue-deep:#294785;
+  --sm-navy:#1B263C;
+  --sm-silver:#D4D7D9;
+  --sm-surface:#F5F6F7;
+  --sm-font-display:"Barlow Condensed","Arial Narrow",Arial,sans-serif;
+  --sm-font-body:"Barlow",Arial,sans-serif;
+
+  /* Map the existing workspace tokens onto the brand */
+  --nav:var(--sm-black);
+  --nav-muted:#9AA3AE;
+  --page:var(--sm-surface);
+  --ink:var(--sm-navy);
+  --line:#E3E5E7;
+  --blue:var(--sm-blue);
+  font-family:var(--sm-font-body);
+}
+
+/* Sidebar: black like the logo badge */
+.sidebar{background:var(--sm-black)}
+.owner{border-color:#23262B}
+.avatar{background:var(--sm-blue-deep);color:var(--sm-white)}
+.nav-item:hover{background:#15181D}
+.nav-item.active{background:var(--sm-blue-deep);box-shadow:inset 3px 0 var(--sm-blue)}
+.nav-count{background:#23262B}
+.sidebar-bottom{border-bottom-color:#23262B}
+.version{border-color:#34383E}
+
+/* Logo and wordmark */
+.brand{padding:0 6px}
+.brand-logo{width:76px;height:76px}
+/* The badge already carries the wordmark, so the text is kept for screen readers only */
+.brand span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+@media(max-width:850px){.brand-logo{width:44px;height:44px}}
+
+/* Display type: page titles and headline numbers only */
+h1,.metric strong,.inventory-cards strong{font-family:var(--sm-font-display);font-weight:800;font-style:italic;letter-spacing:0}
+.title-dot{background:var(--sm-blue)}
+
+/* Actions in brand blue */
+.primary{background:var(--sm-blue)}
+.primary:hover{background:var(--sm-blue-deep)}
+.tabs button.active{color:var(--sm-blue-deep)}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline-color:var(--sm-blue-light)}
+
+/* Numbers line up in tables */
+td,.metric strong,.inventory-cards strong{font-variant-numeric:tabular-nums}
+
+/* Calculated inventory (shadow check) */
+.calculated-card{margin-top:24px}
+.calculated-eod{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;padding:16px 22px;border-top:1px solid var(--line)}
+.calculated-eod:empty{display:none}
+.eod-card{border:1px solid var(--line);border-radius:10px;padding:14px;background:var(--sm-surface)}
+.eod-card strong,.eod-card span,.eod-card small{display:block}
+.eod-card span{font-size:13px;margin:6px 0;color:var(--sm-navy)}
+.eod-card small{font-size:12px;color:var(--muted);line-height:1.5}
+.eod-card .finding{color:var(--watch)}
+#calculated-error{margin:0 22px 16px}
+.calculated-card td.inventory-source{min-width:280px}

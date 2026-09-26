@@ -1,8 +1,15 @@
 # Shipmode operations workspace
 
-Five client views: ClarityMD, Fascial. Labs, Muravai, Nuerosmile, PuraVita.
-The initial focus is No Movement. Inventory follows the supplied report columns;
-Invoices is reserved for the next phase. Neither module currently imports balances.
+Build and release process: [BUILD_WORKFLOW.md](BUILD_WORKFLOW.md).
+Full Claude handoff: [SHIPMODE_CLAUDE_BLUEPRINT.md](SHIPMODE_CLAUDE_BLUEPRINT.md).
+
+Six client views: ClarityMD, Fascial. Labs, Muravai, Neurosmile, PuraVita, Onset.
+The No Movement and Inventory tabs share one workspace. Inventory reads the
+displayed `Dashboard` values from each client's Google Sheet when the private
+read-only connection is configured. It refreshes about every minute while open.
+It preserves each workbook's as-of date, report status, pending values, and
+formula errors; it does not independently calculate or verify balances.
+Invoices is reserved for the next phase.
 
 ## Current deployment: sample mode
 
@@ -10,7 +17,41 @@ Invoices is reserved for the next phase. Neither module currently imports balanc
 Client switching, search, carrier/tier filters, pagination, shipment history, and
 CSV export work. Imported records and case-note writes are deliberately disabled.
 Only the selected-client preference is stored in the browser. No real shipment
-data is stored there or committed to this public repository.
+or inventory data is stored there or committed to this public repository.
+
+## Google Sheets inventory connection (not yet configured)
+
+The deployed app cannot use a desktop Google Drive connector. Give it its own
+Google Cloud service account with the **Sheets API enabled** and share only the
+six current client inventory workbooks with that service account as **Viewer**.
+Keep the service-account JSON and spreadsheet IDs in private Render environment
+settings, never in this public repository:
+
+- `INVENTORY_SHEETS_ENABLED=true`
+- `INVENTORY_SERVICE_ACCOUNT_JSON` = complete service-account JSON
+- `INVENTORY_SHEETS_JSON` = JSON object mapping `claritymd`, `fascial-labs`,
+  `muravai`, `nuerosmile`, `puravita`, and `onset` to their spreadsheet IDs
+- `WORKSPACE_USER`, `WORKSPACE_PASSWORD_HASH`, `SECRET_KEY` = private workspace
+  authentication settings. The inventory connection fails closed without them.
+
+`nuerosmile` is the existing app's internal ID; its display name is Neurosmile.
+`APP_MODE` may remain `demo` for shipment tracking while Inventory reads Sheets.
+When inventory is enabled, the whole workspace requires Basic authentication.
+The server fetches only bounded `Dashboard!A1:S39` displayed values via the
+read-only Sheets scope. It caches each read for at most 45 seconds. The browser
+requests new data every 60 seconds while Inventory is open, or when Refresh is
+clicked. A failed or unshared sheet is reported per client; no saved numbers are
+substituted. A missing or malformed mapping for one client fails only that
+client. Each failure carries an `error_code` for staging verification:
+`not_configured` (no valid ID mapped), `access_denied` (not shared with the
+service account), `not_found` (wrong ID), `no_dashboard` (no readable
+`Dashboard!A1:S39`), `layout_changed` (headers not recognized), `unavailable`
+(timeout or Google error), or `read_failed`. The server log records the client,
+code, and HTTP status only, never spreadsheet IDs or credentials. Cells with
+`PENDING` or formula errors are highlighted; a blank as-of date, no product rows,
+possible products past row 39, summary errors, negative balances, and reorder
+summary mismatches are listed as warnings. Verify the six mappings and access in
+a private environment before enabling this on Render.
 
 ## Aging rules
 
@@ -30,7 +71,7 @@ Install `requirements.txt`, then run `flask --app app run` for development.
 Render build: `pip install -r requirements.txt`.
 Render start: `gunicorn app:app --bind 0.0.0.0:$PORT`.
 Health check: `/api/health`. Auto-deploy: On Commit.
-Tests: `python -B -m unittest -v test_tracking`.
+Tests: `python -B -m unittest -v test_tracking test_inventory`.
 
 ## Live mode prerequisites (not activated)
 
@@ -79,8 +120,9 @@ The receiver implements the documented EasyPost-compatible `tracker.created` and
 | ClarityMD | `/api/shipsidekick/claritymd` | `SSK_WEBHOOK_SECRET_CLARITYMD` |
 | Fascial. Labs | `/api/shipsidekick/fascial-labs` | `SSK_WEBHOOK_SECRET_FASCIAL_LABS` |
 | Muravai | `/api/shipsidekick/muravai` | `SSK_WEBHOOK_SECRET_MURAVAI` |
-| Nuerosmile | `/api/shipsidekick/nuerosmile` | `SSK_WEBHOOK_SECRET_NUEROSMILE` |
+| Neurosmile | `/api/shipsidekick/nuerosmile` | `SSK_WEBHOOK_SECRET_NUEROSMILE` |
 | PuraVita | `/api/shipsidekick/puravita` | `SSK_WEBHOOK_SECRET_PURAVITA` |
+| Onset | `/api/shipsidekick/onset` | `SSK_WEBHOOK_SECRET_ONSET` |
 
 Use a distinct secret and correct ShipSidekick organization per endpoint.
 The server verifies `X-SSK-Signature` using HMAC-SHA256 over the exact raw body.
@@ -105,3 +147,7 @@ quantity. Muravai also has receipts, physical counts, adjustments/reships and
 audit exceptions. Some displayed summary statuses and calculation guides disagree;
 validate the business formulas rather than blindly porting those cells. Preserve
 the original Sheets as read-only references until a separate migration is agreed.
+
+## Calculated inventory (shadow check)
+
+See `docs/V1_PLAN.md`. Off by default; set `INVENTORY_LEDGER_ENABLED=true` in the private Render settings after the Sheets connection works. Approved counts for clients without a Manual Counts tab go in `INVENTORY_BASELINES_JSON` (format in the plan). Only nine ShipSidekick columns are read; customer names and addresses are never requested.

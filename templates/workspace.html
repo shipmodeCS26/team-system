@@ -3,18 +3,20 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Shipmode's five-client logistics workspace for shipment exceptions, inventory, and invoices.">
+  <meta name="description" content="Shipmode's six-client logistics workspace for shipment exceptions, inventory, and invoices.">
   <meta name="csrf-token" content="{{ csrf }}">
   <title>Shipmode • Operations workspace</title>
+  <link rel="icon" type="image/png" href="/static/shipmode-logo.png">
   <link rel="stylesheet" href="/static/workspace.css">
+  <link rel="stylesheet" href="/static/brand.css">
   <script src="/static/workspace.js" defer></script>
 </head>
 <body>
   <a class="skip" href="#main">Skip to workspace</a>
   <aside class="sidebar">
-    <a class="brand" href="/" aria-label="Shipmode home"><span class="brand-mark">S</span>shipmode<span class="brand-dot">.</span></a>
+    <a class="brand" href="/" aria-label="Shipmode home"><img class="brand-logo" src="/static/shipmode-logo.png" alt="" width="48" height="46"><span>Shipmode</span></a>
     <div class="workspace-label">OPERATIONS WORKSPACE</div>
-    <div class="owner"><span class="avatar">S</span><div><strong>My workspace</strong><small>5 client stores</small></div></div>
+    <div class="owner"><span class="avatar">S</span><div><strong>My workspace</strong><small>6 client stores</small></div></div>
     <div class="nav-label">WORKSPACE</div>
     <nav aria-label="Workspace sections">
       <button data-section="movement" class="nav-item active"><span class="nav-icon">↗</span>No Movement<span id="nav-count" class="nav-count">—</span></button>
@@ -25,7 +27,7 @@
     <div class="account"><span class="avatar small">S</span><div><strong>Shipmode</strong><small>Personal workspace</small></div><span class="version">V1</span></div>
   </aside>
   <div class="shell">
-    <header class="topbar"><div class="breadcrumb">Workspace <span>/</span> <strong id="crumb">No Movement</strong></div><div class="client-control"><label for="client-select">CLIENT STORE</label><select id="client-select"><option value="all">All 5 clients</option></select></div></header>
+    <header class="topbar"><div class="breadcrumb">Workspace <span>/</span> <strong id="crumb">No Movement</strong></div><div class="client-control"><label for="client-select">CLIENT STORE</label><select id="client-select"><option value="all">All 6 clients</option></select></div></header>
     <main id="main">
       <div class="notice" id="mode-notice"><span class="notice-icon">i</span><div><strong>Sample workspace</strong><span>Illustrative shipments only. Live carrier tracking is not connected.</span></div><button id="setup-button">Set up live tracking <span>→</span></button></div>
       <div class="page-heading"><div><div class="eyebrow" id="eyebrow">SHIPMENT EXCEPTIONS</div><h1 id="title">No Movement<span class="title-dot"></span></h1><p id="subtitle">Catch stalled shipments before your customers do.</p></div><div class="heading-actions" id="movement-actions"><button class="button secondary" id="export-button">↓ Export queue</button><button class="button primary" id="import-button">＋ Import shipments</button></div></div>
@@ -46,10 +48,17 @@
         </section>
         <div class="bottom-info"><span><span class="dot blue"></span>All dates shown in your local time · Aging uses full 24-hour days</span><span id="monitoring-count">—</span></div>
       </section>
-      <section id="inventory-section" hidden><div class="inventory-cards"><div><span>Products tracked</span><strong>—</strong></div><div><span>Units on hand</span><strong>—</strong></div><div><span>Need reordering</span><strong>—</strong></div><div><span>Out of stock</span><strong>—</strong></div></div><div class="queue-card"><div class="queue-heading"><div><h2>Inventory for <span class="selected-client-name">all clients</span></h2><p>Stock, demand, and replenishment in one view.</p></div><span class="badge">Source not connected</span></div><div class="table-scroll"><table><thead><tr><th>Product / SKU</th><th>Starting stock</th><th>Units shipped</th><th>Remaining</th><th>Daily demand</th><th>Days of cover</th><th>Reorder status</th></tr></thead><tbody><tr><td colspan="7" class="empty-cell"><strong>Your inventory view is ready for its data source</strong>Incoming stock, physical counts, and adjustments will support this view.<br>No inventory balances have been imported.</td></tr></tbody></table></div></div><div class="module-footnote">Based on the workflow in your inventory reports. Calculations and source reconciliation will be implemented in the inventory phase.</div></section>
+      <section id="inventory-section" hidden>
+        <div class="inventory-preview-bar"><div><strong>Google Sheets inventory</strong><span id="inventory-sync">Checking the connected dashboards…</span></div><button class="button secondary" id="inventory-refresh">↻ Refresh sheets</button></div>
+        <div id="inventory-error" class="error" role="alert" hidden></div>
+        <div class="inventory-cards"><div><span id="inventory-label-products">Workbooks loaded</span><strong id="inventory-products">—</strong></div><div><span id="inventory-label-remaining">Products listed</span><strong id="inventory-remaining">—</strong></div><div><span id="inventory-label-reorder">Workbooks in review</span><strong id="inventory-reorder">—</strong></div><div><span id="inventory-label-out">Source errors</span><strong id="inventory-out">—</strong></div></div>
+        <div class="queue-card"><div class="queue-heading"><div><h2>Inventory for <span class="selected-client-name">all clients</span></h2><p id="inventory-description">Values are read from each client's Dashboard tab.</p></div><span class="badge" id="inventory-status">Source values</span></div><div class="table-scroll"><table><thead><tr><th>Product / SKU</th><th>Starting stock</th><th>Units shipped</th><th>Remaining</th><th>Daily demand</th><th>Days of cover</th><th>Reorder status</th><th>Source</th></tr></thead><tbody id="inventory-rows"><tr><td colspan="8" class="empty-cell"><strong>Loading inventory sheets…</strong></td></tr></tbody></table></div></div>
+        <div class="queue-card calculated-card"><div class="queue-heading"><div><h2>Calculated inventory <span class="counter">Shadow check</span></h2><p id="calculated-description">Calculated from the ShipSidekick export and approved counts, receipts, and adjustments only. Compare it with the sheet values above.</p></div><span class="badge" id="calculated-status">Read-only</span></div><div id="calculated-error" class="error" role="alert" hidden></div><div class="table-scroll"><table><thead><tr><th>Client / SKU</th><th>Approved count</th><th>Used since</th><th>Receipts</th><th>Adjustments</th><th>Calculated</th><th>Status</th></tr></thead><tbody id="calculated-rows"><tr><td colspan="7" class="empty-cell"><strong>Not loaded</strong>Calculated inventory is switched off or still loading.</td></tr></tbody></table></div><div id="calculated-eod" class="calculated-eod"></div></div>
+        <div class="module-footnote">These are the sheets' displayed values, including pending or formula-error cells. This page does not verify, recalculate, or change inventory.</div>
+      </section>
       <section id="invoices-section" class="module-empty" hidden><div class="module-icon">▤</div><div class="eyebrow">INVOICES</div><h2>Invoices for <span class="selected-client-name">all clients</span></h2><p>This section is reserved for client invoices and billing status. No invoice source is connected yet.</p><div class="module-footnote">Your client selection stays with you across the workspace.</div></section>
     </main>
-    <footer class="footer"><strong>Shipmode operations</strong><span>One workspace. Five clients.</span></footer>
+    <footer class="footer"><strong>Shipmode operations</strong><span>One workspace. Six clients.</span></footer>
   </div>
   <dialog id="detail-dialog" class="detail-dialog"><div class="dialog-header"><span class="eyebrow">SHIPMENT DETAILS</span><button class="icon-button close-dialog" aria-label="Close shipment details">×</button></div><div id="detail-content"></div></dialog>
   <dialog id="setup-dialog"><div class="dialog-header"><span class="eyebrow">LIVE TRACKING SETUP</span><button class="icon-button close-dialog" aria-label="Close setup">×</button></div><h2>Connect your shipment data</h2><p>The workspace is ready to review. Automatic monitoring needs these connections before it can protect real shipments.</p><ol class="setup-list"><li><strong>Private access & permanent storage</strong><p>Connect a PostgreSQL database and configure your workspace sign-in. Real imports remain disabled until then.</p></li><li><strong>Import existing shipments</strong><p>Start with a ShipSidekick export mapped to the shipment template. Include every open shipment, even when its order is fulfilled.</p></li><li><strong>Connect carrier tracking updates</strong><p>Configure verified ShipSidekick tracking webhooks for each client. Test with a real label-created shipment and a shipment that has moved.</p></li></ol><div class="setup-note">Webhooks alone do not backfill old shipments. A reconciliation feed and reliable hosting are needed to catch missed updates. No email or background alerts are active yet.</div><a class="button secondary" href="/api/template.csv" download>↓ Download import template</a></dialog>
