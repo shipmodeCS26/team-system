@@ -19,6 +19,40 @@ CSV export work. Imported records and case-note writes are deliberately disabled
 Only the selected-client preference is stored in the browser. No real shipment
 or inventory data is stored there or committed to this public repository.
 
+## No Movement from the ShipSidekick export (Sheet mode)
+
+Set `SHIPMENTS_SOURCE=sheets` (with the Google Sheets settings below and sign-in)
+to fill No Movement from each client's `No Movement` tab instead of samples.
+
+How to update a client (replace, never append):
+1. In ShipSidekick, export that client's shipments (the same CSV used for Daily Sales).
+2. In the client's workbook, open the `No Movement` tab (create it once), select all,
+   delete, then paste or import the full export starting at cell A1 with its header row.
+
+The app reads only Tracking Code, Created Date, Organization, Order Name, Carrier,
+Tracking Status, Est Delivery Date, Voided and Additional Tracking Codes; names and
+addresses are never requested. It is read-only and never writes to the Sheet.
+
+Accuracy rules:
+- The export has no carrier scan times, and each status is only true when exported. All
+  ages are measured **as of the export**, taken as the start of the latest Created Date
+  in the tab (Miami time). Labels count from the end of their Created Date. Both choices
+  can only understate an age, never overstate it.
+- Only labels still `pre-transit` at export get Watch (5–6 days), Urgent (7–9) or
+  Critical (10+). Delivered and voided rows are left out of the queue.
+- In-transit, out-for-delivery, ready-for-pickup and returning shipments have no scan time,
+  so they are **Missing data** with no guessed age. When the carrier's estimated delivery
+  date had already passed at export, the row shows "Past carrier estimate by N days" and
+  the **Past estimated delivery** filter lists them.
+- Rows from another organization are left out and counted in a warning. Repeated tracking
+  codes use the last row. Labels with several packages, unreadable dates or an unknown
+  status are Missing data. A tab with no shipments is an error, not an empty queue.
+- A client without the tab shows "no No Movement tab yet"; one failing client never hides
+  the others.
+
+Do not point this at `Daily Sales` unless that whole tab is re-exported: rows appended day
+by day keep the status from the day they were added and would raise false alerts.
+
 ## Google Sheets inventory connection (not yet configured)
 
 The deployed app cannot use a desktop Google Drive connector. Give it its own

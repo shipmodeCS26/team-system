@@ -12,6 +12,7 @@ from werkzeug.security import check_password_hash
 
 from tracking import CLIENTS, classify, parse_csv, parse_date, sample_shipments, tracker_update, utcnow
 from inventory import read_dashboards
+from movement import read_movement
 from ledger_sources import calculate_clients
 
 app = Flask(__name__)
@@ -22,6 +23,11 @@ app.config.update(SECRET_KEY=os.getenv("SECRET_KEY", secrets.token_hex(32)),
 
 def live():
     return os.getenv("APP_MODE", "demo") == "live"
+
+
+def sheet_shipments():
+    """No Movement reads each client's `No Movement` tab (ShipSidekick export) instead of samples."""
+    return inventory_enabled() and os.getenv("SHIPMENTS_SOURCE", "demo").lower() == "sheets"
 
 
 def inventory_enabled():
@@ -91,6 +97,8 @@ def writable(fn):
     @wraps(fn)
     @protected
     def wrapper(*args, **kwargs):
+        if sheet_shipments():
+            return jsonify(error="Shipments come from each client's Sheet and are read-only here. Update the No Movement tab instead."), 409
         if not live():
             return jsonify(error="Sample workspace is read-only. Connect private storage and sign-in before adding real shipment data."), 409
         expected = session.get("csrf", "")
@@ -125,6 +133,18 @@ def health():
 @app.get("/api/workspace")
 @protected
 def workspace():
+    if sheet_shipments():
+        try:
+            sources = read_movement([client["id"] for client in CLIENTS])
+        except (ValueError, KeyError, json.JSONDecodeError):
+            return jsonify(error="Shipment sheet settings are invalid or incomplete. No shipment data is shown."), 503
+        shipments = []
+        for source in sources:  # never mutate: sources are shared with the read cache
+            for row in source.get("shipments", []):
+                shipments.append(dict(row, id=len(shipments) + 1))  # ids unique across clients
+        summary = [{k: v for k, v in source.items() if k != "shipments"} for source in sources]
+        return {"mode": "sheet", "clients": CLIENTS, "shipments": shipments, "sources": summary,
+                "as_of": utcnow().isoformat(), "integration": "ShipSidekick export in each client's No Movement tab"}
     if live():
         with db() as conn:
             records = [dict(record, id=identity) for identity, record in conn.execute("SELECT id,record FROM shipments ORDER BY id").fetchall()]
