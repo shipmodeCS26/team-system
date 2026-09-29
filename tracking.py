@@ -1,5 +1,6 @@
 """Carrier evidence, not fulfillment status, determines inactivity."""
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 import csv
 import io
 
@@ -12,7 +13,9 @@ CLIENTS = [
     {"id": "onset", "name": "Onset", "initials": "ON"},
 ]
 MOVEMENT = {"in_transit", "out_for_delivery", "available_for_pickup", "delivered", "return_to_sender"}
-STATUS = MOVEMENT | {"pre_transit", "unknown", "failure", "cancelled"}
+# "error" is the EasyPost/ShipSidekick status for a tracker the carrier could not look up.
+STATUS = MOVEMENT | {"pre_transit", "unknown", "failure", "cancelled", "error"}
+REPORT_ZONE = ZoneInfo("America/New_York")
 
 
 def utcnow():
@@ -30,6 +33,15 @@ def parse_date(value):
     return parsed.astimezone(timezone.utc)
 
 
+def _day_anchor(stamp, precision):
+    """A date-only report value could be any time that day: age it from the end of that
+    day in Miami time so it is never older than the shipment really is."""
+    if not stamp or precision != "report_date":
+        return stamp
+    day = stamp.date() + timedelta(days=1)
+    return datetime(day.year, day.month, day.day, tzinfo=REPORT_ZONE).astimezone(timezone.utc)
+
+
 def classify(row, now=None):
     now = now or utcnow()
     result = dict(row)
@@ -38,11 +50,15 @@ def classify(row, now=None):
     shipped = parse_date(row.get("shipped_at"))
     label = parse_date(row.get("label_created_at"))
     anchor = last_scan or shipped or label
-    days = max(0, int((now - anchor).total_seconds() // 86400)) if anchor else None
+    precision = "timestamp" if last_scan else row.get("date_precision", "timestamp")
+    age_from = _day_anchor(anchor, precision)
+    days = max(0, int((now - age_from).total_seconds() // 86400)) if age_from else None
     if status == "delivered":
         tier, reason = "delivered", "Delivery confirmed by carrier"
     elif status == "cancelled":
         tier, reason = "cancelled", "Label cancelled"
+    elif status == "error":
+        tier, reason = "data_gap", "Carrier could not track this number; check the tracking code"
     elif anchor is None:
         tier, reason = "data_gap", "Shipping date or scan history needed"
     elif not last_scan and status not in {"pre_transit"}:
@@ -50,9 +66,12 @@ def classify(row, now=None):
     else:
         tier = "critical" if days >= 10 else "urgent" if days >= 7 else "watch" if days >= 5 else "monitoring"
         reason = "Stalled after a carrier scan" if last_scan else "No carrier acceptance scan recorded"
+    if tier == "data_gap":
+        days = None  # never show, sort, or export a guessed age
     result.update(tier=tier, days=days, reason=reason,
                   anchor_at=anchor.isoformat() if anchor else None,
                   anchor_source="Last carrier movement" if last_scan else "Shipped date" if shipped else "Label created" if label else "Missing",
+                  date_precision=precision if anchor else None,
                   never_scanned=not bool(last_scan))
     return result
 
