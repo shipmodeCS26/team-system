@@ -1,6 +1,6 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null, inventorySources:null, inventoryAsOf:null, inventoryRequest:0, calculated:null, calculatedError:null};
+const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null, inventorySources:null, inventoryAsOf:null, inventoryRequest:0, calculated:null, calculatedError:null, incoming:null, incomingError:null, incomingRequest:0, incomingHistory:false};
 const PAGE_SIZE = 10;
 const tierNames = {critical:"Critical",urgent:"Urgent",watch:"Watch",monitoring:"Monitoring",delivered:"Delivered",cancelled:"Cancelled",data_gap:"Missing data"};
 const statusNames = {pre_transit:"Label created",in_transit:"In transit",out_for_delivery:"Out for delivery",available_for_pickup:"Ready for pickup",delivered:"Delivered",unknown:"Unknown",failure:"Carrier exception",return_to_sender:"Returning",cancelled:"Cancelled"};
@@ -68,6 +68,39 @@ function renderCalculated(){
   const counts=rows.reduce((m,r)=>(m[r.status]=(m[r.status]||0)+1,m),{});
   $("calculated-status").textContent=rows.length?Object.entries(counts).map(([k,v])=>`${v} ${k.toLowerCase()}`).join(" · "):"Read-only";
 }
+const incomingFlagNames={missing_boxes:"Missing boxes",receipt_not_recorded:"Receipt not recorded",needs_transfer:"Needs transfer",sku_unverified:"SKU not verified",past_expected:"Past expected date"};
+function incomingCard(group){
+  const flags=group.flags.map(f=>`<span class="badge watch">${esc(incomingFlagNames[f]||f)}</span>`).join(" ");
+  const lines=group.lines.map(l=>`<tr><td><strong>${esc(l.product||"Product not named")}</strong><small>${esc(l.sku||"SKU not set")}</small></td><td>${esc(l.units||"—")}</td><td>${esc(l.boxes_expected||"—")} / ${esc(l.boxes_received||"—")}</td><td>${esc(l.units_received||"—")}</td><td>${esc(l.status||"—")}${l.flags.length?`<small>${l.flags.map(f=>esc(incomingFlagNames[f]||f)).join(" · ")}</small>`:""}</td></tr>`).join("");
+  const first=group.lines[0]||{};
+  return `<article class="incoming-shipment"><header><div><strong>${esc(group.po)}</strong><span class="tracking">${esc(group.tracking||"No tracking number")}</span></div><div>${flags}</div></header><p class="incoming-where">${esc(first.where||"Location not recorded")}${first.expected_date?` · Expected in Miami: ${esc(first.expected_date)}`:""}</p><div class="table-scroll"><table><thead><tr><th>Product / SKU</th><th>Units expected</th><th>Boxes expected / received</th><th>Units received</th><th>Status</th></tr></thead><tbody>${lines}</tbody></table></div></article>`;
+}
+function renderIncoming(){
+  const source=state.incoming, fmt=n=>Number(n).toLocaleString();
+  $("incoming-error").hidden=!state.incomingError&&!source?.error;
+  $("incoming-error").textContent=state.incomingError||source?.error||"";
+  $("incoming-history-toggle").hidden=true;$("incoming-history").hidden=true;$("incoming-totals").innerHTML="";
+  if(state.client==="all"){$("incoming-status").textContent="Read-only";$("incoming-shipments").innerHTML='<p class="empty-cell"><strong>Select one client</strong>Incoming shipments are shown one client at a time.</p>';return}
+  if(!source||source.error){$("incoming-status").textContent="Read-only";$("incoming-shipments").innerHTML=source?"":'<p class="empty-cell"><strong>Loading incoming shipments…</strong></p>';return}
+  if(!source.available){$("incoming-status").textContent="Not available";$("incoming-shipments").innerHTML='<p class="empty-cell"><strong>No Incoming Stocks tab</strong>This client\'s workbook does not track incoming shipments yet.</p>';return}
+  $("incoming-status").textContent=`${source.shipments.length} open`;
+  $("incoming-totals").innerHTML=source.incoming_by_sku.map(t=>`<div><span>${esc(t.sku)} · ${esc(t.product)}</span><strong>${fmt(t.units)}</strong><small>incoming, not in on-hand</small></div>`).join("")+(source.unverified_lines?`<p class="incoming-note">${source.unverified_lines} line(s) have no verified SKU and are not included in these totals.</p>`:"");
+  $("incoming-shipments").innerHTML=source.shipments.length?source.shipments.map(incomingCard).join(""):'<p class="empty-cell"><strong>No open incoming shipments</strong>Everything listed in the tab is already included in the latest count.</p>';
+  $("incoming-history-toggle").hidden=!source.history.length;
+  $("incoming-history-toggle").textContent=state.incomingHistory?"Hide received history":`Show received history (${source.history.length})`;
+  $("incoming-history-toggle").setAttribute("aria-expanded",String(state.incomingHistory));
+  $("incoming-history").hidden=!state.incomingHistory;
+  $("incoming-history").innerHTML=state.incomingHistory?source.history.map(incomingCard).join(""):"";
+}
+async function loadIncoming(){
+  const request=++state.incomingRequest,client=state.client;
+  state.incoming=null;state.incomingError=null;
+  if(client==="all"){renderIncoming();return}
+  renderIncoming();
+  try{const result=await api(`/api/incoming?client_id=${encodeURIComponent(client)}`);if(request!==state.incomingRequest)return;state.incoming=result.source}
+  catch(error){if(request!==state.incomingRequest)return;state.incomingError=error.message}
+  renderIncoming();
+}
 async function loadCalculated(){
   try{const result=await api(`/api/inventory/calculated?client_id=${encodeURIComponent(state.client)}`);state.calculated=result.clients;state.calculatedError=null}
   catch(error){state.calculated=[];state.calculatedError=error.message}
@@ -82,10 +115,10 @@ async function loadInventory(){
   try{
     const result=await api(`/api/inventory?client_id=${encodeURIComponent(client)}`);
     if(request!==state.inventoryRequest)return;
-    state.inventorySources=result.sources;state.inventoryAsOf=result.as_of;renderInventory();loadCalculated();
+    state.inventorySources=result.sources;state.inventoryAsOf=result.as_of;renderInventory();loadCalculated();loadIncoming();
   }catch(error){
     if(request!==state.inventoryRequest)return;
-    state.inventorySources=[];state.inventoryAsOf=null;renderInventory();loadCalculated();
+    state.inventorySources=[];state.inventoryAsOf=null;renderInventory();loadCalculated();loadIncoming();
     $("inventory-error").textContent=error.message;$("inventory-error").hidden=false;
   }finally{if(request===state.inventoryRequest)$("inventory-refresh").disabled=false}
 }
@@ -161,6 +194,7 @@ for(const id of ["setup-button","connection-details"])$(id).addEventListener("cl
 document.querySelectorAll(".close-dialog").forEach(el=>el.addEventListener("click",()=>el.closest("dialog").close()));
 $("export-button").addEventListener("click",exportQueue);
 $("inventory-refresh").addEventListener("click",loadInventory);
+$("incoming-history-toggle").addEventListener("click",()=>{state.incomingHistory=!state.incomingHistory;renderIncoming()});
   $("import-button").addEventListener("click",()=>{if(!state.data||state.data.mode==="demo"){$("setup-dialog").showModal();return}if(state.client!=="all")$("import-client").value=state.client;$("import-result").textContent="";$("import-dialog").showModal()});
 $("confirm-import").addEventListener("click",async()=>{
   const file=$("import-file").files[0];if(!file){$("import-result").textContent="Choose a CSV file.";return}
