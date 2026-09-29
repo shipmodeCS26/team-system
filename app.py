@@ -13,6 +13,7 @@ from flask import Flask, Response, jsonify, render_template, request, session
 from werkzeug.security import check_password_hash
 
 from tracking import CLIENTS, classify, parse_csv, parse_date, sample_shipments, tracker_update, utcnow
+from daily_update import build_update
 from incoming import read_incoming
 from inventory import read_dashboards
 from ledger_sources import calculate_clients
@@ -156,6 +157,27 @@ def incoming():
     except (ValueError, KeyError, json.JSONDecodeError):
         return jsonify(error="Inventory configuration is invalid or incomplete."), 503
     return {"source": source, "as_of": utcnow().isoformat()}
+
+
+@app.get("/api/daily-update")
+@protected
+def daily_update():
+    """Draft text for one client's Slack update. Nothing is sent; staff review and copy it."""
+    if not inventory_enabled():
+        return jsonify(error="Google Sheets inventory is not connected."), 503
+    selected = request.args.get("client_id", "")
+    names = {client["id"]: client["name"] for client in CLIENTS}
+    if selected not in names:
+        return jsonify(error="Choose one client."), 400
+    try:
+        source = read_dashboards([selected])[0]
+        if source.get("error"):
+            return jsonify(error=f"{names[selected]} inventory did not load: {source['error']}"), 409
+        extra = read_incoming([selected], datetime.now(ZoneInfo("America/New_York")).date())[0]
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return jsonify(error="Inventory configuration is invalid or incomplete."), 503
+    return {**build_update(names[selected], source, None if extra.get("error") else extra),
+            "incoming_error": extra.get("error")}
 
 
 @app.get("/api/inventory/calculated")

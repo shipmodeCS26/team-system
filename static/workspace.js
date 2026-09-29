@@ -55,6 +55,7 @@ function renderInventory(){
   const problems=sources.map(s=>({s,text:s.error||[s.report_status==="REVIEW"?"Report marked REVIEW":"",...(s.warnings||[])].filter(Boolean).join(" · ")})).filter(p=>p.text);
   $("inventory-error").innerHTML=problems.map(({s,text})=>`<div class="source-problem${s.error?" failed":""}"><strong>${esc(clientName(s.id))}${s.error?" — not loaded":""}</strong> ${esc(text)}</div>`).join("");
   $("inventory-error").hidden=!problems.length;
+  updateDailyButton();
   $("inventory-sync").textContent=state.inventoryAsOf?`Checked ${date(state.inventoryAsOf,true)} · updates about every minute while this tab is open.`:"Google Sheets access is not connected yet.";
 }
 function renderCalculated(){
@@ -100,6 +101,26 @@ async function loadIncoming(){
   try{const result=await api(`/api/incoming?client_id=${encodeURIComponent(client)}`);if(request!==state.incomingRequest)return;state.incoming=result.source}
   catch(error){if(request!==state.incomingRequest)return;state.incomingError=error.message}
   renderIncoming();
+}
+async function openDailyUpdate(){
+  const button=$("daily-update-button");button.disabled=true;
+  try{
+    const result=await api(`/api/daily-update?client_id=${encodeURIComponent(state.client)}`);
+    $("update-text").value=result.text;
+    const notes=[result.draft?"The source is under review: the text starts with a DRAFT line. Check the Sheet before posting.":"",result.incoming_error?`Incoming shipments were left out: ${result.incoming_error}`:"",result.held_back?.length?`Not included because no verified SKU or quantity: ${result.held_back.join(", ")}. Check them in the Incoming panel.`:""].filter(Boolean);
+    $("update-warning").textContent=notes.join(" ");$("update-warning").hidden=!notes.length;
+    $("update-dialog").showModal();
+  }catch(error){toast(error.message)}
+  finally{updateDailyButton()}
+}
+async function copyDailyUpdate(){
+  const text=$("update-text").value;
+  try{await navigator.clipboard.writeText(text);toast("Update copied. Paste it into the client's channel.")}
+  catch{$("update-text").select();toast("Select-all is ready; press Ctrl+C (⌘C) to copy.")}
+}
+function updateDailyButton(){
+  const source=(state.inventorySources||[])[0];
+  $("daily-update-button").disabled=state.client==="all"||!source||!!source.error;
 }
 async function loadCalculated(){
   try{const result=await api(`/api/inventory/calculated?client_id=${encodeURIComponent(state.client)}`);state.calculated=result.clients;state.calculatedError=null}
@@ -194,6 +215,8 @@ for(const id of ["setup-button","connection-details"])$(id).addEventListener("cl
 document.querySelectorAll(".close-dialog").forEach(el=>el.addEventListener("click",()=>el.closest("dialog").close()));
 $("export-button").addEventListener("click",exportQueue);
 $("inventory-refresh").addEventListener("click",loadInventory);
+$("daily-update-button").addEventListener("click",openDailyUpdate);
+$("update-copy").addEventListener("click",copyDailyUpdate);
 $("incoming-history-toggle").addEventListener("click",()=>{state.incomingHistory=!state.incomingHistory;renderIncoming()});
   $("import-button").addEventListener("click",()=>{if(!state.data||state.data.mode==="demo"){$("setup-dialog").showModal();return}if(state.client!=="all")$("import-client").value=state.client;$("import-result").textContent="";$("import-dialog").showModal()});
 $("confirm-import").addEventListener("click",async()=>{
@@ -202,4 +225,4 @@ $("confirm-import").addEventListener("click",async()=>{
   $("confirm-import").disabled=true;
   try{const result=await api("/api/import",{method:"POST",body:JSON.stringify({client_id:$("import-client").value,csv:await file.text()})});$("import-result").textContent=`${result.inserted} added, ${result.updated} updated.`;await load()}catch(e){$("import-result").textContent=e.message}finally{$("confirm-import").disabled=false}
 });
-load();setInterval(()=>{if(!document.hidden && !$("detail-dialog").open && !$("import-dialog").open){load();if(state.section==="inventory")loadInventory()}},60000);
+load();setInterval(()=>{if(!document.hidden && !$("detail-dialog").open && !$("import-dialog").open && !$("update-dialog").open){load();if(state.section==="inventory")loadInventory()}},60000);
