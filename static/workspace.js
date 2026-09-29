@@ -8,14 +8,16 @@ const caseNames = {open:"Not started",investigating:"Investigating",carrier_cont
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const date = (v, full=false) => v ? new Date(v).toLocaleString(undefined, full ? {month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"} : {month:"short",day:"numeric"}) : "Not available";
 const day = v => v ? date(v+"T12:00:00") : "Not available"; // calendar dates, never shifted by time zone
-const carrierName = c => c === "fedex" ? "FedEx" : c.toUpperCase();
+const carrierKey = c => String(c||"").toLowerCase().replace(/[^a-z0-9]/g,"");
+const carrierLabels = {usps:"USPS",ups:"UPS",fedex:"FedEx",dhlecommerce:"DHL eCommerce",dhl:"DHL",dhlexpress:"DHL Express",cirroecommerce:"Cirro eCommerce",cirro:"Cirro"};
+const carrierName = c => carrierLabels[carrierKey(c)] || String(c||"Unknown carrier");
 const clientName = id => state.data?.clients.find(c=>c.id===id)?.name || id;
 const exception = r => ["watch","urgent","critical"].includes(r.tier);
 function toast(message){$("toast").textContent=message;$("toast").hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>$("toast").hidden=true,5000)}
 function clientRows(){return state.data.shipments.filter(r=>state.client==="all" || r.client_id===state.client)}
 function filtered(){
   const q=state.search.toLowerCase();
-  return clientRows().filter(r=>(state.carrier==="all" || r.carrier===state.carrier) && (!q || `${r.order_number} ${r.tracking_number} ${clientName(r.client_id)}`.toLowerCase().includes(q)))
+  return clientRows().filter(r=>(state.carrier==="all" || carrierKey(r.carrier)===state.carrier) && (!q || `${r.order_number} ${r.tracking_number} ${clientName(r.client_id)}`.toLowerCase().includes(q)))
   .filter(r=>state.filter==="all" || state.filter==="exceptions" && exception(r) || state.filter==="never" && r.never_scanned && !["delivered","cancelled"].includes(r.tier) || state.filter==="late" && r.days_past_estimate>0 || state.filter===r.tier)
   .sort((a,b)=> (a.tier==="delivered" || a.tier==="cancelled")-(b.tier==="delivered" || b.tier==="cancelled") || (b.days??-1)-(a.days??-1) || a.id-b.id);
 }
@@ -34,7 +36,7 @@ function render(){
   const start=(state.page-1)*PAGE_SIZE, page=found.slice(start,start+PAGE_SIZE);
   $("queue-total").textContent=found.length;
   $("queue-description").textContent=`${state.filter==="all"?"All shipments, oldest open cases first":"Oldest matching shipments first"} · ${state.client==="all"?"All 6 clients":clientName(state.client)}`;
-  $("shipment-rows").innerHTML=page.length?page.map(r=>`<tr><td><strong>${esc(r.order_number||"Order not linked")}</strong><small>${esc(clientName(r.client_id))}</small></td><td><span class="tracking">${esc(r.tracking_number)}</span><small>${esc(carrierName(r.carrier))} · ${esc(r.fulfillment_status)}</small></td><td><span class="badge ${esc(r.carrier_status)}">${esc(statusNames[r.carrier_status]||r.carrier_status)}</span></td><td>${r.last_movement_at?esc(date(r.last_movement_at)):"<span class=\"muted\">No scan recorded</span>"}<small>${r.last_movement_at?"Last physical scan":r.shipped_at?"Shipped "+esc(date(r.shipped_at)):r.label_created_at?"Label "+esc(r.label_date?day(r.label_date):date(r.label_created_at))+(r.date_precision==="report_date"?" · date only, counted from end of day":""):"Date needed"}</small></td><td>${["delivered","cancelled","data_gap"].includes(r.tier)?"":`<span class="age">${r.days}d</span>`}<span class="badge ${r.tier}">${tierNames[r.tier]}</span>${r.export_day&&r.days!==null?`<small>as of export ${esc(day(r.export_day))}</small>`:""}${r.days_past_estimate>0?`<small class="late-note">Past carrier estimate by ${r.days_past_estimate}d</small>`:""}</td><td><span class="badge">${esc(caseNames[r.case_status]||"Not started")}</span></td><td><button class="row-open" data-detail="${r.id}" aria-label="View shipment ${esc(r.order_number||r.tracking_number)}">↗</button></td></tr>`).join(""):`<tr><td colspan="7" class="empty-cell"><strong>No shipments match this view</strong>${rows.length?"Try another filter, search, or client store.":"Import this client's shipments after live tracking is configured."}</td></tr>`;
+  $("shipment-rows").innerHTML=page.length?page.map(r=>`<tr><td><strong>${esc(r.order_number||"Order not linked")}</strong><small>${esc(clientName(r.client_id))}</small></td><td>${trackingUrl(r)?`<a class="tracking tracking-link" href="${esc(trackingUrl(r))}" target="_blank" rel="noopener noreferrer" title="Open ${esc(carrierName(r.carrier))} tracking in a new tab">${esc(r.tracking_number)} ↗</a>`:`<span class="tracking">${esc(r.tracking_number)}</span>`}<small>${esc(carrierName(r.carrier))} · ${esc(r.fulfillment_status)}</small></td><td><span class="badge ${esc(r.carrier_status)}">${esc(statusNames[r.carrier_status]||r.carrier_status)}</span></td><td>${r.last_movement_at?esc(date(r.last_movement_at)):"<span class=\"muted\">No scan recorded</span>"}<small>${r.last_movement_at?"Last physical scan":r.shipped_at?"Shipped "+esc(date(r.shipped_at)):r.label_created_at?"Label "+esc(r.label_date?day(r.label_date):date(r.label_created_at))+(r.date_precision==="report_date"?" · date only, counted from end of day":""):"Date needed"}</small></td><td>${["delivered","cancelled","data_gap"].includes(r.tier)?"":`<span class="age">${r.days}d</span>`}<span class="badge ${r.tier}">${tierNames[r.tier]}</span>${r.export_day&&r.days!==null?`<small>as of export ${esc(day(r.export_day))}</small>`:""}${r.days_past_estimate>0?`<small class="late-note">Past carrier estimate by ${r.days_past_estimate}d</small>`:""}</td><td><span class="badge">${esc(caseNames[r.case_status]||"Not started")}</span></td><td><button class="row-open" data-detail="${r.id}" aria-label="View shipment ${esc(r.order_number||r.tracking_number)}">↗</button></td></tr>`).join(""):`<tr><td colspan="7" class="empty-cell"><strong>No shipments match this view</strong>${rows.length?"Try another filter, search, or client store.":"Import this client's shipments after live tracking is configured."}</td></tr>`;
   $("showing").textContent=found.length?`Showing ${start+1}–${Math.min(start+PAGE_SIZE,found.length)} of ${found.length} shipments`:"0 shipments";
   $("page-number").textContent=`${state.page} / ${pages}`;$("previous").disabled=state.page===1;$("next").disabled=state.page===pages;
   const deliveredCount=state.data.mode==="sheet"?(state.data.sources||[]).filter(s=>state.client==="all"||s.id===state.client).reduce((n,s)=>n+(s.delivered||0),0):rows.filter(r=>r.tier==="delivered").length;
@@ -106,9 +108,17 @@ function section(name){
   if(name==="inventory")loadInventory();
 }
 function trackingUrl(row){
-  if(state.data.mode==="demo")return null;
+  // Sample DEMO-* numbers are not real, so they never link out.
+  if(state.data.mode==="demo"||!row.tracking_number||/^DEMO-/.test(row.tracking_number))return null;
   const code=encodeURIComponent(row.tracking_number);
-  return {usps:`https://tools.usps.com/go/TrackConfirmAction?tLabels=${code}`,ups:`https://www.ups.com/track?tracknum=${code}`,fedex:`https://www.fedex.com/fedextrack/?trknbr=${code}`}[row.carrier]||null;
+  const links={usps:`https://tools.usps.com/go/TrackConfirmAction?tLabels=${code}`,
+    ups:`https://www.ups.com/track?tracknum=${code}`,
+    fedex:`https://www.fedex.com/fedextrack/?trknbr=${code}`,
+    dhlecommerce:`https://webtrack.dhlecs.com/orders?trackingNumber=${code}`,
+    dhl:`https://www.dhl.com/us-en/home/tracking/tracking-express.html?submit=1&tracking-id=${code}`,
+    dhlexpress:`https://www.dhl.com/us-en/home/tracking/tracking-express.html?submit=1&tracking-id=${code}`};
+  // Cirro has no documented direct link; 17TRACK shows Cirro's own scans. Also the fallback for other carriers.
+  return links[carrierKey(row.carrier)]||`https://t.17track.net/en#nums=${code}`;
 }
 function details(id){
   const r=state.data.shipments.find(r=>r.id===id);if(!r)return;state.selected=id;
@@ -134,6 +144,8 @@ async function load(){
       const known=new Set(state.data.clients.map(c=>c.id));
       try{const saved=localStorage.getItem("shipmode-client");if(known.has(saved)||saved==="all")state.client=saved}catch{}
       $("client-select").value=state.client;
+      const carriers=[...new Set(state.data.shipments.map(r=>carrierKey(r.carrier)).filter(Boolean))].sort();
+      $("carrier-filter").innerHTML='<option value="all">All carriers</option>'+carriers.map(k=>`<option value="${esc(k)}">${esc(carrierLabels[k]||k)}</option>`).join("");
     }
     if(state.data.mode==="sheet"){
       const sources=state.data.sources||[], days=[...new Set(sources.filter(s=>s.export_day).map(s=>s.export_day))];
