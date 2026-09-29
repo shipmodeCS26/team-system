@@ -53,6 +53,30 @@ possible products past row 39, summary errors, negative balances, and reorder
 summary mismatches are listed as warnings. Verify the six mappings and access in
 a private environment before enabling this on Render.
 
+## Staging verification
+
+`team-system-staging` (https://team-system-staging.onrender.com) is a separate
+Render service that deploys the `staging` branch. Production (`team-system`)
+deploys `main`. Staging has its own settings; never copy production passwords.
+
+1. In the staging service's Render environment, set `INVENTORY_SHEETS_ENABLED=true`,
+   `INVENTORY_SERVICE_ACCOUNT_JSON`, `INVENTORY_SHEETS_JSON`, `WORKSPACE_USER`,
+   `WORKSPACE_PASSWORD_HASH`, and `SECRET_KEY`. Generate the hash locally with
+   `python -c "from werkzeug.security import generate_password_hash as h; print(h(input('Password: ')))"`.
+2. Open staging without signing in: `/api/inventory` must return 401.
+3. Sign in, open Inventory. Every shared workbook shows an as-of date; clients
+   without a mapping show "No workbook is mapped" (`not_configured`).
+4. Edit one Dashboard cell in a shared workbook, click Refresh within a minute:
+   the new value appears (reads are cached for up to 45 seconds).
+5. Remove the service account from one workbook and Refresh: only that client
+   shows "Access denied"; the others still load. Re-share it afterwards.
+6. Release check from a machine that has the same private settings exported
+   (the free Render plan has no shell): `flask --app app check-inventory`
+   prints one line per client, `OK` with as-of date, row count, report status
+   and warnings, or `FAIL <error_code>`. It never prints stock values,
+   spreadsheet IDs, or credentials. Exit code 0 means every checked client
+   passed; limit the check with `--client muravai --client puravita`.
+
 ## Aging rules
 
 - 5–6 complete 24-hour days: Watch; 7–9: Urgent; 10 and above: Critical.
@@ -71,7 +95,7 @@ Install `requirements.txt`, then run `flask --app app run` for development.
 Render build: `pip install -r requirements.txt`.
 Render start: `gunicorn app:app --bind 0.0.0.0:$PORT`.
 Health check: `/api/health`. Auto-deploy: On Commit.
-Tests: `python -B -m unittest -v test_tracking test_inventory`.
+Tests: `python -B -m unittest -v test_tracking test_inventory test_ledger test_muravai_rules`.
 
 ## Live mode prerequisites (not activated)
 

@@ -176,3 +176,16 @@ def read_dashboards(client_ids):
                 log.warning("inventory source failed client=%s type=%s", client_id, type(error).__name__)
                 result.append({"id": client_id, "error_code": "read_failed", "error": ERRORS["read_failed"]})
         return result
+
+
+def check_report(sources):
+    """Summarize a read for release checks: status and metadata only, never stock values, IDs or credentials."""
+    lines = []
+    for source in sources:
+        if source.get("error"):
+            lines.append(f"{source['id']}: FAIL {source.get('error_code', 'read_failed')}")
+            continue
+        warnings = "; ".join(source.get("warnings") or []) or "none"
+        lines.append(f"{source['id']}: OK as_of={source.get('as_of') or 'blank'} rows={len(source.get('rows') or [])} "
+                     f"report_status={source.get('report_status')} warnings={warnings}")
+    return lines, all(not source.get("error") for source in sources)

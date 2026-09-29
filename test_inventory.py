@@ -166,6 +166,45 @@ class SourceIsolationTests(unittest.TestCase):
         self.assertEqual(result[0]["rows"][0]["remaining"], "90")
 
 
+class CheckInventoryCommandTests(unittest.TestCase):
+    """The release check prints status and metadata only: no stock values, spreadsheet IDs, or credentials."""
+    SECRET_ID = "z" * 30
+    OK = {"id": "muravai", "as_of": "22 Sep 2026", "report_status": "REVIEW", "warnings": ["Dashboard as-of date is blank"],
+          "rows": [{"product": "Filter", "remaining": "98765", "starting": "43210"}], "summary": {"on_hand": "98765"},
+          "source_url": f"https://docs.google.com/spreadsheets/d/{SECRET_ID}/edit", "fetched_at": "2026-09-29T00:00:00+00:00"}
+    FAILED = {"id": "onset", "error_code": "not_configured", "error": inventory.ERRORS["not_configured"]}
+
+    def run_check(self, sources, *args):
+        with patch("app.read_dashboards", return_value=sources) as reader:
+            result = app.test_cli_runner().invoke(args=["check-inventory", *args])
+        return result, reader
+
+    def test_output_is_metadata_only(self):
+        result, _ = self.run_check([self.OK, self.FAILED])
+        self.assertIn("muravai: OK as_of=22 Sep 2026 rows=1 report_status=REVIEW", result.output)
+        self.assertIn("onset: FAIL not_configured", result.output)
+        for private in ("98765", "43210", "Filter", self.SECRET_ID, "docs.google.com", "private_key"):
+            self.assertNotIn(private, result.output)
+
+    def test_exit_code_gates_release(self):
+        self.assertEqual(self.run_check([self.OK])[0].exit_code, 0)
+        self.assertEqual(self.run_check([self.OK, self.FAILED])[0].exit_code, 1)
+
+    def test_client_option_limits_and_validates(self):
+        result, reader = self.run_check([self.OK], "--client", "muravai")
+        reader.assert_called_once_with(["muravai"])
+        self.assertEqual(result.exit_code, 0)
+        result, reader = self.run_check([self.OK], "--client", "acme")
+        self.assertEqual(result.exit_code, 2)
+        reader.assert_not_called()
+
+    def test_missing_settings_fail_without_detail(self):
+        with patch.dict("os.environ", {"INVENTORY_SHEETS_JSON": "", "INVENTORY_SERVICE_ACCOUNT_JSON": ""}):
+            result = app.test_cli_runner().invoke(args=["check-inventory"])
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn("Inventory settings are missing or invalid", result.output)
+
+
 class InventoryApiTests(unittest.TestCase):
     def setUp(self):
         self.client = app.test_client()
