@@ -37,6 +37,27 @@ def review_reasons(source: dict) -> list[str]:
     return reasons + list(source.get("warnings") or [])
 
 
+def incoming_lines(incoming: dict | None) -> tuple[list[str], list[str]]:
+    """Client-facing lines for open incoming shipments, and the POs held back for internal review."""
+    listed, held_back = [], []
+    if not (incoming and incoming.get("available") and incoming.get("shipments")):
+        return listed, held_back
+    for group in incoming["shipments"]:
+        items = "; ".join(f"{line['product']} {line['units']}" for line in group["lines"]
+                          if line.get("product") and "sku_unverified" not in line["flags"]
+                          and parse_int(line.get("units")) is not None)
+        if not items:
+            held_back.append(group["po"])  # internal review item, not client-facing
+            continue
+        first = group["lines"][0]
+        details = "; ".join(text for text in (first.get("where"), f"Expected in Miami: {first['expected_date']}"
+                                              if first.get("expected_date") else "") if text)
+        flags = [INCOMING_FLAGS[flag] for flag in group["flags"] if flag in INCOMING_FLAGS]
+        listed.append(f"• {group['po']}: {items}" + (f". {details}" if details else "")
+                      + (f". Needs attention: {', '.join(flags)}" if flags else "") + ".")
+    return listed, held_back
+
+
 def build_update(client_name: str, source: dict, incoming: dict | None = None) -> dict:
     rows = source.get("rows") or []
     lines = []
@@ -60,24 +81,9 @@ def build_update(client_name: str, source: dict, incoming: dict | None = None) -
         demand = f" at the Sheet's current daily demand of {row['demand']}/day" if row.get("demand") else ""
         lines.append(f"Earliest to run out: {row['product']} ({_cover_text(row['cover'])}{demand}). This is an estimate.")
 
-    held_back = []
-    if incoming and incoming.get("available") and incoming.get("shipments"):
-        listed = []
-        for group in incoming["shipments"]:
-            items = "; ".join(f"{line['product']} {line['units']}" for line in group["lines"]
-                              if line.get("product") and "sku_unverified" not in line["flags"]
-                              and parse_int(line.get("units")) is not None)
-            if not items:
-                held_back.append(group["po"])  # internal review item, not client-facing
-                continue
-            first = group["lines"][0]
-            details = "; ".join(text for text in (first.get("where"), f"Expected in Miami: {first['expected_date']}"
-                                                  if first.get("expected_date") else "") if text)
-            flags = [INCOMING_FLAGS[flag] for flag in group["flags"] if flag in INCOMING_FLAGS]
-            listed.append(f"• {group['po']}: {items}" + (f". {details}" if details else "")
-                          + (f". Needs attention: {', '.join(flags)}" if flags else "") + ".")
-        if listed:
-            lines += ["", "Incoming, not yet in stock:", *listed]
+    listed, held_back = incoming_lines(incoming)
+    if listed:
+        lines += ["", "Incoming, not yet in stock:", *listed]
 
     lines += ["", "Please let us know of any incoming inventory so we can reflect it in planning. Thank you!"]
     return {"text": "\n".join(lines), "draft": bool(reasons), "held_back": held_back}
