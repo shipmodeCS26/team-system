@@ -53,6 +53,25 @@ possible products past row 39, summary errors, negative balances, and reorder
 summary mismatches are listed as warnings. Verify the six mappings and access in
 a private environment before enabling this on Render.
 
+## Incoming shipments (read-only)
+
+With one client selected, the Inventory tab shows open shipments from that
+client's `Incoming Stocks` tab (`/api/incoming?client_id=…`, signed in).
+Only these headers are read: PO (Every Row), Tracking (Every Row), Product
+(Report Name), Verified SKU, Verified Inventory Units, Status, Forecast
+Treatment, Boxes Expected, Boxes Received, Units Received, Received Date, Where
+It Is Now, Expected in Miami. A missing header shows `incoming_layout` for that
+client only; a workbook without the tab shows "not available".
+
+Rows marked `INCLUDED IN LATEST COUNT` are received history (hidden by default,
+never flagged). Other rows are grouped by PO and tracking number and flagged:
+missing boxes (received date set, boxes received < expected), receipt not
+recorded (status arrived/delivered, boxes received blank), needs transfer, SKU
+not verified, and past expected date (nothing received). Incoming totals per
+SKU use verified open rows only and are never added to on-hand or to the
+calculated panel. Flags change no numbers; receiving entry needs approved
+receipt rules first.
+
 ## Aging rules
 
 - 5–6 complete 24-hour days: Watch; 7–9: Urgent; 10 and above: Critical.
