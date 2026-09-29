@@ -40,23 +40,35 @@ def inventory_ready():
     return all(os.getenv(k) for k in ("INVENTORY_SHEETS_JSON", "INVENTORY_SERVICE_ACCOUNT_JSON", "WORKSPACE_USER", "WORKSPACE_PASSWORD_HASH", "SECRET_KEY"))
 
 
+SCHEMA = ("""CREATE TABLE IF NOT EXISTS shipments (
+            id BIGSERIAL PRIMARY KEY, client_id TEXT NOT NULL,
+            carrier TEXT NOT NULL, tracking_number TEXT NOT NULL,
+            record JSONB NOT NULL, UNIQUE(client_id, carrier, tracking_number))""",
+          """CREATE TABLE IF NOT EXISTS tracking_events (
+            client_id TEXT NOT NULL, event_id TEXT NOT NULL,
+            received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY(client_id,event_id))""")
+_schema_ready = False
+
+
 def db():
+    """Connect to PostgreSQL, creating the tables on first use (Render's free plan has no shell for init-db)."""
+    global _schema_ready
     import psycopg
-    return psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=10)
+    conn = psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=10)
+    if not _schema_ready:
+        with conn.transaction():
+            for statement in SCHEMA:
+                conn.execute(statement)
+        _schema_ready = True
+    return conn
 
 
 @app.cli.command("init-db")
 def init_db():
-    """Run once against the configured persistent PostgreSQL database."""
-    with db() as conn:
-        conn.execute("""CREATE TABLE IF NOT EXISTS shipments (
-            id BIGSERIAL PRIMARY KEY, client_id TEXT NOT NULL,
-            carrier TEXT NOT NULL, tracking_number TEXT NOT NULL,
-            record JSONB NOT NULL, UNIQUE(client_id, carrier, tracking_number))""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS tracking_events (
-            client_id TEXT NOT NULL, event_id TEXT NOT NULL,
-            received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            PRIMARY KEY(client_id,event_id))""")
+    """Optional: create the tables ahead of time. db() also does this on first use."""
+    with db():
+        pass
     print("Workspace tables ready.")
 
 

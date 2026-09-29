@@ -84,7 +84,7 @@ Tests: `python -B -m unittest -v test_tracking test_inventory`.
    Owner must enter their own authentication credential. This version uses one
    HTTPS Basic-auth workspace login; it does not implement separate staff roles.
    Add appropriate rate limiting/SSO before a broader staff rollout.
-3. Run `flask --app app init-db` once in the target environment. Verify the database
+3. Tables are created automatically on the first database request (Render's free plan has no shell); `flask --app app init-db` does the same ahead of time. Verify the database
    backup/restore policy and persistence across deploys before importing real data.
 4. Set `APP_MODE=live`. Missing access/storage settings cause the live app to fail
    closed. Browser write requests additionally require a session CSRF token.

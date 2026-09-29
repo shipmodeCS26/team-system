@@ -160,3 +160,20 @@ class AppTests(unittest.TestCase):
 
 if __name__=="__main__":
     unittest.main()
+
+
+class SchemaTests(unittest.TestCase):
+    def test_tables_created_once_without_a_shell(self):
+        import app as app_module
+        from unittest.mock import MagicMock
+        app_module._schema_ready = False
+        self.addCleanup(setattr, app_module, "_schema_ready", False)
+        conn = MagicMock()
+        with patch.dict("os.environ", {"DATABASE_URL": "postgresql://example"}), \
+                patch("psycopg.connect", return_value=conn) as connect:
+            app_module.db()
+            app_module.db()
+        self.assertEqual(connect.call_count, 2)
+        created = [c.args[0] for c in conn.execute.call_args_list]
+        self.assertEqual(len(created), 2)
+        self.assertTrue(all("CREATE TABLE IF NOT EXISTS" in sql for sql in created))
