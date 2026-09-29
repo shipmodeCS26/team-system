@@ -7,11 +7,12 @@ import os
 import secrets
 from functools import wraps
 
+import click
 from flask import Flask, Response, jsonify, render_template, request, session
 from werkzeug.security import check_password_hash
 
 from tracking import CLIENTS, classify, parse_csv, parse_date, sample_shipments, tracker_update, utcnow
-from inventory import read_dashboards
+from inventory import check_report, read_dashboards
 from ledger_sources import calculate_clients
 
 app = Flask(__name__)
@@ -58,6 +59,26 @@ def init_db():
             received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             PRIMARY KEY(client_id,event_id))""")
     print("Workspace tables ready.")
+
+
+@app.cli.command("check-inventory")
+@click.option("--client", "clients", multiple=True, help="Client ID to check; repeat for several. Default: all clients.")
+def check_inventory(clients):
+    """Read each client's Dashboard once and print pass/fail per client. Exits 1 if any checked client fails."""
+    import sys
+    known = [client["id"] for client in CLIENTS]
+    unknown = sorted(set(clients) - set(known))
+    if unknown:
+        print(f"Unknown client: {', '.join(unknown)}. Known: {', '.join(known)}.")
+        sys.exit(2)
+    try:
+        sources = read_dashboards(list(clients) or known)
+    except (ValueError, KeyError, json.JSONDecodeError):
+        print("Inventory settings are missing or invalid: INVENTORY_SHEETS_JSON, INVENTORY_SERVICE_ACCOUNT_JSON.")
+        sys.exit(2)
+    lines, passed = check_report(sources)
+    print("\n".join(lines))
+    sys.exit(0 if passed else 1)
 
 
 def protected(fn):
