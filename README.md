@@ -19,6 +19,49 @@ CSV export work. Imported records and case-note writes are deliberately disabled
 Only the selected-client preference is stored in the browser. No real shipment
 or inventory data is stored there or committed to this public repository.
 
+## No Movement from the ShipSidekick export (Sheet mode)
+
+Set `SHIPMENTS_SOURCE=sheets` (with the Google Sheets settings below and sign-in)
+to fill No Movement from ShipSidekick exports in Google Sheets instead of samples.
+
+Where the export is read from:
+- If `MOVEMENT_SHEET_ID` is set (private Render setting), one shared workbook such as
+  "Shipment Movement Report 2026", with one tab per client: `ClarityMD`, `Fascial Labs`,
+  `Muravai`, `NeuroSmile`, `Pure Vita`, `Onset`. Share it with the service account as Viewer.
+- Otherwise, a `No Movement` tab in each client's inventory workbook.
+
+How to update a client (replace, never append):
+1. In ShipSidekick, export that client's shipments (the same CSV used for Daily Sales).
+2. Open the client's tab, select all, delete, then paste or import the full export
+   starting at cell A1 with its header row.
+
+ShipSidekick writes PuraVita's Organization as "PureVita"; both spellings are accepted.
+
+The app reads only Tracking Code, Created Date, Organization, Order Name, Carrier,
+Tracking Status, Est Delivery Date, Voided and Additional Tracking Codes; names and
+addresses are never requested. It is read-only and never writes to the Sheet.
+
+Accuracy rules:
+- The export has no carrier scan times, and each status is only true when exported. All
+  ages are measured **as of the export**, taken as the start of the latest Created Date
+  in the tab (Miami time). Labels count from the end of their Created Date. Both choices
+  can only understate an age, never overstate it.
+- Only labels still `pre-transit` at export get Watch (5–6 days), Urgent (7–9) or
+  Critical (10+). Delivered and voided rows are left out of the queue.
+- In-transit, out-for-delivery, ready-for-pickup and returning shipments have no scan time,
+  so they get no guessed age. When the carrier's estimated delivery date had already passed
+  at export, the row is listed under **Needs attention** as "Past carrier estimate" with the
+  days late (approved by Gly 2026-09-30), and the **Past estimated delivery** filter lists
+  them. Otherwise they are **Missing data**.
+- Rows from another organization are left out and counted in a warning. Repeated tracking
+  codes use the last row. Labels with several packages, unreadable dates or an unknown
+  status are Missing data. A tab with no shipments is an error, not an empty queue.
+- A client without a tab shows "no export tab yet"; one failing client never hides
+  the others.
+
+Do not point this at `Daily Sales` unless that whole tab is re-exported: rows appended day
+by day keep the status from the day they were added and would raise false alerts.
+
 ## Google Sheets inventory connection (not yet configured)
 
 The deployed app cannot use a desktop Google Drive connector. Give it its own
@@ -84,7 +127,7 @@ Tests: `python -B -m unittest -v test_tracking test_inventory`.
    Owner must enter their own authentication credential. This version uses one
    HTTPS Basic-auth workspace login; it does not implement separate staff roles.
    Add appropriate rate limiting/SSO before a broader staff rollout.
-3. Run `flask --app app init-db` once in the target environment. Verify the database
+3. Tables are created automatically on the first database request (Render's free plan has no shell); `flask --app app init-db` does the same ahead of time. Verify the database
    backup/restore policy and persistence across deploys before importing real data.
 4. Set `APP_MODE=live`. Missing access/storage settings cause the live app to fail
    closed. Browser write requests additionally require a session CSRF token.

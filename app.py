@@ -12,6 +12,7 @@ from werkzeug.security import check_password_hash
 
 from tracking import CLIENTS, classify, parse_csv, parse_date, sample_shipments, tracker_update, utcnow
 from inventory import read_dashboards
+from movement import read_movement
 from ledger_sources import calculate_clients
 
 app = Flask(__name__)
@@ -22,6 +23,11 @@ app.config.update(SECRET_KEY=os.getenv("SECRET_KEY", secrets.token_hex(32)),
 
 def live():
     return os.getenv("APP_MODE", "demo") == "live"
+
+
+def sheet_shipments():
+    """No Movement reads each client's `No Movement` tab (ShipSidekick export) instead of samples."""
+    return inventory_enabled() and os.getenv("SHIPMENTS_SOURCE", "demo").lower() == "sheets"
 
 
 def inventory_enabled():
@@ -40,23 +46,35 @@ def inventory_ready():
     return all(os.getenv(k) for k in ("INVENTORY_SHEETS_JSON", "INVENTORY_SERVICE_ACCOUNT_JSON", "WORKSPACE_USER", "WORKSPACE_PASSWORD_HASH", "SECRET_KEY"))
 
 
+SCHEMA = ("""CREATE TABLE IF NOT EXISTS shipments (
+            id BIGSERIAL PRIMARY KEY, client_id TEXT NOT NULL,
+            carrier TEXT NOT NULL, tracking_number TEXT NOT NULL,
+            record JSONB NOT NULL, UNIQUE(client_id, carrier, tracking_number))""",
+          """CREATE TABLE IF NOT EXISTS tracking_events (
+            client_id TEXT NOT NULL, event_id TEXT NOT NULL,
+            received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY(client_id,event_id))""")
+_schema_ready = False
+
+
 def db():
+    """Connect to PostgreSQL, creating the tables on first use (Render's free plan has no shell for init-db)."""
+    global _schema_ready
     import psycopg
-    return psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=10)
+    conn = psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=10)
+    if not _schema_ready:
+        with conn.transaction():
+            for statement in SCHEMA:
+                conn.execute(statement)
+        _schema_ready = True
+    return conn
 
 
 @app.cli.command("init-db")
 def init_db():
-    """Run once against the configured persistent PostgreSQL database."""
-    with db() as conn:
-        conn.execute("""CREATE TABLE IF NOT EXISTS shipments (
-            id BIGSERIAL PRIMARY KEY, client_id TEXT NOT NULL,
-            carrier TEXT NOT NULL, tracking_number TEXT NOT NULL,
-            record JSONB NOT NULL, UNIQUE(client_id, carrier, tracking_number))""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS tracking_events (
-            client_id TEXT NOT NULL, event_id TEXT NOT NULL,
-            received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            PRIMARY KEY(client_id,event_id))""")
+    """Optional: create the tables ahead of time. db() also does this on first use."""
+    with db():
+        pass
     print("Workspace tables ready.")
 
 
@@ -79,6 +97,8 @@ def writable(fn):
     @wraps(fn)
     @protected
     def wrapper(*args, **kwargs):
+        if sheet_shipments():
+            return jsonify(error="Shipments come from each client's Sheet and are read-only here. Update the export in the Sheet instead."), 409
         if not live():
             return jsonify(error="Sample workspace is read-only. Connect private storage and sign-in before adding real shipment data."), 409
         expected = session.get("csrf", "")
@@ -113,6 +133,18 @@ def health():
 @app.get("/api/workspace")
 @protected
 def workspace():
+    if sheet_shipments():
+        try:
+            sources = read_movement([client["id"] for client in CLIENTS])
+        except (ValueError, KeyError, json.JSONDecodeError):
+            return jsonify(error="Shipment sheet settings are invalid or incomplete. No shipment data is shown."), 503
+        shipments = []
+        for source in sources:  # never mutate: sources are shared with the read cache
+            for row in source.get("shipments", []):
+                shipments.append(dict(row, id=len(shipments) + 1))  # ids unique across clients
+        summary = [{k: v for k, v in source.items() if k != "shipments"} for source in sources]
+        return {"mode": "sheet", "clients": CLIENTS, "shipments": shipments, "sources": summary,
+                "as_of": utcnow().isoformat(), "integration": "ShipSidekick export in Google Sheets"}
     if live():
         with db() as conn:
             records = [dict(record, id=identity) for identity, record in conn.execute("SELECT id,record FROM shipments ORDER BY id").fetchall()]
