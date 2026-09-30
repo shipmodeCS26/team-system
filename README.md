@@ -49,9 +49,10 @@ Accuracy rules:
 - Only labels still `pre-transit` at export get Watch (5–6 days), Urgent (7–9) or
   Critical (10+). Delivered and voided rows are left out of the queue.
 - In-transit, out-for-delivery, ready-for-pickup and returning shipments have no scan time,
-  so they are **Missing data** with no guessed age. When the carrier's estimated delivery
-  date had already passed at export, the row shows "Past carrier estimate by N days" and
-  the **Past estimated delivery** filter lists them.
+  so they get no guessed age. When the carrier's estimated delivery date had already passed
+  at export, the row is listed under **Needs attention** as "Past carrier estimate" with the
+  days late (approved by Gly 2026-09-30), and the **Past estimated delivery** filter lists
+  them. Otherwise they are **Missing data**.
 - Rows from another organization are left out and counted in a warning. Repeated tracking
   codes use the last row. Labels with several packages, unreadable dates or an unknown
   status are Missing data. A tab with no shipments is an error, not an empty queue.

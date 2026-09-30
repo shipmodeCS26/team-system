@@ -96,6 +96,7 @@ td,.metric strong,.inventory-cards strong{font-variant-numeric:tabular-nums}
 /* No Movement from the Sheet export */
 .source-status{border:1.5px solid var(--sm-navy);background:var(--sm-sky-soft);border-radius:10px;padding:12px 15px;margin:15px 0;font-size:14px;line-height:1.5}
 .late-note{color:var(--urgent);font-weight:600}
+.badge.late{background:#fff1e7;color:var(--urgent)}
 
 /* Calculated inventory (shadow check) */
 .calculated-card{margin-top:24px}

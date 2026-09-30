@@ -60,8 +60,8 @@ class ParseExportTests(unittest.TestCase):
         transit = self.by["TRANSIT"]
         self.assertEqual(transit["tier"], "data_gap")
         self.assertIsNone(transit["days"])
+        self.assertIn("no carrier scan time", self.by["OFD"]["reason"])  # not late: plain missing data
         self.assertEqual(transit["days_past_estimate"], 14)
-        self.assertIn("no carrier scan time", transit["reason"])
         self.assertIsNone(self.by["OFD"]["days_past_estimate"])
 
     def test_delivered_voided_and_other_clients_excluded(self):
@@ -95,6 +95,12 @@ class ParseExportTests(unittest.TestCase):
         result = parse_export("muravai", columns([row("A", "9/18/26", "pre-transit"), row("B", "09/29/2026", "delivered")]))
         self.assertEqual(result["shipments"][0]["days"], 10)
 
+
+    def test_in_transit_past_estimate_explains_why_it_needs_attention(self):
+        self.assertEqual(self.by["TRANSIT"]["days_past_estimate"], 14)
+        self.assertIn("14 days after the carrier's estimated delivery", self.by["TRANSIT"]["reason"])
+        self.assertIsNone(self.by["TRANSIT"]["days"])  # still no guessed scan age
+        self.assertIsNone(self.by["OFD"]["days_past_estimate"])
 
     def test_puravita_export_spelled_purevita_is_kept(self):
         # Real ShipSidekick exports label this client "PureVita"

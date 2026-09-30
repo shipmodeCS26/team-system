@@ -121,6 +121,9 @@ def parse_export(client_id: str, columns: dict[str, list]) -> dict:
                           reason="Several packages on one label; check each tracking code in ShipSidekick")
         eta = parse_day(row["estimated_delivery"])
         result["days_past_estimate"] = (export_day - eta).days if eta and eta < export_day else None
+        if result["days_past_estimate"] and result["tier"] == "data_gap" and status in MOVEMENT and not row.get("additional"):
+            result["reason"] = (f"{STATUS_WORDS.get(status, status)} at export, {result['days_past_estimate']} days after "
+                                "the carrier's estimated delivery; check the latest scans")
         shipments.append(result)
 
     if other_org:
