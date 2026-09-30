@@ -1,4 +1,8 @@
-"""No Movement from a ShipSidekick export pasted into each client's `No Movement` tab (read-only).
+"""No Movement from a ShipSidekick export (read-only).
+
+Source: either one movement workbook (`MOVEMENT_SHEET_ID`, one tab per client, like the
+Shipment Movement Report) or, when that is not set, a `No Movement` tab in each client's
+inventory workbook. Either way the tab holds a full, replaced export.
 
 The export has carrier status but no scan timestamps, and each status is only true at the
 moment the export was taken. So every age here is measured *as of the export*, never
@@ -16,6 +20,7 @@ Only the columns below are requested; customer names and addresses are never rea
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -23,11 +28,14 @@ from datetime import date, datetime, timedelta
 
 from inventory import ERRORS as SHEET_ERRORS, SHEET_ID, SourceError, source_config
 from ledger_sources import SheetReader, column_letter, parse_day
-from tracking import CLIENTS, MOVEMENT, REPORT_ZONE, STATUS, classify
+from tracking import MOVEMENT, REPORT_ZONE, STATUS, classify, organization_matches
 
 log = logging.getLogger(__name__)
-TAB = "'No Movement'"
-LAST_ROW = 20000
+TAB = "No Movement"
+# Tab names in the shared movement workbook (Shipment Movement Report 2026)
+WORKBOOK_TABS = {"claritymd": "ClarityMD", "fascial-labs": "Fascial Labs", "muravai": "Muravai",
+                 "nuerosmile": "NeuroSmile", "puravita": "Pure Vita", "onset": "Onset"}
+LAST_ROW = 80000
 CACHE_SECONDS = 120
 COLUMNS = {
     "tracking_number": "Tracking Code", "created": "Created Date", "organization": "Organization",
@@ -36,9 +44,9 @@ COLUMNS = {
 }
 OPTIONAL = {"additional": "Additional Tracking Codes"}
 ERRORS = {**SHEET_ERRORS,
-          "movement_layout": "The No Movement tab is missing a ShipSidekick export column (Tracking Code, "
+          "movement_layout": "The shipment export tab is missing a ShipSidekick export column (Tracking Code, "
                              "Created Date, Organization, Order Name, Carrier, Tracking Status, Est Delivery Date, Voided).",
-          "movement_empty": "The No Movement tab has no shipments. Paste the latest full ShipSidekick export."}
+          "movement_empty": "The shipment export tab has no shipments. Paste the latest full ShipSidekick export."}
 STATUS_WORDS = {"in_transit": "In transit", "out_for_delivery": "Out for delivery",
                 "available_for_pickup": "Ready for pickup", "return_to_sender": "Returning to sender"}
 _cache = {}
@@ -49,13 +57,8 @@ def _start_of(day: date) -> datetime:
     return datetime(day.year, day.month, day.day, tzinfo=REPORT_ZONE)
 
 
-def _normalize(value: str) -> str:
-    return "".join(c.lower() for c in value if c.isalnum())
-
-
 def parse_export(client_id: str, columns: dict[str, list]) -> dict:
     """Build classified shipments from column cells. Pure function: no network, no clock."""
-    name = next(c["name"] for c in CLIENTS if c["id"] == client_id)
     length = max((len(column) for column in columns.values()), default=0)
     raw = []
     for i in range(length):
@@ -72,7 +75,7 @@ def parse_export(client_id: str, columns: dict[str, list]) -> dict:
     latest = {}
     duplicates = 0
     for row in raw:
-        if row["organization"] and _normalize(row["organization"]) != _normalize(name):
+        if row["organization"] and not organization_matches(client_id, row["organization"]):
             other_org += 1  # never show another client's shipment
             continue
         key = (row["tracking_number"], row["carrier"].lower())
@@ -132,13 +135,14 @@ def parse_export(client_id: str, columns: dict[str, list]) -> dict:
             "shipments": shipments, "delivered": delivered, "cancelled": cancelled, "warnings": warnings}
 
 
-def _read_one(client_id: str, sheet_id: str, credentials: dict) -> dict:
+def _read_one(client_id: str, sheet_id: str, tab: str, credentials: dict) -> dict:
+    tab = "'" + tab.replace("'", "''") + "'"
     with _lock:
-        cached = _cache.get((client_id, sheet_id))
+        cached = _cache.get((client_id, sheet_id, tab))
         if cached and time.monotonic() - cached[0] < CACHE_SECONDS:
             return cached[1]
     reader = SheetReader(sheet_id, credentials)
-    header = (reader.batch([f"{TAB}!1:1"], optional=True)[0] or [[]])[0]
+    header = (reader.batch([f"{tab}!1:1"], optional=True)[0] or [[]])[0]
     if not header:
         result = {"id": client_id, "available": False}
     else:
@@ -147,21 +151,25 @@ def _read_one(client_id: str, sheet_id: str, credentials: dict) -> dict:
             raise SourceError("movement_layout")
         wanted = {**COLUMNS, **{k: v for k, v in OPTIONAL.items() if v in positions}}
         letters = {key: column_letter(positions[name]) for key, name in wanted.items()}
-        blocks = reader.batch([f"{TAB}!{letter}2:{letter}{LAST_ROW}" for letter in letters.values()])
+        blocks = reader.batch([f"{tab}!{letter}2:{letter}{LAST_ROW}" for letter in letters.values()])
         result = {"available": True, **parse_export(client_id, dict(zip(letters, blocks)))}
     with _lock:
-        _cache[(client_id, sheet_id)] = (time.monotonic(), result)
+        _cache[(client_id, sheet_id, tab)] = (time.monotonic(), result)
     return result
 
 
 def read_movement(client_ids: list[str]) -> list[dict]:
     """Each client is read separately; one failure never hides another."""
     sources, credentials = source_config()
+    workbook = os.getenv("MOVEMENT_SHEET_ID", "").strip()
+    if workbook:  # one shared workbook, one tab per client
+        targets = {cid: (workbook, WORKBOOK_TABS[cid]) for cid in client_ids if SHEET_ID.fullmatch(workbook)}
+    else:
+        targets = {cid: (sources[cid], TAB) for cid in client_ids
+                   if isinstance(sources.get(cid), str) and SHEET_ID.fullmatch(sources[cid])}
     out = []
     with ThreadPoolExecutor(max_workers=max(1, min(6, len(client_ids)))) as pool:
-        futures = {cid: pool.submit(_read_one, cid, sources[cid], credentials)
-                   for cid in client_ids
-                   if isinstance(sources.get(cid), str) and SHEET_ID.fullmatch(sources[cid])}
+        futures = {cid: pool.submit(_read_one, cid, sheet, tab, credentials) for cid, (sheet, tab) in targets.items()}
         for cid in client_ids:
             if cid not in futures:
                 out.append({"id": cid, "error_code": "not_configured", "error": ERRORS["not_configured"]})

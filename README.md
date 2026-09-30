@@ -22,12 +22,20 @@ or inventory data is stored there or committed to this public repository.
 ## No Movement from the ShipSidekick export (Sheet mode)
 
 Set `SHIPMENTS_SOURCE=sheets` (with the Google Sheets settings below and sign-in)
-to fill No Movement from each client's `No Movement` tab instead of samples.
+to fill No Movement from ShipSidekick exports in Google Sheets instead of samples.
+
+Where the export is read from:
+- If `MOVEMENT_SHEET_ID` is set (private Render setting), one shared workbook such as
+  "Shipment Movement Report 2026", with one tab per client: `ClarityMD`, `Fascial Labs`,
+  `Muravai`, `NeuroSmile`, `Pure Vita`, `Onset`. Share it with the service account as Viewer.
+- Otherwise, a `No Movement` tab in each client's inventory workbook.
 
 How to update a client (replace, never append):
 1. In ShipSidekick, export that client's shipments (the same CSV used for Daily Sales).
-2. In the client's workbook, open the `No Movement` tab (create it once), select all,
-   delete, then paste or import the full export starting at cell A1 with its header row.
+2. Open the client's tab, select all, delete, then paste or import the full export
+   starting at cell A1 with its header row.
+
+ShipSidekick writes PuraVita's Organization as "PureVita"; both spellings are accepted.
 
 The app reads only Tracking Code, Created Date, Organization, Order Name, Carrier,
 Tracking Status, Est Delivery Date, Voided and Additional Tracking Codes; names and
@@ -47,7 +55,7 @@ Accuracy rules:
 - Rows from another organization are left out and counted in a warning. Repeated tracking
   codes use the last row. Labels with several packages, unreadable dates or an unknown
   status are Missing data. A tab with no shipments is an error, not an empty queue.
-- A client without the tab shows "no No Movement tab yet"; one failing client never hides
+- A client without a tab shows "no export tab yet"; one failing client never hides
   the others.
 
 Do not point this at `Daily Sales` unless that whole tab is re-exported: rows appended day

@@ -98,7 +98,7 @@ def writable(fn):
     @protected
     def wrapper(*args, **kwargs):
         if sheet_shipments():
-            return jsonify(error="Shipments come from each client's Sheet and are read-only here. Update the No Movement tab instead."), 409
+            return jsonify(error="Shipments come from each client's Sheet and are read-only here. Update the export in the Sheet instead."), 409
         if not live():
             return jsonify(error="Sample workspace is read-only. Connect private storage and sign-in before adding real shipment data."), 409
         expected = session.get("csrf", "")
@@ -144,7 +144,7 @@ def workspace():
                 shipments.append(dict(row, id=len(shipments) + 1))  # ids unique across clients
         summary = [{k: v for k, v in source.items() if k != "shipments"} for source in sources]
         return {"mode": "sheet", "clients": CLIENTS, "shipments": shipments, "sources": summary,
-                "as_of": utcnow().isoformat(), "integration": "ShipSidekick export in each client's No Movement tab"}
+                "as_of": utcnow().isoformat(), "integration": "ShipSidekick export in Google Sheets"}
     if live():
         with db() as conn:
             records = [dict(record, id=identity) for identity, record in conn.execute("SELECT id,record FROM shipments ORDER BY id").fetchall()]

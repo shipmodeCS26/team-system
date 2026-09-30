@@ -96,6 +96,48 @@ class ParseExportTests(unittest.TestCase):
         self.assertEqual(result["shipments"][0]["days"], 10)
 
 
+    def test_puravita_export_spelled_purevita_is_kept(self):
+        # Real ShipSidekick exports label this client "PureVita"
+        result = parse_export("puravita", columns([row("P1", "09/20/2026", "pre-transit", org="PureVita"),
+                                                   row("X", "09/29/2026", "pre-transit", org="Muravai")]))
+        self.assertEqual([s["tracking_number"] for s in result["shipments"]], ["P1"])
+        self.assertEqual(result["shipments"][0]["tier"], "urgent")  # end Sep 20 -> start Sep 29 = 8 days
+
+    def test_real_tracking_number_is_returned_unchanged(self):
+        result = parse_export("muravai", columns([row("420191169261290400221975160442", "09/20/2026", "pre-transit")]))
+        self.assertEqual(result["shipments"][0]["tracking_number"], "420191169261290400221975160442")
+
+
+class SourceRoutingTests(unittest.TestCase):
+    CREDS = {"type": "service_account"}
+
+    def run_read(self, env):
+        calls = []
+
+        def fake(cid, sheet, tab, credentials):
+            calls.append((cid, sheet, tab))
+            return {"id": cid, "available": True, "shipments": []}
+        base = {"INVENTORY_SHEETS_JSON": json.dumps({"muravai": "a" * 44, "puravita": "b" * 44}),
+                "INVENTORY_SERVICE_ACCOUNT_JSON": json.dumps(self.CREDS)}
+        with patch.dict("os.environ", {**base, **env}, clear=False), patch("movement._read_one", side_effect=fake):
+            out = movement.read_movement(["muravai", "puravita", "onset"])
+        return calls, out
+
+    def test_shared_workbook_uses_one_tab_per_client(self):
+        calls, out = self.run_read({"MOVEMENT_SHEET_ID": "c" * 44})
+        self.assertEqual(sorted(calls), [("muravai", "c" * 44, "Muravai"), ("onset", "c" * 44, "Onset"),
+                                         ("puravita", "c" * 44, "Pure Vita")])
+        self.assertEqual([o["id"] for o in out], ["muravai", "puravita", "onset"])
+
+    def test_without_shared_workbook_each_client_workbook_is_used(self):
+        with patch.dict("os.environ", {}, clear=False):
+            import os
+            os.environ.pop("MOVEMENT_SHEET_ID", None)
+            calls, out = self.run_read({})
+        self.assertEqual(sorted(calls), [("muravai", "a" * 44, "No Movement"), ("puravita", "b" * 44, "No Movement")])
+        self.assertEqual(out[2]["error_code"], "not_configured")
+
+
 class SheetModeApiTests(unittest.TestCase):
     ENV = {"INVENTORY_SHEETS_ENABLED": "true", "SHIPMENTS_SOURCE": "sheets", "INVENTORY_SHEETS_JSON": "{}",
            "INVENTORY_SERVICE_ACCOUNT_JSON": "{}", "WORKSPACE_USER": "owner", "SECRET_KEY": "test-secret",

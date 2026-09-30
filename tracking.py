@@ -12,6 +12,17 @@ CLIENTS = [
     {"id": "puravita", "name": "PuraVita", "initials": "PV"},
     {"id": "onset", "name": "Onset", "initials": "ON"},
 ]
+# Other spellings ShipSidekick uses for a client's Organization (seen in real exports).
+ORGANIZATION_ALIASES = {"puravita": ["PureVita"]}
+
+
+def _org_key(value: str) -> str:
+    return "".join(c.lower() for c in value if c.isalnum())
+
+
+def organization_matches(client_id: str, organization: str) -> bool:
+    names = [next(c["name"] for c in CLIENTS if c["id"] == client_id), *ORGANIZATION_ALIASES.get(client_id, [])]
+    return _org_key(organization) in {_org_key(n) for n in names}
 MOVEMENT = {"in_transit", "out_for_delivery", "available_for_pickup", "delivered", "return_to_sender"}
 # "error" is the EasyPost/ShipSidekick status for a tracker the carrier could not look up.
 STATUS = MOVEMENT | {"pre_transit", "unknown", "failure", "cancelled", "error"}
@@ -92,9 +103,7 @@ def parse_csv(text, client_id):
         raw = {k: (v or "").strip() for k, v in raw.items()}
         if native:
             organization = raw.get("Organization", "")
-            normalize = lambda value: "".join(c.lower() for c in value if c.isalnum())
-            expected_name = next(c["name"] for c in CLIENTS if c["id"] == client_id)
-            if organization and normalize(organization) != normalize(expected_name):
+            if organization and not organization_matches(client_id, organization):
                 raise ValueError("Row %s belongs to %s, not the selected client. Export one client at a time." % (line, organization))
             created = raw.get("Created Date", "")
             if created and "/" in created:
