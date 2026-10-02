@@ -10,39 +10,51 @@ adds notes to orders, products, or inventory. The app enforces this three ways:
 3. The code can only send a fixed list of read queries; anything else is
    blocked before it leaves the server (`shopify_source.py`, tested in `test_shopify.py`).
 
-## What the client does (about 10 minutes)
+## What the client does (about 10 minutes, store owner)
 
-Shopify has been changing where store owners create apps (from **Settings →
-Apps and sales channels → Develop apps** to the **Shopify Dev Dashboard**).
-Confirm the current steps in Shopify's help center before sending these.
+Since January 1, 2026 Shopify no longer lets stores create new "custom apps" in
+the admin. New apps are made in the **Shopify Dev Dashboard** and give a
+**Client ID + Client secret**, not a permanent token. ShipMode exchanges them
+for a read token that Shopify expires every 24 hours; the app renews it
+automatically. Screen names below may differ slightly; confirm against
+Shopify's help center before sending.
 
-1. Create an app named **ShipMode (read-only)**.
-2. Grant these Admin API access scopes and **no others**:
+1. The **store owner** signs in to the Shopify Dev Dashboard with the same
+   Shopify account/organization that owns the store. (The client-credentials
+   method only works when the app and the store belong to the same organization.)
+2. Create an app named **ShipMode (read-only)**.
+3. In the app's configuration/version, select these Admin API access scopes
+   and **no others**:
    - `read_products`: SKU mapping check (Issue #12, required)
    - `read_inventory`: inventory comparison (later Issues)
    - `read_orders`: No Movement and daily order checks (Issues #13, #14)
    - `read_customers`: reship address check (Issue #13)
    Shipping addresses and names are also "protected customer data". Shopify may
    ask the app to request that access level separately.
-3. Install the app on the store.
-4. Send ShipMode, through a private channel (a password manager share, not
-   Slack, email, or chat in plain text), **one** of:
-   - the Admin API access token (`shpat_…`), or
-   - the app's Client ID and Client secret (ShipMode then requests a
-     short-lived token each day using Shopify's client-credentials grant).
-5. Send the store's `.myshopify.com` domain (not the public website domain).
+4. Release the version, then **install the app on the store**.
+5. Send ShipMode, through a password-manager share (never Slack, email, or chat
+   in plain text): the **Client ID**, the **Client secret**, and the store's
+   `.myshopify.com` domain (not the public website domain).
+
+If the store already has an older admin-created custom app for ShipMode, its
+Admin API token (`shpat_…`) still works and can be sent instead.
+
+If Shopify refuses the client-credentials exchange for this store (for example
+`shop_not_permitted`), the fallback is a ShipMode-owned app the client installs
+by link (OAuth). That needs an install/callback route that is **not built yet**
+and would be its own Issue.
 
 ## What ShipMode does (Render private environment, never Git)
 
 ```
 SHOPIFY_ENABLED=true
-SHOPIFY_STORES_JSON={"muravai": {"shop": "<store>.myshopify.com", "token": "<shpat_…>"}}
-```
-
-or, with client credentials:
-
-```
 SHOPIFY_STORES_JSON={"muravai": {"shop": "<store>.myshopify.com", "client_id": "…", "client_secret": "…"}}
+```
+
+or, for an older admin-created app with a fixed token:
+
+```
+SHOPIFY_STORES_JSON={"muravai": {"shop": "<store>.myshopify.com", "token": "<shpat_…>"}}
 ```
 
 Keys are the existing client IDs: `claritymd`, `fascial-labs`, `muravai`,
