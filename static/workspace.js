@@ -1,6 +1,6 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null, inventorySources:null, inventoryAsOf:null, inventoryRequest:0, calculated:null, calculatedError:null};
+const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null, inventorySources:null, inventoryAsOf:null, inventoryRequest:0, calculated:null, calculatedError:null, shopify:null, shopifyError:null};
 const PAGE_SIZE = 10;
 const tierNames = {critical:"Critical",urgent:"Urgent",watch:"Watch",monitoring:"Monitoring",delivered:"Delivered",cancelled:"Cancelled",data_gap:"Missing data"};
 const statusNames = {pre_transit:"Label created",in_transit:"In transit",out_for_delivery:"Out for delivery",available_for_pickup:"Ready for pickup",delivered:"Delivered",unknown:"Unknown",failure:"Carrier exception",return_to_sender:"Returning",cancelled:"Cancelled"};
@@ -73,6 +73,32 @@ async function loadCalculated(){
   catch(error){state.calculated=[];state.calculatedError=error.message}
   renderCalculated();
 }
+function shopifyRows(){return (state.shopify||[]).filter(c=>!c.error).flatMap(c=>c.variants.map(r=>({...r,client:c.client_id})))}
+function renderShopify(){
+  const clients=state.shopify||[], rows=shopifyRows();
+  const badge={mapped:"delivered",component:"in_transit",unmapped:"critical",no_rules:"data_gap"};
+  $("shopify-rows").innerHTML=rows.length?rows.map(r=>`<tr><td><strong>${esc(r.product)}${r.variant&&r.variant!=="Default Title"?" · "+esc(r.variant):""}</strong><small>${esc(clientName(r.client))} · ${esc(r.product_status.toLowerCase())}</small></td><td>${r.sku?esc(r.sku):'<span class="muted">blank</span>'}</td><td>${r.internal_sku?`<strong>${esc(r.internal_sku)}</strong><small>${esc(r.label)}</small>`:"—"}</td><td class="inventory-source"><span class="badge ${badge[r.status]||""}">${esc(r.status_text)}</span><small>${esc(r.how)}</small></td><td class="inventory-source">${r.flag_text.length?r.flag_text.map(t=>`<small class="finding">${esc(t)}</small>`).join(""):'<small>OK</small>'}</td></tr>`).join(""):'<tr><td colspan="5" class="empty-cell"><strong>No Shopify products</strong>'+esc(state.shopifyError||"No connected store returned products.")+'</td></tr>';
+  const problems=clients.filter(c=>c.error).map(c=>`<div class="source-problem failed"><strong>${esc(clientName(c.client_id))} — not loaded</strong> ${esc(c.error)}</div>`)
+    .concat(clients.filter(c=>!c.error).flatMap(c=>(c.warnings||[]).map(w=>`<div class="source-problem"><strong>${esc(clientName(c.client_id))}</strong> ${esc(w)}</div>`)));
+  $("shopify-error").innerHTML=problems.join("");$("shopify-error").hidden=!problems.length;
+  const stateText={found:"In Shopify",inactive:"Only on draft/archived products",missing:"Not found in Shopify"};
+  $("shopify-rules").innerHTML=clients.filter(c=>!c.error).map(c=>`<div class="eod-card"><strong>${esc(clientName(c.client_id))} — rules ${esc(c.rule_status.toLowerCase())}</strong><span>${c.summary.mapped} mapped · ${c.summary.unmapped} not mapped · ${c.summary.flagged} with checks · ${c.summary.variants} variants</span>${c.rules.length?c.rules.map(r=>`<small class="${r.state==="found"?"":"finding"}">${esc(r.internal_sku)} ${esc(r.label)}: ${esc(stateText[r.state])}</small>`).join(""):"<small>No rule package for this client yet; nothing can be mapped.</small>"}</div>`).join("");
+  const review=clients.filter(c=>!c.error).reduce((n,c)=>n+c.summary.needs_review,0);
+  $("shopify-status").textContent=state.shopify===null?"Not loaded":clients.some(c=>!c.error)?(review?`${review} to review`:"All mapped"):"Not connected";
+  $("shopify-export").disabled=!rows.length;
+}
+async function loadShopify(){
+  try{const result=await api(`/api/shopify/sku-check?client_id=${encodeURIComponent(state.client)}`);state.shopify=result.clients;state.shopifyError=null}
+  catch(error){state.shopify=[];state.shopifyError=error.message}
+  renderShopify();
+}
+function exportShopify(){
+  const rows=shopifyRows();if(!rows.length)return;
+  const cell=v=>'"'+String(v??"").replace(/^[=+@\-\t\r]/,"'$&").replace(/"/g,'""')+'"';
+  const data=[["client","shopify_product","shopify_variant","product_status","shopify_sku","internal_sku","mapping","how","checks"],...rows.map(r=>[clientName(r.client),r.product,r.variant,r.product_status,r.sku,r.internal_sku,r.status_text,r.how,r.flag_text.join("; ")])];
+  const url=URL.createObjectURL(new Blob([data.map(row=>row.map(cell).join(",")).join("\r\n")],{type:"text/csv;charset=utf-8"}));
+  const a=document.createElement("a");a.href=url;a.download="shipmode-shopify-sku-mapping.csv";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
 async function loadInventory(){
   if(!state.data)return;
   const request=++state.inventoryRequest,client=state.client;
@@ -82,10 +108,10 @@ async function loadInventory(){
   try{
     const result=await api(`/api/inventory?client_id=${encodeURIComponent(client)}`);
     if(request!==state.inventoryRequest)return;
-    state.inventorySources=result.sources;state.inventoryAsOf=result.as_of;renderInventory();loadCalculated();
+    state.inventorySources=result.sources;state.inventoryAsOf=result.as_of;renderInventory();loadCalculated();loadShopify();
   }catch(error){
     if(request!==state.inventoryRequest)return;
-    state.inventorySources=[];state.inventoryAsOf=null;renderInventory();loadCalculated();
+    state.inventorySources=[];state.inventoryAsOf=null;renderInventory();loadCalculated();loadShopify();
     $("inventory-error").textContent=error.message;$("inventory-error").hidden=false;
   }finally{if(request===state.inventoryRequest)$("inventory-refresh").disabled=false}
 }
@@ -161,6 +187,7 @@ for(const id of ["setup-button","connection-details"])$(id).addEventListener("cl
 document.querySelectorAll(".close-dialog").forEach(el=>el.addEventListener("click",()=>el.closest("dialog").close()));
 $("export-button").addEventListener("click",exportQueue);
 $("inventory-refresh").addEventListener("click",loadInventory);
+$("shopify-export").addEventListener("click",exportShopify);
   $("import-button").addEventListener("click",()=>{if(!state.data||state.data.mode==="demo"){$("setup-dialog").showModal();return}if(state.client!=="all")$("import-client").value=state.client;$("import-result").textContent="";$("import-dialog").showModal()});
 $("confirm-import").addEventListener("click",async()=>{
   const file=$("import-file").files[0];if(!file){$("import-result").textContent="Choose a CSV file.";return}

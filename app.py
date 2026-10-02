@@ -13,6 +13,8 @@ from werkzeug.security import check_password_hash
 from tracking import CLIENTS, classify, parse_csv, parse_date, sample_shipments, tracker_update, utcnow
 from inventory import read_dashboards
 from ledger_sources import calculate_clients
+import shopify_source
+import sku_check
 
 app = Flask(__name__)
 app.config.update(SECRET_KEY=os.getenv("SECRET_KEY", secrets.token_hex(32)),
@@ -40,6 +42,10 @@ def inventory_ready():
     return all(os.getenv(k) for k in ("INVENTORY_SHEETS_JSON", "INVENTORY_SERVICE_ACCOUNT_JSON", "WORKSPACE_USER", "WORKSPACE_PASSWORD_HASH", "SECRET_KEY"))
 
 
+def shopify_ready():
+    return all(os.getenv(k) for k in ("SHOPIFY_STORES_JSON", "WORKSPACE_USER", "WORKSPACE_PASSWORD_HASH", "SECRET_KEY"))
+
+
 def db():
     import psycopg
     return psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=10)
@@ -63,11 +69,13 @@ def init_db():
 def protected(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if live() or inventory_enabled():
+        if live() or inventory_enabled() or shopify_source.enabled():
             if live() and not ready():
                 return jsonify(error="Live workspace is not configured. No shipment data is exposed."), 503
             if inventory_enabled() and not inventory_ready():
                 return jsonify(error="Inventory access is not configured."), 503
+            if shopify_source.enabled() and not shopify_ready():
+                return jsonify(error="Shopify access is not configured."), 503
             auth = request.authorization
             if not auth or auth.username != os.getenv("WORKSPACE_USER") or not check_password_hash(os.getenv("WORKSPACE_PASSWORD_HASH", ""), auth.password or ""):
                 return Response("Sign in to your Shipmode workspace.", 401, {"WWW-Authenticate": 'Basic realm="Shipmode workspace", charset="UTF-8"'})
@@ -154,6 +162,35 @@ def calculated_inventory():
                 "as_of": utcnow().isoformat(), "writes": "disabled"}
     except (ValueError, KeyError, json.JSONDecodeError):
         return jsonify(error="Inventory configuration is invalid or incomplete."), 503
+
+
+@app.get("/api/shopify/sku-check")
+@protected
+def shopify_sku_check():
+    """Read-only Shopify catalog vs. each client's own SKU rules. Never writes to Shopify."""
+    if not shopify_source.enabled():
+        return jsonify(error="Shopify is not connected."), 503
+    selected = request.args.get("client_id", "all")
+    client_ids = [client["id"] for client in CLIENTS]
+    if selected != "all" and selected not in client_ids:
+        return jsonify(error="Unknown client."), 400
+    try:
+        catalogs = shopify_source.read_catalogs(client_ids if selected == "all" else [selected])
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return jsonify(error="Shopify configuration is invalid or incomplete."), 503
+    clients = []
+    for catalog in catalogs:
+        if "error_code" in catalog:
+            clients.append({"client_id": catalog["id"], "error_code": catalog["error_code"], "error": catalog["error"]})
+            continue
+        result = sku_check.check(catalog["id"], catalog["variants"])
+        warnings = []
+        if catalog["truncated"]:
+            warnings.append(f"Store has more than {shopify_source.PAGE_SIZE * shopify_source.MAX_PAGES:,} variants; the rest were not checked.")
+        if catalog["missing_scopes"]:
+            warnings.append("Not granted yet (needed for later order checks): " + ", ".join(catalog["missing_scopes"]))
+        clients.append(dict(result, warnings=warnings, fetched_at=catalog["fetched_at"]))
+    return {"clients": clients, "as_of": utcnow().isoformat(), "writes": "disabled"}
 
 
 @app.get("/api/template.csv")
