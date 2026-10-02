@@ -53,6 +53,71 @@ possible products past row 39, summary errors, negative balances, and reorder
 summary mismatches are listed as warnings. Verify the six mappings and access in
 a private environment before enabling this on Render.
 
+## Incoming shipments (read-only)
+
+With one client selected, the Inventory tab shows open shipments from that
+client's `Incoming Stocks` tab (`/api/incoming?client_id=…`, signed in).
+Only these headers are read: PO (Every Row), Tracking (Every Row), Product
+(Report Name), Verified SKU, Verified Inventory Units, Status, Forecast
+Treatment, Boxes Expected, Boxes Received, Units Received, Received Date, Where
+It Is Now, Expected in Miami. A missing header shows `incoming_layout` for that
+client only; a workbook without the tab shows "not available".
+
+Rows marked `INCLUDED IN LATEST COUNT` are received history (hidden by default,
+never flagged). Other rows are grouped by PO and tracking number and flagged:
+missing boxes (received date set, boxes received < expected), receipt not
+recorded (status arrived/delivered, boxes received blank), needs transfer, SKU
+not verified, and past expected date (nothing received). Incoming totals per
+SKU use verified open rows only and are never added to on-hand or to the
+calculated panel. Flags change no numbers; receiving entry needs approved
+receipt rules first.
+
+## Daily update draft (nothing is sent)
+
+With one client selected and its Dashboard loaded, **Copy daily update** opens
+a review dialog with Slack-ready text built from the displayed Sheet values
+(`/api/daily-update?client_id=…`, signed in): one line per product with units,
+days of cover, and reorder status; products out of stock now; the earliest
+product to run out (an estimate at the Sheet's daily demand); and open incoming
+shipments with their flags. A REVIEW report or any warning puts a
+`DRAFT (source under review)` line first. Incoming shipments without a verified
+SKU or quantity are left out of the text and named in the dialog. The app has no
+Slack access; staff copy the text and post it themselves.
+
+## Standard EOD report (issue #9; nothing is sent)
+
+Every client gets the same report, in the same order: **Inventory, Forecast,
+Incoming, Alerts, Actions needed, Data status**. Every value is restated from
+that client's own Sheet Dashboard, which is the official number. Nothing is
+recalculated (`eod_report.py`).
+
+- **Cross-check (`eod_check.py`):** the ShipSidekick CSV for the Dashboard's
+  as-of date is recounted with that client's own rules (`client_rules.py`). The
+  result is compared with the Sheet's shipped-on-date for each product.
+  - It matches: **VERIFIED**, and the report can be sent.
+  - Any gap, unknown or unapproved item, duplicate, another client's row, Sheet
+    REVIEW status or Dashboard warning: **REVIEW**.
+  - No CSV for the date: **INCOMPLETE**. The only exception is a day confirmed
+    as no shipments, which passes only when the Sheet also shows 0.
+  - A report that isn't VERIFIED starts with `HOLD, DO NOT SEND` and its reasons.
+- **Dashboard image (`dashboard_image.py`):** a PNG drawn from the same read
+  as the text, so both always show the same values and as-of date.
+- **Slack draft (`slack_draft.py`):** channel text for that client only. The
+  client → channel map comes from private `CLIENT_CHANNELS_JSON`, for example
+  `{"puravita": "C…"}`. There is no send code; `send` is always false.
+- **In the app:** `POST /api/eod-report` (signed in, CSRF token) with
+  `{"client_id", "csv", "csv_name", "no_shipments_confirmed"}`. It returns the
+  report, the draft, and the image as a data URI.
+- **From files:** `python eod_cli.py <client> --dashboard values.json
+  [--csv export.csv | --no-shipments-confirmed] --out <folder outside the repo>`.
+  - `values.json` is that client's raw `Dashboard!A1:S39` values.
+  - It exits with 0 only when the report is ready to send.
+
+Open business rules are held and never guessed:
+
+- Fascial Labs `FASCSUPPx2` and `FAC3XBDL` lines.
+- The Neurosmile Pill Carrier.
+
 ## Aging rules
 
 - 5–6 complete 24-hour days: Watch; 7–9: Urgent; 10 and above: Critical.
@@ -71,7 +136,7 @@ Install `requirements.txt`, then run `flask --app app run` for development.
 Render build: `pip install -r requirements.txt`.
 Render start: `gunicorn app:app --bind 0.0.0.0:$PORT`.
 Health check: `/api/health`. Auto-deploy: On Commit.
-Tests: `python -B -m unittest -v test_tracking test_inventory`.
+Tests: `python -B -m unittest -v test_tracking test_inventory test_ledger test_muravai_rules test_incoming test_daily_update test_eod_report`.
 
 ## Live mode prerequisites (not activated)
 

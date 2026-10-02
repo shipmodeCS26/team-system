@@ -1,0 +1,166 @@
+import base64
+import json
+import unittest
+from datetime import date
+from unittest.mock import patch
+
+from werkzeug.security import generate_password_hash
+
+import incoming
+from app import app
+from incoming import COLUMNS, parse_incoming
+
+KEYS = list(COLUMNS)
+TODAY = date(2026, 9, 29)
+
+
+def line(po, tracking, product, sku, units, status, treatment, boxes_expected="", boxes_received="",
+         units_received="", received_date="", where="", expected_date=""):
+    return dict(zip(KEYS, [po, tracking, product, sku, units, status, treatment, boxes_expected, boxes_received,
+                           units_received, received_date, where, expected_date]))
+
+
+def columns(rows):
+    """Shape rows like the Sheets API column reads: one list of [cell] per requested column."""
+    return {key: [[row[key]] if row[key] else [] for row in rows] for key in KEYS}
+
+
+ROWS = [
+    line("PO22", "YT2620209300105262", "Replacement Filters, 3-Pack", "MUR001", "", "Arrived in warehouse",
+         "INCLUDED IN LATEST COUNT"),
+    line("PO7", "YT2535900600300512U001", "Nozzle", "MUR002", "", "Arrived in warehouse", "REVIEW — NOT COUNTED"),
+    line("PO23", "YT2624709300301957", "Filtered Showerhead", "MUR002", "2,880", "In Transit", "NOT ARRIVED", "48",
+         where="In delivery, 88/89 boxes", expected_date="09/29/2026"),
+    line("PO23", "YT2624709300301957", "Replacement Filters, 3-Pack", "MUR001", "9,000", "In Transit", "NOT ARRIVED", "15",
+         where="In delivery, 88/89 boxes", expected_date="09/29/2026"),
+    line("PO24", "YT2624709300301932", "Replacement Filters, 3-Pack", "MUR001", "9000", "Needs transfer to Miami",
+         "NOT ARRIVED", "15", where="Delivered Sep 25 to Utah", expected_date="Transfer not booked"),
+    line("PO25", "YT2626709300102890", "Replacement Filters, 3-Pack", "MUR001", "8400", "In Transit", "NOT ARRIVED", "14",
+         where="At sea"),
+    line("PO26", "YT0000000000000001", "Filtered Showerhead", "MUR002", "600", "Arrived in warehouse", "NOT ARRIVED",
+         "10", "8", "480", "09/28/2026", expected_date="09/20/2026"),
+]
+
+
+class ParseIncomingTests(unittest.TestCase):
+    def setUp(self):
+        self.result = parse_incoming(columns(ROWS), TODAY)
+        self.by_po = {group["po"]: group for group in self.result["shipments"]}
+
+    def test_groups_open_shipments_and_separates_history(self):
+        self.assertEqual(list(self.by_po), ["PO7", "PO23", "PO24", "PO25", "PO26"])
+        self.assertEqual([group["po"] for group in self.result["history"]], ["PO22"])
+        self.assertEqual(len(self.by_po["PO23"]["lines"]), 2)
+        self.assertEqual(self.by_po["PO23"]["lines"][0]["boxes_expected"], "48")
+
+    def test_incoming_totals_use_verified_open_lines_only(self):
+        totals = {row["sku"]: row["units"] for row in self.result["incoming_by_sku"]}
+        self.assertEqual(totals, {"MUR001": 9000 + 9000 + 8400, "MUR002": 2880 + 600})
+        self.assertEqual(self.result["unverified_lines"], 1)
+
+    def test_flags(self):
+        self.assertEqual(self.by_po["PO24"]["flags"], ["needs_transfer"])
+        self.assertEqual(self.by_po["PO7"]["flags"], ["receipt_not_recorded", "sku_unverified"])
+        self.assertEqual(self.by_po["PO26"]["flags"], ["missing_boxes"])
+        self.assertEqual(self.by_po["PO23"]["flags"], [])  # expected today, not past
+        self.assertEqual(self.by_po["PO25"]["flags"], [])
+        self.assertEqual(self.result["history"][0]["flags"], [])  # counted rows are not flagged
+
+    def test_past_expected_only_when_nothing_received(self):
+        late = line("PO9", "T", "Filtered Showerhead", "MUR002", "10", "In Transit", "NOT ARRIVED", "1",
+                    expected_date="09/20/2026")
+        self.assertEqual(parse_incoming(columns([late]), TODAY)["shipments"][0]["flags"], ["past_expected"])
+
+    def test_full_receipt_is_not_flagged_missing(self):
+        full = line("PO9", "T", "Filtered Showerhead", "MUR002", "10", "In Transit", "NOT ARRIVED", "4", "4", "10",
+                    "09/28/2026")
+        self.assertEqual(parse_incoming(columns([full]), TODAY)["shipments"][0]["flags"], [])
+
+    def test_values_are_not_rewritten(self):
+        self.assertEqual(self.by_po["PO23"]["lines"][0]["units"], "2,880")
+
+
+class FakeReader:
+    header = [list(COLUMNS.values()) + ["Box Details"]]
+
+    def __init__(self, sheet_id, credentials):
+        self.requested = []
+
+    def batch(self, ranges, optional=False):
+        if ranges == ["'Incoming Stocks'!1:1"]:
+            return [self.header]
+        FakeReader.last_ranges = ranges
+        blocks = columns(ROWS)
+        return [blocks[key] for key in KEYS]
+
+
+class ReadIncomingTests(unittest.TestCase):
+    def setUp(self):
+        incoming._cache.clear()
+        self.addCleanup(incoming._cache.clear)
+        env = patch.dict("os.environ", {
+            "INVENTORY_SHEETS_JSON": json.dumps({"muravai": "m" * 30, "puravita": "p" * 30, "onset": "bad"}),
+            "INVENTORY_SERVICE_ACCOUNT_JSON": json.dumps({"type": "service_account"})})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_reads_only_listed_columns(self):
+        with patch("incoming.SheetReader", FakeReader):
+            result = incoming.read_incoming(["muravai"], TODAY)[0]
+        self.assertTrue(result["available"])
+        self.assertEqual(len(FakeReader.last_ranges), len(COLUMNS))
+        self.assertNotIn("N2", " ".join(FakeReader.last_ranges))  # Box Details column is never requested
+
+    def test_missing_tab_changed_header_and_missing_mapping_are_per_client(self):
+        class NoTab(FakeReader):
+            def batch(self, ranges, optional=False):
+                return [[]]
+
+        class Changed(FakeReader):
+            header = [["PO (Every Row)", "Status"]]
+
+        readers = {"m" * 30: NoTab, "p" * 30: Changed}
+        with patch("incoming.SheetReader", lambda sheet_id, creds: readers[sheet_id](sheet_id, creds)), \
+                self.assertLogs("incoming", "WARNING") as logs:
+            result = {row["id"]: row for row in incoming.read_incoming(["muravai", "puravita", "onset"], TODAY)}
+        self.assertEqual(result["muravai"], {"id": "muravai", "available": False})
+        self.assertEqual(result["puravita"]["error_code"], "incoming_layout")
+        self.assertEqual(result["onset"]["error_code"], "not_configured")
+        self.assertNotIn("p" * 30, " ".join(logs.output))
+
+
+class IncomingApiTests(unittest.TestCase):
+    ENV = {"INVENTORY_SHEETS_ENABLED": "true", "INVENTORY_SHEETS_JSON": "{}", "INVENTORY_SERVICE_ACCOUNT_JSON": "{}",
+           "WORKSPACE_USER": "owner", "SECRET_KEY": "test-secret",
+           "WORKSPACE_PASSWORD_HASH": generate_password_hash("test-password", method="pbkdf2:sha256")}
+    AUTH = {"Authorization": "Basic " + base64.b64encode(b"owner:test-password").decode()}
+
+    def setUp(self):
+        self.client = app.test_client()
+
+    def test_requires_sign_in_and_one_known_client(self):
+        with patch.dict("os.environ", self.ENV):
+            self.assertEqual(self.client.get("/api/incoming?client_id=muravai").status_code, 401)
+            for bad in ("", "all", "acme"):
+                self.assertEqual(self.client.get(f"/api/incoming?client_id={bad}", headers=self.AUTH).status_code, 400)
+            with patch("app.read_incoming", return_value=[{"id": "muravai", "available": False}]) as reader:
+                response = self.client.get("/api/incoming?client_id=muravai", headers=self.AUTH)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(reader.call_args[0][0], ["muravai"])
+
+    def test_disabled_inventory_exposes_nothing(self):
+        with patch.dict("os.environ", {"INVENTORY_SHEETS_ENABLED": "false"}):
+            self.assertEqual(self.client.get("/api/incoming?client_id=muravai").status_code, 503)
+
+    def test_incoming_does_not_change_dashboard_values(self):
+        dashboard = [{"id": "muravai", "rows": [{"product": "Filters", "remaining": "12"}], "summary": {"on_hand": "12"}}]
+        with patch.dict("os.environ", self.ENV), patch("app.read_dashboards", return_value=dashboard), \
+                patch("app.read_incoming", return_value=[parse_incoming(columns(ROWS), TODAY) | {"id": "muravai"}]):
+            self.client.get("/api/incoming?client_id=muravai", headers=self.AUTH)
+            response = self.client.get("/api/inventory?client_id=muravai", headers=self.AUTH).get_json()
+        self.assertEqual(response["sources"][0]["rows"][0]["remaining"], "12")
+        self.assertEqual(response["sources"][0]["summary"]["on_hand"], "12")
+
+
+if __name__ == "__main__":
+    unittest.main()

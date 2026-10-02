@@ -1,3 +1,4 @@
+import base64
 import csv
 import hashlib
 import hmac
@@ -5,12 +6,20 @@ import io
 import json
 import os
 import secrets
+from datetime import datetime
 from functools import wraps
+from zoneinfo import ZoneInfo
 
 from flask import Flask, Response, jsonify, render_template, request, session
 from werkzeug.security import check_password_hash
 
 from tracking import CLIENTS, classify, parse_csv, parse_date, sample_shipments, tracker_update, utcnow
+from daily_update import build_update
+from dashboard_image import render_png
+from eod_check import check as eod_check
+from eod_report import build_report
+from slack_draft import draft as slack_draft
+from incoming import read_incoming
 from inventory import read_dashboards
 from ledger_sources import calculate_clients
 
@@ -137,6 +146,87 @@ def inventory():
                 "as_of": utcnow().isoformat()}
     except (ValueError, KeyError, json.JSONDecodeError):
         return jsonify(error="Inventory configuration is invalid or incomplete."), 503
+
+
+@app.get("/api/incoming")
+@protected
+def incoming():
+    """Read-only incoming shipments for one client. Incoming units are never added to on-hand."""
+    if not inventory_enabled():
+        return jsonify(error="Google Sheets inventory is not connected."), 503
+    selected = request.args.get("client_id", "")
+    if selected not in {client["id"] for client in CLIENTS}:
+        return jsonify(error="Choose one client."), 400
+    try:
+        source = read_incoming([selected], datetime.now(ZoneInfo("America/New_York")).date())[0]
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return jsonify(error="Inventory configuration is invalid or incomplete."), 503
+    return {"source": source, "as_of": utcnow().isoformat()}
+
+
+@app.get("/api/daily-update")
+@protected
+def daily_update():
+    """Draft text for one client's Slack update. Nothing is sent; staff review and copy it."""
+    if not inventory_enabled():
+        return jsonify(error="Google Sheets inventory is not connected."), 503
+    selected = request.args.get("client_id", "")
+    names = {client["id"]: client["name"] for client in CLIENTS}
+    if selected not in names:
+        return jsonify(error="Choose one client."), 400
+    try:
+        source = read_dashboards([selected])[0]
+        if source.get("error"):
+            return jsonify(error=f"{names[selected]} inventory did not load: {source['error']}"), 409
+        extra = read_incoming([selected], datetime.now(ZoneInfo("America/New_York")).date())[0]
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return jsonify(error="Inventory configuration is invalid or incomplete."), 503
+    return {**build_update(names[selected], source, None if extra.get("error") else extra),
+            "incoming_error": extra.get("error")}
+
+
+def csrf_checked(fn):
+    """Signed-in POST that changes nothing stored, but still needs the page's CSRF token."""
+    @wraps(fn)
+    @protected
+    def wrapper(*args, **kwargs):
+        expected = session.get("csrf", "")
+        if not expected or not hmac.compare_digest(expected, request.headers.get("X-CSRF-Token", "")):
+            return jsonify(error="Refresh the workspace and try again."), 403
+        return fn(*args, **kwargs)
+    return wrapper
+
+
+@app.post("/api/eod-report")
+@csrf_checked
+def eod_report():
+    """Standard EOD report for one client: Sheet values, CSV cross-check, dashboard image, Slack draft.
+
+    Reads only that client's Sheet. Nothing is stored or sent; the draft is for a person to review.
+    """
+    if not inventory_enabled():
+        return jsonify(error="Google Sheets inventory is not connected."), 503
+    body = request.get_json(silent=True) or {}
+    selected = body.get("client_id", "")
+    names = {client["id"]: client["name"] for client in CLIENTS}
+    if selected not in names:
+        return jsonify(error="Choose one client."), 400
+    if body.get("csv") is not None and not isinstance(body["csv"], str):
+        return jsonify(error="Provide the CSV as text."), 400
+    rows = list(csv.DictReader(io.StringIO(body["csv"].lstrip("\ufeff")))) if body.get("csv") else None
+    try:
+        source = read_dashboards([selected])[0]
+        if source.get("error"):
+            return jsonify(error=f"{names[selected]} inventory did not load: {source['error']}"), 409
+        extra = read_incoming([selected], datetime.now(ZoneInfo("America/New_York")).date())[0]
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return jsonify(error="Inventory configuration is invalid or incomplete."), 503
+    result = eod_check(selected, source, rows, csv_name=str(body.get("csv_name", ""))[:120],
+                       no_shipments_confirmed=body.get("no_shipments_confirmed") is True)
+    report = build_report(selected, names[selected], source, result,
+                          None if extra.get("error") else extra, extra.get("error"))
+    image = base64.b64encode(render_png(names[selected], source, report["status"])).decode()
+    return {"report": report, "draft": slack_draft(selected, report), "image": f"data:image/png;base64,{image}"}
 
 
 @app.get("/api/inventory/calculated")

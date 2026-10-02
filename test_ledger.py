@@ -34,7 +34,7 @@ class ClientRuleTests(unittest.TestCase):
 
     def test_unknown_code_is_listed_never_guessed(self):
         result = client_rules.package("nuerosmile").order_usage("1x Neurosmile Magnesium Spray (SPRAY-9)")
-        self.assertEqual(result.usage, {"NEU001": 0})
+        self.assertEqual(result.usage, {"NEU001": 0, "NEU002": 0})
         self.assertEqual(len(result.unknown_items), 1)
 
     def test_unknown_client_gets_no_rules(self):
