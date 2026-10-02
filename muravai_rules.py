@@ -67,6 +67,19 @@ def order_usage(items: str) -> OrderResult:
         raw=dict(raw), flags=flags, unknown_items=unknown)
 
 
+KIND_SKUS = {"filter": "MUR001", "showerhead": "MUR002", "kit": "MUR003", "hose": "MUR004", "connector": "MUR005"}
+
+
+def shopify_match(variant: dict) -> dict | None:
+    """Muravai's rules read product names, not codes, so Shopify listings are matched by name
+    exactly as a ShipSidekick line would be. Teflon tape is a kit component, not a SKU."""
+    kind = classify(f"{variant.get('product', '')} {variant.get('variant', '')}")
+    if kind == "teflon":
+        return {"sku": None, "covers": "MUR003",
+                "how": "Kit component: counted as MUR003 only with a hose and connector (RULES.md)"}
+    return {"sku": KIND_SKUS[kind], "how": "Product name matches the Muravai rule"} if kind else None
+
+
 class _Rules:
     client_id = "muravai"
     organization = ORGANIZATION
@@ -75,6 +88,7 @@ class _Rules:
     status = "APPROVED"
     source = "docs/clients/muravai/RULES.md"
     order_usage = staticmethod(lambda items: order_usage(items))
+    shopify_match = staticmethod(lambda variant: shopify_match(variant))
 
 
 RULES = _Rules()

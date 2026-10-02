@@ -71,7 +71,7 @@ Install `requirements.txt`, then run `flask --app app run` for development.
 Render build: `pip install -r requirements.txt`.
 Render start: `gunicorn app:app --bind 0.0.0.0:$PORT`.
 Health check: `/api/health`. Auto-deploy: On Commit.
-Tests: `python -B -m unittest -v test_tracking test_inventory`.
+Tests: `python -B -m unittest -v test_tracking test_inventory test_ledger test_muravai_rules test_shopify`.
 
 ## Live mode prerequisites (not activated)
 
@@ -147,6 +147,16 @@ quantity. Muravai also has receipts, physical counts, adjustments/reships and
 audit exceptions. Some displayed summary statuses and calculation guides disagree;
 validate the business formulas rather than blindly porting those cells. Preserve
 the original Sheets as read-only references until a separate migration is agreed.
+
+## Shopify SKU mapping (read-only, off by default)
+
+Setup and safety rules: [docs/SHOPIFY_SETUP.md](docs/SHOPIFY_SETUP.md). With
+`SHOPIFY_ENABLED=true` and `SHOPIFY_STORES_JSON` set privately, the Inventory tab
+shows each Shopify variant matched to the client's ShipSidekick code and internal
+SKU, with blank, duplicate, draft/archived and unmapped SKUs flagged. ShipMode
+never writes to Shopify: only allowlisted read queries can be sent, and a token
+with any write scope is refused. Enabling Shopify makes the whole workspace
+require sign-in.
 
 ## Calculated inventory (shadow check)
 
