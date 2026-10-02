@@ -24,6 +24,8 @@ Log anything relevant in that client's sheet first, then make the report match t
 
 Use the usual EOD format for each client: stock per product, units shipped that day, daily demand, days of cover, status, incoming shipments, and the reorder action. Use `@channel` as usual, but never tag individual people in EOD reports. Client channels are Slack Connect, so reports are saved as drafts for Gly to review and send.
 
+**New stock received:** before an EOD reports a delivery, confirm which PO or shipment it came from: match the tracking number on the boxes, or get the PO from the warehouse (Orlando/Carlos). In the report, name the PO and tracking number. Say whether it was a full or partial delivery, and if partial, list what is still to come. If the PO isn't confirmed, report the quantities only, say the PO is being confirmed, and don't guess. Update the sheet's Incoming Stocks row for that PO at the same time.
+
 ## Client-specific rules
 
 - Muravai: follow [`muravai/RULES.md`](muravai/RULES.md) and the sheet's own Rules & Control tab. Inventory changes only through approved Receipts, Manual Counts and Adjustments & Reships rows, and every change is logged in the Change Log tab.
