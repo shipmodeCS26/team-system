@@ -86,7 +86,7 @@ function renderIncoming(){
   if(!source.available){$("incoming-status").textContent="Not available";$("incoming-shipments").innerHTML='<p class="empty-cell"><strong>No Incoming Stocks tab</strong>This client\'s workbook does not track incoming shipments yet.</p>';return}
   $("incoming-status").textContent=`${source.shipments.length} open`+(source.truncated?" · INCOMPLETE":"");
   if(source.truncated){$("incoming-error").hidden=false;$("incoming-error").textContent="The Incoming Stocks tab is longer than ShipMode reads; later rows are not shown."}
-  $("incoming-totals").innerHTML=source.incoming_by_sku.map(t=>`<div><span>${esc(t.sku)} · ${esc(t.product)}</span><strong>${fmt(t.units)}</strong><small>incoming, not in on-hand</small></div>`).join("")+(source.unverified_lines?`<p class="incoming-note">${source.unverified_lines} line(s) have no verified SKU and are not included in these totals.</p>`:"");
+  $("incoming-totals").innerHTML=source.incoming_by_sku.map(t=>`<div><span>${esc(t.sku)} · ${esc(t.product)}</span><strong>${fmt(t.units)}</strong><small>incoming, not in on-hand</small></div>`).join("")+(source.unverified_lines?`<p class="incoming-note">${source.unverified_lines} line(s) have no verified SKU or no whole-number quantity and are not included in these totals.</p>`:"");
   $("incoming-shipments").innerHTML=source.shipments.length?source.shipments.map(incomingCard).join(""):'<p class="empty-cell"><strong>No open incoming shipments</strong>Everything listed in the tab is already included in the latest count.</p>';
   $("incoming-history-toggle").hidden=!source.history.length;
   $("incoming-history-toggle").textContent=state.incomingHistory?"Hide received history":`Show received history (${source.history.length})`;
@@ -111,7 +111,9 @@ async function openDailyUpdate(){
     $("update-text").value=result.text;
     const notes=[result.draft?"The source is under review: the text starts with a DRAFT line. Check the Sheet before posting.":"",result.incoming_error?`Incoming shipments were left out: ${result.incoming_error}`:"",result.held_back?.length?`Not included (fully or partly) because no verified SKU or quantity: ${result.held_back.join(", ")}. Check them in the Incoming panel.`:"",result.incoming_truncated?"The Incoming Stocks tab is longer than ShipMode reads; later shipments may be missing from this text.":""].filter(Boolean);
     $("update-warning").textContent=notes.join(" ");$("update-warning").hidden=!notes.length;
+    $("update-read-at").textContent=`Built from the Sheet as read ${result.sheet_read_at?date(result.sheet_read_at,true):"just now"}.`;
     $("update-dialog").showModal();
+    loadInventory();  // the panel behind the dialog shows the same snapshot the text was built from
   }catch(error){toast(error.message)}
   finally{updateDailyButton()}
 }

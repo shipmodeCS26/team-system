@@ -7,6 +7,7 @@ Flags describe what the Sheet shows; they never change a number.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -48,6 +49,15 @@ def _none(value: str) -> bool:
     return not value.strip() or parse_int(value) == 0
 
 
+RECEIVED_WORD = re.compile(r"\b(arrived|delivered|received)\b")
+NEGATED = re.compile(r"\b(not|never|un)\s*(yet\s+)?(arrived|delivered|received)\b|\bundelivered\b")
+
+
+def _says_received(status: str) -> bool:
+    """'Arrived in warehouse' counts; 'Not received' or 'Undelivered' does not."""
+    return bool(RECEIVED_WORD.search(status)) and not NEGATED.search(status)
+
+
 def line_flags(line: dict, today: date) -> list[str]:
     if _history(line):
         return []  # already covered by the latest physical count
@@ -57,7 +67,7 @@ def line_flags(line: dict, today: date) -> list[str]:
     nothing_received = _none(line["boxes_received"]) and _none(line["units_received"])
     if line["received_date"] and expected is not None and received is not None and received < expected:
         flags.append("missing_boxes")
-    if ("arrived" in status or "delivered" in status or "received" in status) and _none(line["boxes_received"]):
+    if _says_received(status) and _none(line["boxes_received"]):
         flags.append("receipt_not_recorded")
     if "transfer" in status:
         flags.append("needs_transfer")
@@ -101,7 +111,9 @@ def parse_incoming(values_by_key: dict[str, list], today: date) -> dict:
                 continue
             total = incoming.setdefault(line["sku"], {"sku": line["sku"], "product": line["product"], "units": 0})
             total["units"] += units
-    unverified = sum("sku_unverified" in line["flags"] for group in shipments for line in group["lines"])
+    # Lines left out of the totals: no verified SKU, or no whole-number quantity.
+    unverified = sum("sku_unverified" in line["flags"] or parse_int(line["units"]) is None
+                     for group in shipments for line in group["lines"])
     # Columns are read up to LAST_ROW; a filled final row means the tab may continue past it.
     truncated = length >= LAST_ROW - 1
     return {"available": True, "truncated": truncated, "shipments": shipments, "history": history,

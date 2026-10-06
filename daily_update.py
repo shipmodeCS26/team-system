@@ -74,7 +74,9 @@ def build_update(client_name: str, source: dict, incoming: dict | None = None) -
             first = group["lines"][0]
             details = "; ".join(text for text in (first.get("where"), f"Expected in Miami: {first['expected_date']}"
                                                   if first.get("expected_date") else "") if text)
-            flags = [INCOMING_FLAGS[flag] for flag in group["flags"] if flag in INCOMING_FLAGS]
+            # Only flags of lines that are in the text; held-back lines stay internal.
+            flags = [INCOMING_FLAGS[flag] for flag in sorted({f for line in usable for f in line["flags"]})
+                     if flag in INCOMING_FLAGS]
             listed.append(f"• {group['po']}: {items}" + (f". {details}" if details else "")
                           + (f". Needs attention: {', '.join(flags)}" if flags else "") + ".")
         if listed:

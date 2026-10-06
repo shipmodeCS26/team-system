@@ -97,6 +97,19 @@ class ParseIncomingTests(unittest.TestCase):
         self.assertTrue(parse_incoming(columns(many), TODAY)["truncated"])
         self.assertFalse(self.result["truncated"])
 
+    def test_negated_received_status_is_not_a_receipt(self):
+        for status in ("Not received", "Not delivered", "Undelivered", "Not yet arrived"):
+            row = line("PO9", "T", "Filtered Showerhead", "MUR002", "10", status, "NOT ARRIVED", "1")
+            self.assertNotIn("receipt_not_recorded", parse_incoming(columns([row]), TODAY)["shipments"][0]["flags"])
+        row = line("PO9", "T", "Filtered Showerhead", "MUR002", "10", "Arrived in warehouse", "NOT ARRIVED", "1")
+        self.assertIn("receipt_not_recorded", parse_incoming(columns([row]), TODAY)["shipments"][0]["flags"])
+
+    def test_lines_without_quantity_are_counted_as_left_out(self):
+        rows = [line("PO9", "T", "Filtered Showerhead", "MUR002", "", "In Transit", "NOT ARRIVED"),
+                line("PO9", "T", "Replacement Filters, 3-Pack", "MUR001", "TBD", "In Transit", "NOT ARRIVED")]
+        result = parse_incoming(columns(rows), TODAY)
+        self.assertEqual((result["incoming_by_sku"], result["unverified_lines"]), ([], 2))
+
     def test_values_are_not_rewritten(self):
         self.assertEqual(self.by_po["PO23"]["lines"][0]["units"], "2,880")
 

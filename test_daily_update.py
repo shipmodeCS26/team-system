@@ -66,6 +66,7 @@ class BuildUpdateTests(unittest.TestCase):
         self.assertEqual(result["held_back"], ["PO40"])
         self.assertIn("• PO40: Filtered Showerhead 60", result["text"])
         self.assertNotIn("Nozzle", result["text"])
+        self.assertNotIn("SKU not verified", result["text"])  # flags of held-back lines stay internal
 
 
 class DailyUpdateApiTests(unittest.TestCase):
@@ -102,6 +103,7 @@ class DailyUpdateApiTests(unittest.TestCase):
         self.assertIn("Muravai Inventory Update", body["text"])
         self.assertNotIn("Incoming, not yet in stock", body["text"])
         self.assertEqual(body["incoming_error"], "No workbook")
+        self.assertIn("sheet_read_at", body)  # the dialog names which Sheet read the text came from
 
 
 if __name__ == "__main__":
