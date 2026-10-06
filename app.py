@@ -317,15 +317,17 @@ def shopify_order():
         return {"order": None, **order_check.check(client_id, shipment, [], unlinked=True), "writes": "disabled"}
     same_order = sum(row.get("order_number") == name for row in store["rows"])
     try:
-        orders = shopify_source.read_order(client_id, name)
+        found = shopify_source.read_order(client_id, name)
     except shopify_source.SourceError as error:
         shopify_source.failure(client_id, error.code, error.status)
         return jsonify(error=shopify_source.ERRORS[error.code]), 502
     except shopify_source.InvalidOrderName:
         return jsonify(error="This shipment's order number cannot be looked up in Shopify."), 422
-    result = order_check.check(client_id, shipment, orders, same_order)
-    return {"order": orders[0] if len(orders) == 1 else None, "matches": len(orders), **result,
-            "writes": "disabled"}
+    orders = found["orders"]
+    result = order_check.check(client_id, shipment, orders, same_order, complete=found["complete"],
+                               search_complete=found["search_complete"])
+    unique = len(orders) == 1 and found["search_complete"]
+    return {"order": orders[0] if unique else None, "matches": len(orders), **result, "writes": "disabled"}
 
 
 @app.get("/api/ssk/shipment-fields")

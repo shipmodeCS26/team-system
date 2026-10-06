@@ -72,7 +72,7 @@ def to_row(shipment, client_id, now=None):
     return {
         "client_id": client_id,
         "ssk_id": str(shipment.get("id") or "")[:64],
-        "order_number": str(_dict(shipment.get("order")).get("name") or "")[:60] or None,
+        "order_number": str(_dict(shipment.get("order")).get("name") or "")[:100] or None,
         "tracking_number": str(shipment.get("trackingCode") or tracker.get("trackingCode") or "")[:120],
         "carrier": str(tracker.get("carrierCode") or _dict(shipment.get("carrierAccount")).get("carrierCode")
                        or "unknown").lower()[:40],
@@ -87,5 +87,5 @@ def to_row(shipment, client_id, now=None):
         "case_status": "open",
         "notes": "",
         "events": events[-EVENTS_KEPT:],
-        "items": list(items.values())[:50],
+        "items": list(items.values()),  # all of them: a cut list would make a false "items differ"
     }

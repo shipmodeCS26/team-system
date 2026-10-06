@@ -13,12 +13,14 @@ import client_rules
 FLAG_TEXT = {
     "unlinked": "ShipSidekick has no order number for this shipment, so Shopify was not searched",
     "not_found": "Order not found in Shopify",
+    "not_found_recent": "Not found in Shopify's last 60 days of orders (older orders need read_all_orders access)",
+    "search_incomplete": "Shopify returned too many similar order names to confirm a unique match",
     "several_orders": "More than one Shopify order has this name",
     "cancelled": "Cancelled in Shopify, but a label exists",
     "refunded": "Refunded in Shopify",
     "partially_refunded": "Partially refunded in Shopify",
     "items_differ": "Items differ between the Shopify order and this shipment",
-    "items_unverified": "Items could not be compared (unmapped SKU or a very long order)",
+    "items_unverified": "Items could not be compared (unmapped SKU, a very long order, or a split shipment)",
     "several_shipments": "More than one shipment for this order (possible reship or split)",
 }
 
@@ -42,15 +44,19 @@ def _units(rules, items):
     return counts, unmapped
 
 
-def check(client_id, shipment, orders, shipments_for_order=1, unlinked=False):
+def check(client_id, shipment, orders, shipments_for_order=1, unlinked=False, complete=True, search_complete=True):
     if unlinked:
         return {"flags": ["unlinked"], "flag_text": [FLAG_TEXT["unlinked"]]}
     flags = []
-    if not orders:
-        flags.append("not_found")
+    if not search_complete:
+        flags.append("search_incomplete")  # an unchecked page could hold a duplicate: never pick one
+    elif not orders:
+        flags.append("not_found" if complete else "not_found_recent")
     elif len(orders) > 1:
         flags.append("several_orders")
-    order = orders[0] if len(orders) == 1 else None
+    order = orders[0] if len(orders) == 1 and search_complete else None
+    numbers = (order or {}).get("tracking_numbers") or []
+    split = max(shipments_for_order, len(numbers)) > 1
     if order:
         if order.get("cancelled_at"):
             flags.append("cancelled")
@@ -62,13 +68,14 @@ def check(client_id, shipment, orders, shipments_for_order=1, unlinked=False):
         rules = client_rules.package(client_id)
         shopify, unmapped_a = _units(rules, [i for i in order.get("items", []) if (i.get("qty") or 0) > 0])
         shipped, unmapped_b = _units(rules, shipment.get("items") or [])
-        if unmapped_a or unmapped_b or not shipped or order.get("items_truncated"):
+        # A split shipment carries only part of the order, so a whole-order comparison would be wrong.
+        if unmapped_a or unmapped_b or not shipped or order.get("items_truncated") or split \
+                or shipment.get("items_truncated"):
             flags.append("items_unverified")
         elif shopify != shipped:
             flags.append("items_differ")
     # Shopify's own fulfillments also count: a sibling package may already be delivered or older
     # than the No Movement lookback, so it is not in the queue.
-    numbers = (order or {}).get("tracking_numbers") or []
-    if max(shipments_for_order, len(numbers)) > 1:
+    if split:
         flags.append("several_shipments")
     return {"flags": flags, "flag_text": [FLAG_TEXT[f] for f in flags]}

@@ -40,7 +40,10 @@ class FakeShopify:
         if json["query"] == shopify_source.ORDER_FULFILLMENTS_QUERY:
             return Resp({"data": {"order": {"fulfillments": [{"trackingInfo": [{"number": n}]} for n in self.tracking]}}})
         assert json["query"] == shopify_source.ORDER_QUERY
-        return Resp({"data": {"orders": {"nodes": self.nodes}}})
+        page = int(json["variables"].get("after") or 0)
+        more = getattr(self, "pages", 1) > page + 1
+        return Resp({"data": {"orders": {"nodes": self.nodes if page == 0 else [],
+                                         "pageInfo": {"hasNextPage": more, "endCursor": str(page + 1)}}}})
 
 
 class Resp:
@@ -57,7 +60,8 @@ def read(scopes, nodes, name="#1001", **kw):
     fake = FakeShopify(scopes, nodes, **kw)
     with patch.dict("os.environ", {"SHOPIFY_STORES_JSON": json.dumps(STORES)}), \
             patch("shopify_source.requests.post", fake.post):
-        return shopify_source.read_order("muravai", name), fake
+        found = shopify_source.read_order("muravai", name)
+        return found["orders"], fake
 
 
 class ReadOrderTests(unittest.TestCase):
@@ -67,7 +71,7 @@ class ReadOrderTests(unittest.TestCase):
         self.assertEqual([o["name"] for o in orders], ["#1001"])
         self.assertEqual(orders[0]["address"]["city"], "Miami")
         self.assertTrue(orders[0]["address_visible"])
-        self.assertEqual(fake.calls[1]["variables"], {"q": 'name:"#1001"'})
+        self.assertEqual(fake.calls[1]["variables"], {"q": 'name:"#1001"', "after": None})
         self.assertEqual(orders[0]["tracking_numbers"], ["T1"])
 
     def test_refused_address_keeps_the_order(self):
@@ -79,7 +83,7 @@ class ReadOrderTests(unittest.TestCase):
     def test_custom_order_names_are_escaped_not_refused(self):
         orders, fake = read(["read_orders", "read_products"], [order_node('SM/10+1 "A"')], name='SM/10+1 "A"')
         self.assertEqual(len(orders), 1)
-        self.assertEqual(fake.calls[1]["variables"], {"q": 'name:"SM/10+1 \\"A\\""'})
+        self.assertEqual(fake.calls[1]["variables"]["q"], 'name:"SM/10+1 \\"A\\""')
         self.assertIsNone(orders[0]["address"])  # no read_customers: address never requested
 
     def test_write_scope_and_missing_order_scope_are_refused(self):
@@ -99,6 +103,23 @@ class ReadOrderTests(unittest.TestCase):
                       shopify_source.ORDER_FULFILLMENTS_QUERY):
             self.assertIn(query, shopify_source.READ_QUERIES)
             self.assertNotRegex(query, shopify_source.WRITE_OPERATION)
+
+
+class SearchCompletenessTests(unittest.TestCase):
+    def test_sixty_day_window_and_too_many_candidates(self):
+        fake = FakeShopify(["read_orders", "read_products"], [])
+        with patch.dict("os.environ", {"SHOPIFY_STORES_JSON": json.dumps(STORES)}), \
+                patch("shopify_source.requests.post", fake.post):
+            found = shopify_source.read_order("muravai", "#1001")
+            self.assertEqual((found["complete"], found["search_complete"]), (False, True))
+            fake.scopes = ["read_orders", "read_all_orders", "read_products"]
+            self.assertTrue(shopify_source.read_order("muravai", "#1001")["complete"])
+            fake.nodes, fake.pages = [order_node()], 9
+            found = shopify_source.read_order("muravai", "#1001")
+        self.assertFalse(found["search_complete"])
+        flags = order_check.check("muravai", {"items": []}, found["orders"], search_complete=False)["flags"]
+        self.assertEqual(flags, ["search_incomplete"])
+        self.assertEqual(order_check.check("muravai", {}, [], complete=False)["flags"], ["not_found_recent"])
 
 
 class FlagTests(unittest.TestCase):
@@ -122,7 +143,10 @@ class FlagTests(unittest.TestCase):
         self.assertIn("partially_refunded", self.flags([self.order(financial="PARTIALLY_REFUNDED")]))
         self.assertIn("items_differ", self.flags([self.order(items=[{"name": "Filtered Showerhead", "sku": "", "qty": 2}])]))
         self.assertIn("items_unverified", self.flags([self.order(items=[{"name": "Mystery item", "sku": "", "qty": 1}])]))
-        self.assertIn("several_shipments", self.flags([self.order()], same=2))
+        split = self.flags([self.order()], same=2)
+        self.assertIn("several_shipments", split)
+        self.assertIn("items_unverified", split)  # a split package never yields "items differ"
+        self.assertNotIn("items_differ", self.flags([self.order(items=[{"name": "Filtered Showerhead", "sku": "", "qty": 2}])], same=2))
         self.assertIn("several_shipments", self.flags([dict(self.order(), tracking_numbers=["A", "B"])]))
         self.assertIn("items_unverified", self.flags([dict(self.order(), items_truncated=True)]))
         self.assertEqual(order_check.check("muravai", self.SHIPMENT, [], unlinked=True)["flags"], ["unlinked"])
@@ -161,7 +185,7 @@ class OrderEndpointTests(unittest.TestCase):
         self.assertEqual(workspace_clients, ["fascial-labs", "muravai"])
         shipments.assert_called_with("muravai", 30)
         self.assertEqual(body["order"]["address"]["address1"], "1 Main St")
-        self.assertEqual(body["flags"], ["several_shipments"])
+        self.assertEqual(body["flags"], ["items_unverified", "several_shipments"])
         self.assertEqual(body["writes"], "disabled")
         self.assertEqual(missing.status_code, 404)
         for line in logs.output:

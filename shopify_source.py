@@ -52,14 +52,16 @@ VARIANTS_QUERY = """query ShipModeVariants($after: String) {
     pageInfo { hasNextPage endCursor }
   }
 }""" % PAGE_SIZE
-ORDER_QUERY = """query ShipModeOrder($q: String!) {
-  orders(first: 5, query: $q) {
+ORDER_QUERY = """query ShipModeOrder($q: String!, $after: String) {
+  orders(first: 25, query: $q, after: $after) {
     nodes {
       id name createdAt cancelledAt displayFinancialStatus displayFulfillmentStatus
       lineItems(first: 100) { nodes { name sku quantity currentQuantity } pageInfo { hasNextPage } }
     }
+    pageInfo { hasNextPage endCursor }
   }
 }"""
+ORDER_SEARCH_PAGES = 4  # 100 fuzzy candidates; more is reported as an incomplete search, never a unique match
 # Separate reads: protected customer fields and fulfillment data need extra access. If either is
 # refused, the order itself still shows ("address unavailable" / shipment count unknown).
 ORDER_ADDRESS_QUERY = """query ShipModeOrderAddress($id: ID!) {
@@ -318,9 +320,19 @@ def read_order(client_id, order_name):
     check_scopes(scopes)  # refuses a token with write access before any order is read
     if "read_orders" not in scopes:
         raise SourceError("order_scope")
-    data = _graphql(store, ORDER_QUERY, {"q": _search_term(order_name)})
+    nodes, after, search_complete = [], None, True
+    for page in range(ORDER_SEARCH_PAGES):
+        data = _graphql(store, ORDER_QUERY, {"q": _search_term(order_name), "after": after})
+        connection = data.get("orders") or {}
+        nodes += connection.get("nodes") or []
+        info = connection.get("pageInfo") or {}
+        if not info.get("hasNextPage"):
+            break
+        after = info.get("endCursor")
+        if page == ORDER_SEARCH_PAGES - 1:
+            search_complete = False
     orders = []
-    for node in ((data.get("orders") or {}).get("nodes") or []):
+    for node in nodes:
         if str(node.get("name") or "").strip().lower() != order_name.lower():
             continue  # Shopify search is fuzzy; only the exact order counts
         lines = node.get("lineItems") or {}
@@ -346,4 +358,6 @@ def read_order(client_id, order_name):
                        for info in (f.get("trackingInfo") or []) if isinstance(info, dict) and info.get("number")}
             order["tracking_numbers"] = sorted(numbers)
         orders.append(order)
-    return orders
+    # Without read_all_orders Shopify only searches the last 60 days, so "no match" is not definitive.
+    complete = search_complete and "read_all_orders" in scopes
+    return {"orders": orders, "complete": complete, "search_complete": search_complete}
