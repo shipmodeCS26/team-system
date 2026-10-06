@@ -58,6 +58,8 @@ def check(client_id, shipment, orders, shipments_for_order=1, unlinked=False, co
     order = orders[0] if len(orders) == 1 and search_complete else None
     numbers = (order or {}).get("tracking_numbers") or []
     split = max(shipments_for_order, len(numbers), (order or {}).get("fulfillment_count") or 0) > 1
+    # An unread or cut-off fulfillment list can hide a sibling parcel: never prove "not split" from it.
+    split_unknown = bool(order) and (order.get("fulfillment_count") is None or order.get("fulfillments_truncated"))
     if order:
         if not complete:
             flags.append("recent_match_only")
@@ -74,7 +76,7 @@ def check(client_id, shipment, orders, shipments_for_order=1, unlinked=False, co
         # A split shipment carries only part of the order, so a whole-order comparison would be wrong.
         # Partly fulfilled: the rest of the order hasn't shipped yet, so this parcel is only part of it.
         partial = str(order.get("fulfillment") or "").upper() == "PARTIALLY_FULFILLED"
-        if unmapped_a or unmapped_b or not shipped or order.get("items_truncated") or split or partial \
+        if unmapped_a or unmapped_b or not shipped or order.get("items_truncated") or split or split_unknown or partial \
                 or shipment.get("items_truncated"):
             flags.append("items_unverified")
         elif shopify != shipped:

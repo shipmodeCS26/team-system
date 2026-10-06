@@ -146,7 +146,7 @@ class FulfillmentTests(unittest.TestCase):
 
     def test_partly_fulfilled_order_and_uncountable_lines_are_unverified(self):
         shipment = {"items": [{"sku": "", "name": "Filtered Showerhead", "qty": 1}]}
-        order = {"name": "#1", "financial": "PAID", "fulfillment": "PARTIALLY_FULFILLED",
+        order = {"name": "#1", "financial": "PAID", "fulfillment": "PARTIALLY_FULFILLED", "fulfillment_count": 1,
                  "items": [{"name": "Filtered Showerhead", "sku": "", "qty": 1}, {"name": "Shower Hose", "sku": "", "qty": 1}]}
         flags = order_check.check("muravai", shipment, [order])["flags"]
         self.assertEqual(flags, ["items_unverified"])
@@ -154,6 +154,28 @@ class FulfillmentTests(unittest.TestCase):
         raw = {"id": "x", "packages": [{"lineItems": [{"quantity": 1, "productVariant": {"sku": "A"}},
                                                       {"quantity": None, "productVariant": {"sku": "B"}}]}]}
         self.assertTrue(ssk_shipments.to_row(raw, "muravai")["items_truncated"])
+
+
+class UnknownSplitTests(unittest.TestCase):
+    SHIPMENT = {"items": [{"sku": "", "name": "Filtered Showerhead", "qty": 1}]}
+    ORDER = {"name": "#1", "financial": "PAID", "items": [{"name": "Filtered Showerhead", "sku": "", "qty": 2}]}
+
+    def test_unread_or_full_fulfillment_list_is_unverified(self):
+        for extra in ({"fulfillment_count": None}, {"fulfillment_count": 1, "fulfillments_truncated": True}):
+            flags = order_check.check("muravai", self.SHIPMENT, [dict(self.ORDER, **extra)])["flags"]
+            self.assertEqual(flags, ["items_unverified"], extra)
+
+    def test_full_page_of_mostly_cancelled_is_one_parcel(self):
+        orders, _ = read(["read_orders", "read_all_orders", "read_products"], [order_node()],
+                         tracking=tuple((f"C{i}", "CANCELLED") for i in range(19)) + (("OK", "SUCCESS"),))
+        self.assertEqual((orders[0]["fulfillment_count"], orders[0]["fulfillments_truncated"]), (1, True))
+
+    def test_non_shipping_lines_are_ignored(self):
+        node = order_node(items=(("Filtered Showerhead", "", 1),))
+        node["lineItems"]["nodes"].append({"name": "Gift card", "sku": "GC", "quantity": 1, "currentQuantity": 1,
+                                           "requiresShipping": False})
+        orders, _ = read(["read_orders", "read_all_orders", "read_products"], [node])
+        self.assertEqual([i["name"] for i in orders[0]["items"]], ["Filtered Showerhead"])
 
 
 class FlagTests(unittest.TestCase):
@@ -164,6 +186,7 @@ class FlagTests(unittest.TestCase):
 
     def order(self, **kw):
         return {"name": "#1001", "cancelled_at": kw.get("cancelled"), "financial": kw.get("financial", "PAID"),
+                "fulfillment_count": 1,
                 "items": kw.get("items", [{"name": "Filtered Showerhead", "sku": "", "qty": 1}])}
 
     def test_matching_order_has_no_flags(self):

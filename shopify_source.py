@@ -56,7 +56,7 @@ ORDER_QUERY = """query ShipModeOrder($q: String!, $after: String) {
   orders(first: 25, query: $q, after: $after) {
     nodes {
       id name createdAt cancelledAt displayFinancialStatus displayFulfillmentStatus
-      lineItems(first: 100) { nodes { name sku quantity currentQuantity } pageInfo { hasNextPage } }
+      lineItems(first: 100) { nodes { name sku quantity currentQuantity requiresShipping } pageInfo { hasNextPage } }
     }
     pageInfo { hasNextPage endCursor }
   }
@@ -344,10 +344,11 @@ def read_order(client_id, order_name):
             "financial": node.get("displayFinancialStatus") or "", "fulfillment": node.get("displayFulfillmentStatus") or "",
             "items": [{"name": (line.get("name") or "").strip(), "sku": (line.get("sku") or "").strip(),
                        "qty": line.get("currentQuantity") if isinstance(line.get("currentQuantity"), int) else line.get("quantity")}
-                      for line in (lines.get("nodes") or []) if isinstance(line, dict)],
+                      # Gift cards, digital goods and tips never ship, so they can't be in a parcel.
+                      for line in (lines.get("nodes") or []) if isinstance(line, dict) and line.get("requiresShipping") is not False],
             "items_truncated": bool((lines.get("pageInfo") or {}).get("hasNextPage")),
             "address": None, "address_visible": False, "address_withheld": False,
-            "tracking_numbers": None, "fulfillment_count": None,
+            "tracking_numbers": None, "fulfillment_count": None, "fulfillments_truncated": False,
         })
     # Extra reads only for a single confirmed match: never fan out over duplicate names.
     if len(orders) == 1 and search_complete:
@@ -361,7 +362,8 @@ def read_order(client_id, order_name):
                        for info in (f.get("trackingInfo") or []) if isinstance(info, dict) and info.get("number")}
             order["tracking_numbers"] = sorted(numbers)
             # Fulfillments without tracking still mean separate parcels; a full page (20) means maybe more.
-            order["fulfillment_count"] = len(fulfillments) if len(listed) < 20 else 21
+            order["fulfillment_count"] = len(fulfillments)
+            order["fulfillments_truncated"] = len(listed) >= 20  # more may exist: count unknown, not "several"
         if complete:
             # Address access is approved per field by Shopify (protected customer data), so ask;
             # a refusal simply leaves the address unavailable.

@@ -214,8 +214,8 @@ status is not delivered, one status at a time. Each status is checked against
 what comes back: if the status filter is ignored, the store shows an error
 instead of a partial queue. The existing aging rules apply unchanged: only
 physical carrier scans reset the clock, and label-only shipments fall back to
-the label date. Addresses, line items, prices and label files are never copied
-into a row. Follow-up notes stay off until the database exists.
+the label date. Addresses, prices and label files are never copied into a row; line
+items keep only SKU, product name and quantity (for the Shopify order check). Follow-up notes stay off until the database exists.
 
 Shopify order behind a shipment (#13): with `SHOPIFY_ENABLED=true` and the
 ShipSidekick queue on, opening a shipment in No Movement offers "Show Shopify
