@@ -84,7 +84,7 @@ ERRORS = {
     "not_found": "Shopify store not found. Check the store domain in the private deployment settings.",
     "unavailable": "Shopify did not respond. Try again shortly.",
     "read_failed": "The Shopify store could not be read.",
-    "order_scope": "The ShipMode app cannot read orders yet (needs read_orders; addresses also need read_customers).",
+    "order_scope": "The ShipMode app cannot read orders yet (needs read_orders; addresses also need Shopify protected customer data access).",
 }
 
 
@@ -345,18 +345,22 @@ def read_order(client_id, order_name):
             "items_truncated": bool((lines.get("pageInfo") or {}).get("hasNextPage")),
             "address": None, "address_visible": False, "tracking_numbers": None,
         }
-        if "read_customers" in scopes:
-            found, _ = _optional(store, ORDER_ADDRESS_QUERY, {"id": node.get("id")})
-            address = ((found or {}).get("order") or {}).get("shippingAddress")
-            if isinstance(address, dict):
-                order["address"] = {key: address.get(key) for key in
-                                    ("name", "address1", "address2", "city", "provinceCode", "zip", "countryCodeV2")}
-            order["address_visible"] = found is not None
+        # Address access is approved per field by Shopify (protected customer data), not only by
+        # read_customers, so always ask; a refusal simply leaves the address unavailable.
+        found, _ = _optional(store, ORDER_ADDRESS_QUERY, {"id": node.get("id")})
+        address = ((found or {}).get("order") or {}).get("shippingAddress")
+        if isinstance(address, dict):
+            order["address"] = {key: address.get(key) for key in
+                                ("name", "address1", "address2", "city", "provinceCode", "zip", "countryCodeV2")}
+        order["address_visible"] = found is not None
         found, _ = _optional(store, ORDER_FULFILLMENTS_QUERY, {"id": node.get("id")})
         if found is not None:
-            numbers = {str(info.get("number")).strip() for f in (((found.get("order") or {}).get("fulfillments")) or [])
+            fulfillments = [f for f in (((found.get("order") or {}).get("fulfillments")) or []) if isinstance(f, dict)]
+            numbers = {str(info.get("number")).strip() for f in fulfillments
                        for info in (f.get("trackingInfo") or []) if isinstance(info, dict) and info.get("number")}
             order["tracking_numbers"] = sorted(numbers)
+            # Fulfillments without tracking still mean separate parcels; a full page (20) means maybe more.
+            order["fulfillment_count"] = len(fulfillments) if len(fulfillments) < 20 else 21
         orders.append(order)
     # Without read_all_orders Shopify only searches the last 60 days, so "no match" is not definitive.
     complete = search_complete and "read_all_orders" in scopes

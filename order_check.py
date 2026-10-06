@@ -56,7 +56,7 @@ def check(client_id, shipment, orders, shipments_for_order=1, unlinked=False, co
         flags.append("several_orders")
     order = orders[0] if len(orders) == 1 and search_complete else None
     numbers = (order or {}).get("tracking_numbers") or []
-    split = max(shipments_for_order, len(numbers)) > 1
+    split = max(shipments_for_order, len(numbers), (order or {}).get("fulfillment_count") or 0) > 1
     if order:
         if order.get("cancelled_at"):
             flags.append("cancelled")

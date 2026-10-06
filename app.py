@@ -323,6 +323,8 @@ def shopify_order():
         return jsonify(error=shopify_source.ERRORS[error.code]), 502
     except shopify_source.InvalidOrderName:
         return jsonify(error="This shipment's order number cannot be looked up in Shopify."), 422
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return jsonify(error="Shopify configuration is invalid or incomplete."), 503
     orders = found["orders"]
     result = order_check.check(client_id, shipment, orders, same_order, complete=found["complete"],
                                search_complete=found["search_complete"])

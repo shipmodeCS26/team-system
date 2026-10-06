@@ -220,7 +220,7 @@ into a row. Follow-up notes stay off until the database exists.
 Shopify order behind a shipment (#13): with `SHOPIFY_ENABLED=true` and the
 ShipSidekick queue on, opening a shipment in No Movement offers "Show Shopify
 order and address". It reads that one order by its exact name (read-only, needs
-`read_orders`; the address also needs `read_customers`) and shows payment and
+`read_orders`; the address also needs Shopify protected customer data access) and shows payment and
 fulfillment status, items on both sides, and the current ship-to address. Flags
 (not found, cancelled, refunded, items differ, several shipments) are for review
 only and never change a shipment's age or priority. The address is never cached,

@@ -84,7 +84,7 @@ class ReadOrderTests(unittest.TestCase):
         orders, fake = read(["read_orders", "read_products"], [order_node('SM/10+1 "A"')], name='SM/10+1 "A"')
         self.assertEqual(len(orders), 1)
         self.assertEqual(fake.calls[1]["variables"]["q"], 'name:"SM/10+1 \\"A\\""')
-        self.assertIsNone(orders[0]["address"])  # no read_customers: address never requested
+        self.assertEqual(orders[0]["address"]["city"], "Miami")  # field access is Shopify's call, not read_customers
 
     def test_write_scope_and_missing_order_scope_are_refused(self):
         with self.assertRaises(shopify_source.SourceError) as caught:
@@ -149,6 +149,9 @@ class FlagTests(unittest.TestCase):
         self.assertNotIn("items_differ", self.flags([self.order(items=[{"name": "Filtered Showerhead", "sku": "", "qty": 2}])], same=2))
         self.assertIn("several_shipments", self.flags([dict(self.order(), tracking_numbers=["A", "B"])]))
         self.assertIn("items_unverified", self.flags([dict(self.order(), items_truncated=True)]))
+        untracked = self.flags([dict(self.order(), tracking_numbers=[], fulfillment_count=2)])
+        self.assertIn("several_shipments", untracked)
+        self.assertNotIn("items_differ", untracked)
         self.assertEqual(order_check.check("muravai", self.SHIPMENT, [], unlinked=True)["flags"], ["unlinked"])
 
     def test_removed_lines_are_ignored(self):
@@ -200,6 +203,13 @@ class OrderEndpointTests(unittest.TestCase):
             response = client.get("/api/shopify/order?client_id=muravai&shipment=s1", headers=self.AUTH)
         self.assertEqual(response.status_code, 502)
         self.assertIn("did not respond", response.get_json()["error"])
+
+    def test_broken_store_config_gives_503(self):
+        client = app.test_client()
+        with patch.dict("os.environ", {**self.ENV, "SHOPIFY_STORES_JSON": "{not json"}, clear=True), \
+                patch("app.ssk_source.read_shipments", return_value=self.STORE):
+            response = client.get("/api/shopify/order?client_id=muravai&shipment=s1", headers=self.AUTH)
+        self.assertEqual(response.status_code, 503)
 
     def test_disabled_exposes_nothing(self):
         with patch.dict("os.environ", {}, clear=True):
