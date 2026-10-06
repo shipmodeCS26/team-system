@@ -56,12 +56,13 @@ def to_row(shipment, client_id, now=None):
               for p in shipment.get("packages") or [] if isinstance(p, dict)]
     labels = [d for d in labels if d] or [d for d in [_date(shipment.get("createdAt"), now)] if d]
     received = _date(shipment.get("updatedAt"), now)
-    items = {}
+    items, items_incomplete = {}, False
     for package in shipment.get("packages") or []:
         for line in _dict(package).get("lineItems") or []:
             variant = _dict(_dict(line).get("productVariant"))
             qty = line.get("quantity") if isinstance(line, dict) else None
             if not isinstance(qty, int) or isinstance(qty, bool):
+                items_incomplete = True  # a line we can't count makes the item comparison unverified
                 continue
             sku = str(variant.get("sku") or "").strip()[:60]
             name = str(_dict(variant.get("product")).get("name") or variant.get("title") or "").strip()[:120]
@@ -87,5 +88,6 @@ def to_row(shipment, client_id, now=None):
         "case_status": "open",
         "notes": "",
         "events": events[-EVENTS_KEPT:],
+        "items_truncated": items_incomplete,
         "items": list(items.values()),  # all of them: a cut list would make a false "items differ"
     }

@@ -68,7 +68,7 @@ ORDER_ADDRESS_QUERY = """query ShipModeOrderAddress($id: ID!) {
   order(id: $id) { shippingAddress { name address1 address2 city provinceCode zip countryCodeV2 } }
 }"""
 ORDER_FULFILLMENTS_QUERY = """query ShipModeOrderFulfillments($id: ID!) {
-  order(id: $id) { fulfillments(first: 20) { trackingInfo(first: 10) { number } } }
+  order(id: $id) { fulfillments(first: 20) { status trackingInfo(first: 10) { number } } }
 }"""
 READ_QUERIES = frozenset({SCOPES_QUERY, VARIANTS_QUERY, ORDER_QUERY, ORDER_ADDRESS_QUERY, ORDER_FULFILLMENTS_QUERY})
 # Merchants can customise order prefixes/suffixes, so any printable name is allowed; it is escaped
@@ -354,12 +354,14 @@ def read_order(client_id, order_name):
         order = orders[0]
         found, _ = _optional(store, ORDER_FULFILLMENTS_QUERY, {"id": order["id"]})
         if found is not None:
-            fulfillments = [f for f in (((found.get("order") or {}).get("fulfillments")) or []) if isinstance(f, dict)]
+            listed = [f for f in (((found.get("order") or {}).get("fulfillments")) or []) if isinstance(f, dict)]
+            # Cancelled or failed attempts are not parcels; a replacement after one is still one shipment.
+            fulfillments = [f for f in listed if str(f.get("status") or "").upper() not in ("CANCELLED", "ERROR", "FAILURE")]
             numbers = {str(info.get("number")).strip() for f in fulfillments
                        for info in (f.get("trackingInfo") or []) if isinstance(info, dict) and info.get("number")}
             order["tracking_numbers"] = sorted(numbers)
             # Fulfillments without tracking still mean separate parcels; a full page (20) means maybe more.
-            order["fulfillment_count"] = len(fulfillments) if len(fulfillments) < 20 else 21
+            order["fulfillment_count"] = len(fulfillments) if len(listed) < 20 else 21
         if complete:
             # Address access is approved per field by Shopify (protected customer data), so ask;
             # a refusal simply leaves the address unavailable.

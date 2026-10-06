@@ -24,7 +24,7 @@ def order_node(name="#1001", cancelled=None, financial="PAID", items=(("Filtered
 
 
 class FakeShopify:
-    def __init__(self, scopes, nodes, address=ADDRESS, tracking=("T1",), refuse=()):
+    def __init__(self, scopes, nodes, address=ADDRESS, tracking=(("T1", "SUCCESS"),), refuse=()):
         self.scopes, self.nodes, self.calls = scopes, nodes, []
         self.address, self.tracking, self.refuse = address, tracking, refuse
 
@@ -38,7 +38,8 @@ class FakeShopify:
         if json["query"] == shopify_source.ORDER_ADDRESS_QUERY:
             return Resp({"data": {"order": {"shippingAddress": self.address}}})
         if json["query"] == shopify_source.ORDER_FULFILLMENTS_QUERY:
-            return Resp({"data": {"order": {"fulfillments": [{"trackingInfo": [{"number": n}]} for n in self.tracking]}}})
+            return Resp({"data": {"order": {"fulfillments": [{"status": st, "trackingInfo": [{"number": n}]}
+                                                             for n, st in self.tracking]}}})
         assert json["query"] == shopify_source.ORDER_QUERY
         page = int(json["variables"].get("after") or 0)
         more = getattr(self, "pages", 1) > page + 1
@@ -135,6 +136,24 @@ class EnrichmentTests(unittest.TestCase):
         queries = [c["query"] for c in fake.calls]
         self.assertNotIn(shopify_source.ORDER_ADDRESS_QUERY, queries)
         self.assertNotIn(shopify_source.ORDER_FULFILLMENTS_QUERY, queries)
+
+
+class FulfillmentTests(unittest.TestCase):
+    def test_cancelled_fulfillments_are_not_parcels(self):
+        orders, _ = read(["read_orders", "read_all_orders", "read_products"], [order_node()],
+                         tracking=(("T1", "CANCELLED"), ("T2", "SUCCESS")))
+        self.assertEqual(orders[0]["fulfillment_count"], 1)
+
+    def test_partly_fulfilled_order_and_uncountable_lines_are_unverified(self):
+        shipment = {"items": [{"sku": "", "name": "Filtered Showerhead", "qty": 1}]}
+        order = {"name": "#1", "financial": "PAID", "fulfillment": "PARTIALLY_FULFILLED",
+                 "items": [{"name": "Filtered Showerhead", "sku": "", "qty": 1}, {"name": "Shower Hose", "sku": "", "qty": 1}]}
+        flags = order_check.check("muravai", shipment, [order])["flags"]
+        self.assertEqual(flags, ["items_unverified"])
+        import ssk_shipments
+        raw = {"id": "x", "packages": [{"lineItems": [{"quantity": 1, "productVariant": {"sku": "A"}},
+                                                      {"quantity": None, "productVariant": {"sku": "B"}}]}]}
+        self.assertTrue(ssk_shipments.to_row(raw, "muravai")["items_truncated"])
 
 
 class FlagTests(unittest.TestCase):

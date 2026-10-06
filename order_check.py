@@ -72,7 +72,9 @@ def check(client_id, shipment, orders, shipments_for_order=1, unlinked=False, co
         shopify, unmapped_a = _units(rules, [i for i in order.get("items", []) if (i.get("qty") or 0) > 0])
         shipped, unmapped_b = _units(rules, shipment.get("items") or [])
         # A split shipment carries only part of the order, so a whole-order comparison would be wrong.
-        if unmapped_a or unmapped_b or not shipped or order.get("items_truncated") or split \
+        # Partly fulfilled: the rest of the order hasn't shipped yet, so this parcel is only part of it.
+        partial = str(order.get("fulfillment") or "").upper() == "PARTIALLY_FULFILLED"
+        if unmapped_a or unmapped_b or not shipped or order.get("items_truncated") or split or partial \
                 or shipment.get("items_truncated"):
             flags.append("items_unverified")
         elif shopify != shipped:
