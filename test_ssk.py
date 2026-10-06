@@ -436,3 +436,48 @@ class SskApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShipmentFieldsTests(unittest.TestCase):
+    SHIPMENT = {"id": "8f1d6c9a-0000-4000-8000-000000000001", "trackingCode": "1Z999AA10123456784",
+                "trackingStatus": "in_transit", "createdAt": "2026-10-01T15:00:00Z",
+                "shipToAddress": {"name": "Jane Doe", "street1": "1 Main St", "city": "Miami", "state": "FL"},
+                "carrierAccount": {"carrierCode": "ups", "description": "ShipMode UPS account"},
+                "trackingEvents": [{"status": "in_transit", "occurredAt": "2026-10-02T08:00:00Z",
+                                    "description": "Arrived at facility in Miami, FL"}],
+                "order": {"id": "o1", "orderNumber": "#1001", "customerName": "Jane Doe"}}
+
+    def test_reports_names_and_status_words_but_no_private_values(self):
+        fake = FakeSsk({"k": [[self.SHIPMENT]]})
+        with patch("ssk_source.requests.get", fake.get), \
+                patch("ssk_source.requests.post", side_effect=AssertionError("POST sent")):
+            result = ssk_source.shipment_fields("k")
+        self.assertEqual(fake.calls[0]["url"], ssk_source.PRODUCTION + "/shipments")
+        self.assertEqual(result["sampled"], 1)
+        self.assertEqual(result["fields"]["createdAt"], ["date"])
+        self.assertEqual(result["fields"]["trackingEvents[].occurredAt"], ["date"])
+        self.assertIn("shipToAddress", result["fields"])
+        self.assertNotIn("shipToAddress.city", result["fields"])
+        self.assertEqual(result["values"]["trackingStatus"], ["in_transit"])
+        self.assertEqual(result["values"]["carrierAccount.carrierCode"], ["ups"])
+        text = json.dumps(result)
+        for private in ("Jane", "Main St", "Miami", "1Z999", "8f1d6c9a", "#1001", "ShipMode UPS", "Arrived"):
+            self.assertNotIn(private, text)
+
+    def test_endpoint_requires_sign_in_one_client_and_hides_key(self):
+        client = app.test_client()
+        auth = {"Authorization": "Basic " + base64.b64encode(b"owner:pw").decode()}
+        env = {"SSK_API_ENABLED": "true", "WORKSPACE_USER": "owner", "SECRET_KEY": "s",
+               "WORKSPACE_PASSWORD_HASH": generate_password_hash("pw", method="pbkdf2:sha256"), **KEYS}
+        fake = FakeSsk({"ssk_secret_muravai": [[self.SHIPMENT]]})
+        with patch.dict("os.environ", env, clear=True), patch("ssk_source.requests.get", fake.get):
+            self.assertEqual(client.get("/api/ssk/shipment-fields?client_id=muravai").status_code, 401)
+            self.assertEqual(client.get("/api/ssk/shipment-fields?client_id=all", headers=auth).status_code, 400)
+            with self.assertLogs(app.logger, "WARNING") as logs:
+                response = client.get("/api/ssk/shipment-fields?client_id=muravai", headers=auth)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["writes"], "disabled")
+        self.assertEqual(len(fake.calls), 1)
+        for text in logs.output + [response.get_data(as_text=True)]:
+            self.assertNotIn("ssk_secret", text)
+            self.assertNotIn("Jane", text)

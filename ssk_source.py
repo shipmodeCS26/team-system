@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -135,6 +136,56 @@ def inventory_levels(key):
         item["safety_stock"] += _qty(row.get("safetyStockQuantity"))
         item["locations"] += 1
     return list(variants.values()), truncated
+
+
+# Shipment field discovery (Issue #17). The public docs truncate the Shipment type, so staging reports
+# the field names it actually receives. Only names, value types and short status/carrier words leave
+# this function: no addresses, names, tracking numbers, IDs or free text.
+ENUM_KEY = re.compile(r"(?:status|carriercode|eventtype|source|service)$", re.I)
+PRIVATE_KEY = re.compile(r"address|name|company|street|city|postal|zip|phone|email|tracking(?:code|number|url)|"
+                         r"description|message|note|label(?:url|data)|url|id$", re.I)
+ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2})?")
+SAFE_WORD = re.compile(r"[A-Za-z][A-Za-z0-9_ -]{0,39}")
+
+
+def _kind(value):
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "date" if ISO_DATE.match(value) else "string"
+    return "object" if isinstance(value, dict) else "list"
+
+
+def _walk(value, path, fields, values):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            kinds = fields.setdefault(child_path, set())
+            kinds.add(_kind(child))
+            if re.search(r"address", str(key), re.I):
+                continue  # never descend into an address
+            if isinstance(child, str) and ENUM_KEY.search(str(key)) and not PRIVATE_KEY.search(str(key)) \
+                    and SAFE_WORD.fullmatch(child):
+                values.setdefault(child_path, set()).add(child)
+            _walk(child, child_path, fields, values)
+    elif isinstance(value, list):
+        for item in value[:20]:
+            _walk(item, path + "[]", fields, values)
+
+
+def shipment_fields(key, sample=25):
+    """Field names and status words from the most recent shipments. Read-only, nothing kept."""
+    body = _get(key, "/shipments", {"limit": sample, "page": 1, "sortOrder": "desc"})
+    fields, values = {}, {}
+    for shipment in body["data"]:
+        _walk(shipment, "", fields, values)
+    return {"sampled": len(body["data"]),
+            "fields": {path: sorted(kinds) for path, kinds in sorted(fields.items())},
+            "values": {path: sorted(words)[:30] for path, words in sorted(values.items())}}
 
 
 def read_store(client_id):

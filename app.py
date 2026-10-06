@@ -202,6 +202,27 @@ def shopify_sku_check():
     return {"clients": clients, "as_of": utcnow().isoformat(), "writes": "disabled"}
 
 
+@app.get("/api/ssk/shipment-fields")
+@protected
+def ssk_shipment_fields():
+    """Issue #17 discovery: which fields ShipSidekick shipments carry. Names and status words only."""
+    if not ssk_source.enabled():
+        return jsonify(error="ShipSidekick API is not connected."), 503
+    client_id = request.args.get("client_id", "")
+    if client_id not in [client["id"] for client in CLIENTS]:
+        return jsonify(error="Choose one client."), 400
+    key = ssk_source.api_key(client_id)
+    if not key:
+        return jsonify(error=ssk_source.ERRORS["not_configured"]), 503
+    try:
+        result = ssk_source.shipment_fields(key)
+    except ssk_source.SourceError as error:
+        ssk_source.failure(client_id, error.code, error.status)
+        return jsonify(error=ssk_source.ERRORS[error.code]), 502
+    app.logger.warning("ssk shipment fields client=%s %s", client_id, json.dumps(result, separators=(",", ":")))
+    return dict(result, client_id=client_id, writes="disabled")
+
+
 @app.get("/api/ssk/inventory")
 @protected
 def ssk_inventory():
