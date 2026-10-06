@@ -76,6 +76,27 @@ class ParseIncomingTests(unittest.TestCase):
                     "09/28/2026")
         self.assertEqual(parse_incoming(columns([full]), TODAY)["shipments"][0]["flags"], [])
 
+    def test_explicit_zero_receipt_counts_as_nothing_received(self):
+        late = line("PO9", "T", "Filtered Showerhead", "MUR002", "10", "In Transit", "NOT ARRIVED", "1", "0", "0",
+                    expected_date="09/20/2026")
+        self.assertEqual(parse_incoming(columns([late]), TODAY)["shipments"][0]["flags"], ["past_expected"])
+
+    def test_mixed_group_keeps_received_lines_in_history(self):
+        mixed = [line("PO30", "T30", "Filtered Showerhead", "MUR002", "60", "Arrived in warehouse",
+                      "INCLUDED IN LATEST COUNT"),
+                 line("PO30", "T30", "Replacement Filters, 3-Pack", "MUR001", "600", "In Transit", "NOT ARRIVED", "1")]
+        result = parse_incoming(columns(mixed), TODAY)
+        self.assertEqual([l["sku"] for l in result["shipments"][0]["lines"]], ["MUR001"])
+        self.assertEqual([l["sku"] for l in result["history"][0]["lines"]], ["MUR002"])
+        self.assertEqual(result["incoming_by_sku"], [{"sku": "MUR001", "product": "Replacement Filters, 3-Pack",
+                                                      "units": 600}])
+
+    def test_filled_last_row_is_reported_truncated(self):
+        many = [line(f"PO{i}", "T", "Filtered Showerhead", "MUR002", "1", "In Transit", "NOT ARRIVED")
+                for i in range(incoming.LAST_ROW - 1)]
+        self.assertTrue(parse_incoming(columns(many), TODAY)["truncated"])
+        self.assertFalse(self.result["truncated"])
+
     def test_values_are_not_rewritten(self):
         self.assertEqual(self.by_po["PO23"]["lines"][0]["units"], "2,880")
 

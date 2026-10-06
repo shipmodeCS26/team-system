@@ -7,7 +7,7 @@ from werkzeug.security import generate_password_hash
 from app import app
 from daily_update import build_update
 from incoming import parse_incoming
-from test_incoming import ROWS, TODAY, columns
+from test_incoming import ROWS, TODAY, columns, line
 
 SOURCE = {"id": "muravai", "as_of": "28 Sep 2026", "report_status": "SOURCE VALUES", "warnings": [], "rows": [
     {"product": "Replacement Filters, 3-Pack", "remaining": "12", "cover": "0.0", "demand": "481.8", "status": "REORDER NOW"},
@@ -57,6 +57,15 @@ class BuildUpdateTests(unittest.TestCase):
         self.assertNotIn("PO22", text)  # received history is not incoming
         self.assertNotIn("PO7", text)  # unverified SKU: internal review, not client-facing
         self.assertIn("• Replacement Filters, 3-Pack: 12 units", text.split("Incoming")[0])  # on-hand unchanged
+
+
+    def test_partly_held_back_po_is_reported(self):
+        rows = [line("PO40", "T40", "Filtered Showerhead", "MUR002", "60", "In Transit", "NOT ARRIVED"),
+                line("PO40", "T40", "Nozzle", "REVIEW", "5", "In Transit", "REVIEW — NOT COUNTED")]
+        result = build_update("Muravai", SOURCE, parse_incoming(columns(rows), TODAY) | {"id": "muravai"})
+        self.assertEqual(result["held_back"], ["PO40"])
+        self.assertIn("• PO40: Filtered Showerhead 60", result["text"])
+        self.assertNotIn("Nozzle", result["text"])
 
 
 class DailyUpdateApiTests(unittest.TestCase):

@@ -17,7 +17,7 @@ from ledger_sources import SheetReader, column_letter, parse_day, parse_int
 
 log = logging.getLogger(__name__)
 TAB = "'Incoming Stocks'"
-LAST_ROW = 500
+LAST_ROW = 2000  # reaching this row is reported as truncated, never silently dropped
 CACHE_SECONDS = 45
 COLUMNS = {
     "po": "PO (Every Row)", "tracking": "Tracking (Every Row)", "product": "Product (Report Name)",
@@ -43,16 +43,21 @@ def _history(line: dict) -> bool:
     return line["treatment"].upper().startswith("INCLUDED IN LATEST COUNT")
 
 
+def _none(value: str) -> bool:
+    """Blank or an explicit 0 both mean nothing was received."""
+    return not value.strip() or parse_int(value) == 0
+
+
 def line_flags(line: dict, today: date) -> list[str]:
     if _history(line):
         return []  # already covered by the latest physical count
     flags = []
     status = line["status"].lower()
     expected, received = parse_int(line["boxes_expected"]), parse_int(line["boxes_received"])
-    nothing_received = not line["boxes_received"] and not line["units_received"]
+    nothing_received = _none(line["boxes_received"]) and _none(line["units_received"])
     if line["received_date"] and expected is not None and received is not None and received < expected:
         flags.append("missing_boxes")
-    if ("arrived" in status or "delivered" in status or "received" in status) and not line["boxes_received"]:
+    if ("arrived" in status or "delivered" in status or "received" in status) and _none(line["boxes_received"]):
         flags.append("receipt_not_recorded")
     if "transfer" in status:
         flags.append("needs_transfer")
@@ -83,20 +88,23 @@ def parse_incoming(values_by_key: dict[str, list], today: date) -> dict:
     shipments, history, incoming = [], [], {}
     for key in order:
         group = groups[key]
-        group["flags"] = sorted({flag for line in group["lines"] for flag in line["flags"]})
-        if all(_history(line) for line in group["lines"]):
-            history.append(group)
-            continue
-        shipments.append(group)
+        # A PO can be partly counted already: received lines go to history, the rest stay open.
+        for target, lines in ((history, [l for l in group["lines"] if _history(l)]),
+                              (shipments, [l for l in group["lines"] if not _history(l)])):
+            if lines:
+                target.append({**group, "lines": lines,
+                               "flags": sorted({flag for line in lines for flag in line["flags"]})})
+    for group in shipments:
         for line in group["lines"]:
             units = parse_int(line["units"])
-            if _history(line) or "sku_unverified" in line["flags"] or units is None:
+            if "sku_unverified" in line["flags"] or units is None:
                 continue
             total = incoming.setdefault(line["sku"], {"sku": line["sku"], "product": line["product"], "units": 0})
             total["units"] += units
-    unverified = sum("sku_unverified" in line["flags"] and not _history(line)
-                     for group in shipments for line in group["lines"])
-    return {"available": True, "shipments": shipments, "history": history,
+    unverified = sum("sku_unverified" in line["flags"] for group in shipments for line in group["lines"])
+    # Columns are read up to LAST_ROW; a filled final row means the tab may continue past it.
+    truncated = length >= LAST_ROW - 1
+    return {"available": True, "truncated": truncated, "shipments": shipments, "history": history,
             "incoming_by_sku": sorted(incoming.values(), key=lambda row: row["sku"]),
             "unverified_lines": unverified}
 

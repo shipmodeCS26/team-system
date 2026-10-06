@@ -84,7 +84,8 @@ function renderIncoming(){
   if(state.client==="all"){$("incoming-status").textContent="Read-only";$("incoming-shipments").innerHTML='<p class="empty-cell"><strong>Select one client</strong>Incoming shipments are shown one client at a time.</p>';return}
   if(!source||source.error){$("incoming-status").textContent="Read-only";$("incoming-shipments").innerHTML=source?"":'<p class="empty-cell"><strong>Loading incoming shipments…</strong></p>';return}
   if(!source.available){$("incoming-status").textContent="Not available";$("incoming-shipments").innerHTML='<p class="empty-cell"><strong>No Incoming Stocks tab</strong>This client\'s workbook does not track incoming shipments yet.</p>';return}
-  $("incoming-status").textContent=`${source.shipments.length} open`;
+  $("incoming-status").textContent=`${source.shipments.length} open`+(source.truncated?" · INCOMPLETE":"");
+  if(source.truncated){$("incoming-error").hidden=false;$("incoming-error").textContent="The Incoming Stocks tab is longer than ShipMode reads; later rows are not shown."}
   $("incoming-totals").innerHTML=source.incoming_by_sku.map(t=>`<div><span>${esc(t.sku)} · ${esc(t.product)}</span><strong>${fmt(t.units)}</strong><small>incoming, not in on-hand</small></div>`).join("")+(source.unverified_lines?`<p class="incoming-note">${source.unverified_lines} line(s) have no verified SKU and are not included in these totals.</p>`:"");
   $("incoming-shipments").innerHTML=source.shipments.length?source.shipments.map(incomingCard).join(""):'<p class="empty-cell"><strong>No open incoming shipments</strong>Everything listed in the tab is already included in the latest count.</p>';
   $("incoming-history-toggle").hidden=!source.history.length;
@@ -103,11 +104,12 @@ async function loadIncoming(){
   renderIncoming();
 }
 async function openDailyUpdate(){
-  const button=$("daily-update-button");button.disabled=true;
+  const button=$("daily-update-button"),client=state.client;button.disabled=true;
   try{
-    const result=await api(`/api/daily-update?client_id=${encodeURIComponent(state.client)}`);
+    const result=await api(`/api/daily-update?client_id=${encodeURIComponent(client)}`);
+    if(client!==state.client)return;  // the client changed while loading: never show another client's text
     $("update-text").value=result.text;
-    const notes=[result.draft?"The source is under review: the text starts with a DRAFT line. Check the Sheet before posting.":"",result.incoming_error?`Incoming shipments were left out: ${result.incoming_error}`:"",result.held_back?.length?`Not included because no verified SKU or quantity: ${result.held_back.join(", ")}. Check them in the Incoming panel.`:""].filter(Boolean);
+    const notes=[result.draft?"The source is under review: the text starts with a DRAFT line. Check the Sheet before posting.":"",result.incoming_error?`Incoming shipments were left out: ${result.incoming_error}`:"",result.held_back?.length?`Not included (fully or partly) because no verified SKU or quantity: ${result.held_back.join(", ")}. Check them in the Incoming panel.`:"",result.incoming_truncated?"The Incoming Stocks tab is longer than ShipMode reads; later shipments may be missing from this text.":""].filter(Boolean);
     $("update-warning").textContent=notes.join(" ");$("update-warning").hidden=!notes.length;
     $("update-dialog").showModal();
   }catch(error){toast(error.message)}

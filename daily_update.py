@@ -64,12 +64,13 @@ def build_update(client_name: str, source: dict, incoming: dict | None = None) -
     if incoming and incoming.get("available") and incoming.get("shipments"):
         listed = []
         for group in incoming["shipments"]:
-            items = "; ".join(f"{line['product']} {line['units']}" for line in group["lines"]
-                              if line.get("product") and "sku_unverified" not in line["flags"]
-                              and parse_int(line.get("units")) is not None)
-            if not items:
-                held_back.append(group["po"])  # internal review item, not client-facing
+            usable = [line for line in group["lines"] if line.get("product") and "sku_unverified" not in line["flags"]
+                      and parse_int(line.get("units")) is not None]
+            if len(usable) < len(group["lines"]) and group["po"] not in held_back:
+                held_back.append(group["po"])  # internal review item, not client-facing (also when only partly left out)
+            if not usable:
                 continue
+            items = "; ".join(f"{line['product']} {line['units']}" for line in usable)
             first = group["lines"][0]
             details = "; ".join(text for text in (first.get("where"), f"Expected in Miami: {first['expected_date']}"
                                                   if first.get("expected_date") else "") if text)
@@ -80,4 +81,5 @@ def build_update(client_name: str, source: dict, incoming: dict | None = None) -
             lines += ["", "Incoming, not yet in stock:", *listed]
 
     lines += ["", "Please let us know of any incoming inventory so we can reflect it in planning. Thank you!"]
-    return {"text": "\n".join(lines), "draft": bool(reasons), "held_back": held_back}
+    return {"text": "\n".join(lines), "draft": bool(reasons), "held_back": held_back,
+            "incoming_truncated": bool(incoming and incoming.get("truncated"))}
