@@ -104,6 +104,13 @@ class SourceTests(SskTestCase):
         self.assertEqual({c["headers"]["Authorization"] for c in fake.calls},
                          {"Bearer " + k for k in KEYS.values()})
 
+    def test_bundle_flag_is_read_from_the_api(self):
+        row = level("SET", "Premium Shower Hose", 5)
+        row["productVariant"]["product"] = {"name": "Premium Shower Hose", "isBundle": True}
+        result = self.read(FakeSsk({"ssk_secret_muravai": [[row, level("H", "Shower Hose", 3)]]}), ["muravai"])
+        flags = {v["sku"]: v["bundle"] for v in result["muravai"]["levels"]}
+        self.assertEqual(flags, {"SET": True, "H": False})
+
     def test_warehouses_summed_per_variant_and_shared_skus_kept_apart(self):
         rows = [level("A1", "Thing", 3, 1, variant_id="v1"), level("A1", "Thing", 4, 0, variant_id="v1"),
                 level("A1", "Other thing", 2, 0, variant_id="v2")]
@@ -170,7 +177,12 @@ class CompareTests(unittest.TestCase):
                                    sheet(("TrueForm Fascial Release Support", "110")))
         row = self.by_sku(result)["FAS001"]
         self.assertEqual((row["sheet_remaining"], row["vs_available"], row["vs_available_committed"]), (110, -10, 0))
-        self.assertEqual(row["status"], "MATCH")
+        # Only one of the two undecided bases agrees, so it is not reconciled.
+        self.assertEqual(row["status"], "REVIEW")
+        self.assertIn("Matches on one basis only (available vs on hand is undecided)", row["notes"])
+        both = ssk_check.compare("fascial-labs", levels(("FASCSUPP-1", "Support", 110, 0)),
+                                 sheet(("TrueForm Fascial Release Support", "110")))
+        self.assertEqual(self.by_sku(both)["FAS001"]["status"], "MATCH")
 
     def test_different_and_unmatched(self):
         result = ssk_check.compare("puravita", levels(("CAP-MAGNESIUM-360", "Magnesium", 50, 0),
@@ -222,6 +234,21 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(rows["MUR003"]["vs_available_committed"], 975 + 77 - 1291)
         self.assertEqual((rows["MUR004"]["sheet_remaining"], rows["MUR005"]["sheet_remaining"]), (0, 561))
         self.assertEqual(result["unmatched_sheet"], [])
+
+    def test_bundle_flag_wins_over_name(self):
+        items = levels(("PSH", "Premium Shower Hose", 50, 0), ("H", "Shower Hose", 20, 0))
+        items[0]["bundle"] = True
+        result = ssk_check.compare("muravai", items, sheet(("Shower Hose", "20")))
+        self.assertEqual(self.by_sku(result)["MUR004"]["ssk_skus"], ["H"])
+        self.assertIn("isBundle", {c["sku"]: c["note"] for c in result["components"]}["PSH"])
+
+    def test_filter_packs_other_than_three_are_not_mur001(self):
+        result = ssk_check.compare("muravai", levels(("F6", "Replacement Filters 6 Pack", 10, 0),
+                                                      ("F3", "Replacement Filters (3 Pack)", 10, 0)),
+                                   sheet(("Replacement Filters, 3-Pack", "10")))
+        row = self.by_sku(result)["MUR001"]
+        self.assertEqual((row["ssk_skus"], row["status"]), (["F3"], "MATCH"))
+        self.assertIn("3-pack", {c["sku"]: c["note"] for c in result["components"]}["F6"])
 
     def test_kit_split_needs_exactly_one_of_each_part(self):
         result = ssk_check.compare("muravai", levels(("T1", "Teflon Tape", 10, 0), ("T2", "Teflon Tape 2", 5, 0),

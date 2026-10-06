@@ -7,6 +7,7 @@ is a separate, approval-gated step (FACTORY_WORKFLOW.md, section 8).
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 
 import eod
@@ -71,6 +72,8 @@ def order_usage(items: str) -> OrderResult:
 SHEET_NAMES = {"replacement filters, 3-pack": "MUR001", "filtered showerhead": "MUR002",
                "connector kit box": "MUR003", "shower hose": "MUR004", "bracket / connector": "MUR005"}
 
+PACK_SIZE = re.compile(r"\b(\d+)\s*[-x]?\s*(?:pack|pk|filters?)\b")
+
 KIND_SKUS = {"filter": "MUR001", "showerhead": "MUR002", "kit": "MUR003", "hose": "MUR004", "connector": "MUR005"}
 
 
@@ -84,6 +87,11 @@ def shopify_match(variant: dict) -> dict | None:
     lowered = f" {text.lower()} "
     if kind != "kit" and any(word in lowered for word in (" set ", " kit ", " bundle ", " + ", " & ")):
         return {"sku": None, "how": "Set/kit of several products: not matched to one SKU"}
+    if kind == "filter":
+        # MUR001 is one retail box of three filters; other pack sizes are not the same unit.
+        pack = PACK_SIZE.search(f"{text} {variant.get('sku', '')}".lower())
+        if not pack or pack.group(1) != "3":
+            return {"sku": None, "how": "Filter pack size is not the approved 3-pack: needs mapping review"}
     if kind == "teflon":
         return {"sku": None, "covers": "MUR003",
                 "how": "Kit component: counted as MUR003 only with a hose and connector (RULES.md)"}

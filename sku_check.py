@@ -72,7 +72,8 @@ def check(client_id: str, variants: list[dict]) -> dict:
     rows.sort(key=lambda r: (order[r["status"]], not r["flags"], r["product"].lower(), r["variant"].lower()))
     summary = Counter(r["status"] for r in rows)
     flagged = sum(bool(r["flags"]) for r in rows)
-    needs_review = (summary["unmapped"] + summary["no_rules"] + flagged
+    not_matched = sum(r["status"] == "component" and not r["internal_sku"] for r in rows)
+    needs_review = (summary["unmapped"] + summary["no_rules"] + not_matched + flagged
                     + sum(r["state"] != "found" for r in rule_rows))
     return {
         "client_id": client_id,

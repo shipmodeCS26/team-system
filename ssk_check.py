@@ -35,6 +35,8 @@ def _match(rules, product, variant, sku):
 
 def match_level(rules, level):
     """Internal SKU for one ShipSidekick variant: its SKU, then its aliases, then its name."""
+    if level.get("bundle"):
+        return {"sku": None, "how": "Bundle in ShipSidekick (isBundle): not matched to one SKU"}
     for code in [level["sku"], *level["aliases"]]:
         if code:
             found = _match(rules, level["product"], level["title"] if level["product"] else "", code)
@@ -114,8 +116,12 @@ def compare(client_id, levels, sheet):
         if quantities and sheet_value is not None:
             diffs = {"vs_available": quantities["available"] - sheet_value,
                      "vs_available_committed": quantities["available"] + quantities["committed"] - sheet_value}
+        if not notes and list(diffs.values()).count(0) == 1:
+            # Which ShipSidekick number the Sheet should equal is undecided (#16), so a match on one
+            # basis only is not a reconciliation.
+            notes.append("Matches on one basis only (available vs on hand is undecided)")
         status = ("REVIEW" if notes else
-                  "MATCH" if 0 in diffs.values() else "DIFFERENT")
+                  "MATCH" if all(d == 0 for d in diffs.values()) else "DIFFERENT")
         out.append({"sku": sku, "label": rules.labels.get(sku, ""), "ssk_skus": ssk_skus, "basis": basis,
                     "sheet_product": rows[0]["product"] if len(rows) == 1 else "",
                     "sheet_remaining": sheet_value, "ssk": quantities, **diffs,

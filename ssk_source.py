@@ -121,8 +121,9 @@ def inventory_levels(key):
         name = str(product.get("name") or product.get("title") or "").strip()
         # One variant can sit in several warehouses (summed); two variants sharing a SKU stay separate.
         key_ = str(variant.get("id") or "") or f"sku:{sku.upper() or title}"
+        bundle = any(isinstance(d, dict) and d.get("isBundle") is True for d in (product, variant, row))
         item = variants.setdefault(key_, {
-            "sku": sku, "title": title, "product": name,
+            "sku": sku, "title": title, "product": name, "bundle": bundle,
             "aliases": sorted({str(a).strip() for a in variant.get("skuAliases") or [] if str(a).strip()}),
             **{q: 0 for q in QUANTITIES}, "locations": 0})
         item["available"] += _qty(row.get("availableQuantity"))

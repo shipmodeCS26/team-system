@@ -269,9 +269,21 @@ class SkuCheckTests(unittest.TestCase):
         self.assertEqual((bundle["status"], bundle["internal_sku"]), ("component", None))
         self.assertIn("not matched to one SKU", bundle["how"])
         self.assertEqual(rows[("Shower Hose & Connector Set", "Default Title")]["internal_sku"], None)
+        # Sets matched to no SKU still count as needing review (no false "All mapped").
+        self.assertGreaterEqual(result["summary"]["needs_review"], 2)
         self.assertEqual({r["internal_sku"]: r["state"] for r in result["rules"]},
                          {"MUR001": "found", "MUR002": "found", "MUR003": "found", "MUR004": "found", "MUR005": "found"})
         self.assertEqual(result["rule_status"], "APPROVED")
+
+    def test_set_alone_is_never_all_mapped(self):
+        catalog = [variant("Filtered Showerhead", "A"), variant("Replacement Filters", "B", "3 pack"),
+                   variant("Shower Hose", "C"), variant("Shower Connector", "D"), variant("Teflon Tape", "E"),
+                   variant("Complete Shower Set", "F")]
+        self.assertEqual(sku_check.check("muravai", catalog)["summary"]["needs_review"], 1)
+
+    def test_filter_six_pack_is_not_mur001(self):
+        result = sku_check.check("muravai", [variant("Replacement Filters", "F6", "6 pack")])
+        self.assertEqual((result["variants"][0]["status"], result["variants"][0]["internal_sku"]), ("component", None))
 
     def test_client_without_rules_maps_nothing(self):
         result = sku_check.check("onset", [variant("Onset Gel", "ONS-1")])
