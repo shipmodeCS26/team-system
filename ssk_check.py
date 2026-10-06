@@ -7,7 +7,7 @@ should equal the Sheet's "Remaining" is an open business rule, so both
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import client_rules
 
@@ -102,8 +102,9 @@ def compare(client_id, levels, sheet):
             quantities, ssk_skus, basis = item["quantities"], item["sources"], item["basis"]
             if item.get("review"):
                 notes.append(item["review"])
-            elif quantities["available"] < 0 or quantities["available"] + quantities["committed"] < 0:
-                notes.append("Negative after splitting kits: fewer parts than Teflon tapes in ShipSidekick")
+            elif any(value < 0 for value in quantities.values()):
+                negative = ", ".join(k.replace("_", " ") for k, value in quantities.items() if value < 0)
+                notes.append(f"Negative after splitting kits ({negative}): fewer parts than Teflon tapes")
         elif len(ssk) == 1:
             quantities = {k: ssk[0][k] for k in ("available", "committed", "incoming", "damaged",
                                                   "reserved", "quality_control")}
@@ -127,8 +128,8 @@ def compare(client_id, levels, sheet):
                     "sheet_remaining": sheet_value, "ssk": quantities, **diffs,
                     "status": status, "notes": notes})
 
-    duplicates = sorted({v["sku"] for v in levels if v["sku"]
-                         and sum(1 for w in levels if w["sku"].upper() == v["sku"].upper()) > 1})
+    sku_counts = Counter(v["sku"].upper() for v in levels if v["sku"])
+    duplicates = sorted({v["sku"] for v in levels if v["sku"] and sku_counts[v["sku"].upper()] > 1})
     return {
         "client_id": client_id,
         "rule_status": rules.status if rules else "NONE",

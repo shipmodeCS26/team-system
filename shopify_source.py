@@ -144,8 +144,24 @@ def _access_token(store):
     return token
 
 
-def _graphql(store, document, variables=None):
+def _graphql(store, document, variables=None, retry=True):
     """The single path to the Shopify Admin API. Reads only."""
+    if document not in READ_QUERIES or WRITE_OPERATION.search(document):
+        raise ReadOnlyViolation("Only allowlisted Shopify read queries may be sent.")
+    try:
+        return _graphql_once(store, document, variables)
+    except SourceError as error:
+        # A client-credentials token can be revoked before it expires (e.g. after the client fixes
+        # scopes and reinstalls). Drop the cached token and exchange again, once.
+        if retry and error.code in ("access_denied", "missing_scope") and not store.get("token"):
+            with _lock:
+                dropped = _tokens.pop((store["shop"], store["client_id"]), None)
+            if dropped:
+                return _graphql(store, document, variables, retry=False)
+        raise
+
+
+def _graphql_once(store, document, variables):
     if document not in READ_QUERIES or WRITE_OPERATION.search(document):
         raise ReadOnlyViolation("Only allowlisted Shopify read queries may be sent.")
     try:

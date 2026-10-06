@@ -197,7 +197,7 @@ def shopify_sku_check():
             warnings.append(f"Store has more than {shopify_source.PAGE_SIZE * shopify_source.MAX_PAGES:,} variants; the rest were not checked.")
         if catalog["missing_scopes"]:
             warnings.append("Not granted yet (needed for later order checks): " + ", ".join(catalog["missing_scopes"]))
-        clients.append(dict(result, warnings=warnings, fetched_at=catalog["fetched_at"]))
+        clients.append(dict(result, warnings=warnings, truncated=catalog["truncated"], fetched_at=catalog["fetched_at"]))
     return {"clients": clients, "as_of": utcnow().isoformat(), "writes": "disabled"}
 
 

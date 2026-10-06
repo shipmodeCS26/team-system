@@ -48,8 +48,11 @@ def check(client_id: str, variants: list[dict]) -> dict:
             status, internal, how = "no_rules", None, "No rule package for this client"
         elif match and match.get("sku"):
             status, internal, how = "mapped", match["sku"], match["how"]
+        elif match and match.get("covers"):
+            status, internal, how = "component", match["covers"], match["how"]
         elif match:
-            status, internal, how = "component", match.get("covers"), match["how"]
+            # Sets/bundles and non-approved pack sizes: the rules looked at it and declined to map it.
+            status, internal, how = "unmapped", None, match["how"]
         else:
             status, internal = "unmapped", None
             how = (f"Proposal: add ShipSidekick code {variant['sku']} to this client's rules (needs approval)"
@@ -72,8 +75,7 @@ def check(client_id: str, variants: list[dict]) -> dict:
     rows.sort(key=lambda r: (order[r["status"]], not r["flags"], r["product"].lower(), r["variant"].lower()))
     summary = Counter(r["status"] for r in rows)
     flagged = sum(bool(r["flags"]) for r in rows)
-    not_matched = sum(r["status"] == "component" and not r["internal_sku"] for r in rows)
-    needs_review = (summary["unmapped"] + summary["no_rules"] + not_matched + flagged
+    needs_review = (summary["unmapped"] + summary["no_rules"] + flagged
                     + sum(r["state"] != "found" for r in rule_rows))
     return {
         "client_id": client_id,

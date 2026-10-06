@@ -197,6 +197,31 @@ class SourceTests(ShopifyTestCase):
         token_calls = [c for c in fake.calls if c["url"].endswith("/admin/oauth/access_token")]
         self.assertEqual(len(token_calls), 1)
 
+    def test_revoked_cached_token_is_refreshed_once(self):
+        stores = {"muravai": {"shop": SHOPS["muravai"], "client_id": "app-client-id", "client_secret": "app-secret-value"}}
+        shop_state = {"scopes": READ_SCOPES, "pages": [[node("Showerhead", "MUR-SH")]]}
+        fake = FakeShopify({SHOPS["muravai"]: shop_state})
+        self.read(fake, ["muravai"], stores)                      # caches a token
+        shopify_source._cache.clear()
+        real_post, calls = fake.post, {"n": 0}
+
+        def post(url, **kw):
+            # The cached token is rejected once (revoked), then the fresh one works.
+            if url.endswith("graphql.json") and calls["n"] == 0:
+                calls["n"] += 1
+                return FakeResponse(401)
+            return real_post(url, **kw)
+        fake.post = post
+        result = self.read(fake, ["muravai"], stores)
+        self.assertEqual(result["muravai"]["variants"][0]["sku"], "MUR-SH")
+        token_calls = [c for c in fake.calls if c["url"].endswith("/admin/oauth/access_token")]
+        self.assertEqual(len(token_calls), 2)
+
+    def test_fixed_token_is_not_retried(self):
+        fake = FakeShopify({SHOPS["muravai"]: 401})
+        self.assertEqual(self.read(fake, ["muravai"])["muravai"]["error_code"], "access_denied")
+        self.assertEqual(len(fake.calls), 1)
+
     def test_rejected_client_credentials_are_access_denied(self):
         fake = FakeShopify({SHOPS["muravai"]: 400})
         stores = {"muravai": {"shop": SHOPS["muravai"], "client_id": "app-client-id", "client_secret": "app-secret-value"}}
@@ -266,7 +291,7 @@ class SkuCheckTests(unittest.TestCase):
         teflon = rows[("Teflon Tape", "Default Title")]
         self.assertEqual((teflon["status"], teflon["internal_sku"]), ("component", "MUR003"))
         bundle = rows[("Mystery Bundle", "Default Title")]
-        self.assertEqual((bundle["status"], bundle["internal_sku"]), ("component", None))
+        self.assertEqual((bundle["status"], bundle["internal_sku"]), ("unmapped", None))
         self.assertIn("not matched to one SKU", bundle["how"])
         self.assertEqual(rows[("Shower Hose & Connector Set", "Default Title")]["internal_sku"], None)
         # Sets matched to no SKU still count as needing review (no false "All mapped").
@@ -283,7 +308,9 @@ class SkuCheckTests(unittest.TestCase):
 
     def test_filter_six_pack_is_not_mur001(self):
         result = sku_check.check("muravai", [variant("Replacement Filters", "F6", "6 pack")])
-        self.assertEqual((result["variants"][0]["status"], result["variants"][0]["internal_sku"]), ("component", None))
+        row = result["variants"][0]
+        self.assertEqual((row["status"], row["internal_sku"]), ("unmapped", None))
+        self.assertIn("3-pack", row["how"])
 
     def test_client_without_rules_maps_nothing(self):
         result = sku_check.check("onset", [variant("Onset Gel", "ONS-1")])
@@ -336,6 +363,7 @@ class ShopifyApiTests(unittest.TestCase):
             self.assertEqual([c["client_id"] for c in body["clients"]], ["muravai"])
             self.assertEqual(body["clients"][0]["variants"][0]["internal_sku"], "MUR002")
             self.assertIn("read_orders", body["clients"][0]["warnings"][0])
+            self.assertIs(body["clients"][0]["truncated"], False)
             self.assertNotIn(SHOPS["muravai"], response.get_data(as_text=True))
             self.assertEqual(self.client.get("/api/shopify/sku-check?client_id=unknown", headers=self.auth).status_code, 400)
 

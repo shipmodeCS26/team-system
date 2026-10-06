@@ -80,7 +80,8 @@ function renderShopify(){
   const stateText={found:"In Shopify",inactive:"Only on draft/archived products",missing:"Not found in Shopify"};
   $("shopify-rules").innerHTML=clients.filter(c=>!c.error).map(c=>`<div class="eod-card"><strong>${esc(clientName(c.client_id))} — rules ${esc(c.rule_status.toLowerCase())}</strong><span>${c.summary.mapped} mapped · ${c.summary.unmapped} not mapped · ${c.summary.flagged} with checks · ${c.summary.variants} variants</span>${c.rules.length?c.rules.map(r=>`<small class="${r.state==="found"?"":"finding"}">${esc(r.internal_sku)} ${esc(r.label)}: ${esc(stateText[r.state])}</small>`).join(""):"<small>No rule package for this client yet; nothing can be mapped.</small>"}</div>`).join("");
   const review=clients.filter(c=>!c.error).reduce((n,c)=>n+c.summary.needs_review,0);
-  $("shopify-status").textContent=state.shopify===null?"Not loaded":clients.some(c=>!c.error)?(review?`${review} to review`:"All mapped"):"Not connected";
+  const complete=clients.length&&clients.every(c=>!c.error&&!c.truncated);
+  $("shopify-status").textContent=state.shopify===null?"Not loaded":!clients.some(c=>!c.error)?"Not connected":review?`${review} to review`:complete?"All mapped":"Incomplete · not all stores loaded";
   $("shopify-export").disabled=!rows.length;
 }
 const loadShopify=makePanelLoader(state,(...a)=>api(...a),"shopify","/api/shopify/sku-check",()=>renderShopify());

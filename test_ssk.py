@@ -267,6 +267,19 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(row["ssk"]["available"], -10)
         self.assertEqual(row["status"], "REVIEW")
 
+    def test_negative_incoming_after_split_is_reviewed(self):
+        items = levels(("T", "Teflon Tape", 10, 0), ("H", "Shower Hose", 20, 0), ("C", "Shower Connector", 20, 0))
+        items[0]["incoming"] = 5
+        result = ssk_check.compare("muravai", items, sheet(("Shower Hose", "10")))
+        row = self.by_sku(result)["MUR004"]
+        self.assertEqual((row["ssk"]["available"], row["ssk"]["incoming"]), (10, -5))
+        self.assertEqual(row["status"], "REVIEW")
+        self.assertTrue(any("incoming" in n for n in row["notes"]))
+
+    def test_duplicate_skus_listed_once(self):
+        items = levels(("A1", "Thing", 1, 0), ("a1", "Other", 1, 0), ("B", "Third", 1, 0))
+        self.assertEqual(ssk_check.compare("onset", items, None)["duplicate_skus"], ["A1", "a1"])
+
     def test_no_tape_means_no_split(self):
         result = ssk_check.compare("muravai", levels(("H", "Shower Hose", 20, 0)), sheet(("Shower Hose", "20")))
         row = self.by_sku(result)["MUR004"]
