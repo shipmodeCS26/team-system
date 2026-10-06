@@ -52,7 +52,17 @@ VARIANTS_QUERY = """query ShipModeVariants($after: String) {
     pageInfo { hasNextPage endCursor }
   }
 }""" % PAGE_SIZE
-READ_QUERIES = frozenset({SCOPES_QUERY, VARIANTS_QUERY})
+ORDER_QUERY = """query ShipModeOrder($q: String!) {
+  orders(first: 5, query: $q) {
+    nodes {
+      name createdAt updatedAt cancelledAt displayFinancialStatus displayFulfillmentStatus
+      lineItems(first: 50) { nodes { name sku quantity currentQuantity } }
+      shippingAddress { name address1 address2 city provinceCode zip countryCodeV2 }
+    }
+  }
+}"""
+READ_QUERIES = frozenset({SCOPES_QUERY, VARIANTS_QUERY, ORDER_QUERY})
+ORDER_NAME = re.compile(r"#?[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
 
 # Shown to signed-in staff. Messages never include shop domains or credentials.
 ERRORS = {
@@ -63,6 +73,7 @@ ERRORS = {
     "not_found": "Shopify store not found. Check the store domain in the private deployment settings.",
     "unavailable": "Shopify did not respond. Try again shortly.",
     "read_failed": "The Shopify store could not be read.",
+    "order_scope": "The ShipMode app cannot read orders yet (needs read_orders; addresses also need read_customers).",
 }
 
 
@@ -265,3 +276,34 @@ def read_catalogs(client_ids):
                 log.warning("shopify source failed client=%s type=%s", client_id, type(error).__name__)
                 result.append({"id": client_id, "error_code": "read_failed", "error": ERRORS["read_failed"]})
         return result
+
+
+def read_order(client_id, order_name):
+    """One client's Shopify order by its exact name, read on demand (#13). Never cached: it carries
+    the shipping address, which is returned to the signed-in browser and never stored or logged."""
+    store = store_config().get(client_id)
+    if not _valid_store(store):
+        raise SourceError("not_configured")
+    if not isinstance(order_name, str) or not ORDER_NAME.fullmatch(order_name):
+        raise ValueError("invalid order name")
+    scopes = granted_scopes(store)
+    check_scopes(scopes)  # refuses a token with write access before any order is read
+    if "read_orders" not in scopes:
+        raise SourceError("order_scope")
+    data = _graphql(store, ORDER_QUERY, {"q": f'name:"{order_name}"'})
+    orders = []
+    for node in ((data.get("orders") or {}).get("nodes") or []):
+        if str(node.get("name") or "").lstrip("#").lower() != order_name.lstrip("#").lower():
+            continue  # Shopify search is fuzzy; only the exact order counts
+        address = node.get("shippingAddress") if isinstance(node.get("shippingAddress"), dict) else None
+        orders.append({
+            "name": node.get("name"), "created_at": node.get("createdAt"), "cancelled_at": node.get("cancelledAt"),
+            "financial": node.get("displayFinancialStatus") or "", "fulfillment": node.get("displayFulfillmentStatus") or "",
+            "items": [{"name": (line.get("name") or "").strip(), "sku": (line.get("sku") or "").strip(),
+                       "qty": line.get("currentQuantity") if isinstance(line.get("currentQuantity"), int) else line.get("quantity")}
+                      for line in ((node.get("lineItems") or {}).get("nodes") or []) if isinstance(line, dict)],
+            "address": {key: address.get(key) for key in
+                        ("name", "address1", "address2", "city", "provinceCode", "zip", "countryCodeV2")} if address else None,
+            "address_visible": "read_customers" in scopes,
+        })
+    return orders

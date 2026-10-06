@@ -21,6 +21,7 @@ from inventory import read_dashboards
 from ledger_sources import calculate_clients
 import shopify_source
 import sku_check
+import order_check
 import ssk_check
 import ssk_source
 
@@ -168,7 +169,7 @@ def workspace():
                             "environment": store["environment"], "fetched_at": store["fetched_at"]})
         return {"mode": "ssk", "clients": CLIENTS, "sources": sources, "lookback_days": days,
                 "shipments": [classify(dict(row, id=index + 1)) for index, row in enumerate(records)],
-                "as_of": utcnow().isoformat(), "writes": "disabled",
+                "as_of": utcnow().isoformat(), "writes": "disabled", "shopify_orders": shopify_source.enabled(),
                 "integration": "ShipSidekick API (read-only)"}
     else:
         records = sample_shipments()
@@ -276,6 +277,42 @@ def shopify_sku_check():
             warnings.append("Not granted yet (needed for later order checks): " + ", ".join(catalog["missing_scopes"]))
         clients.append(dict(result, warnings=warnings, truncated=catalog["truncated"], fetched_at=catalog["fetched_at"]))
     return {"clients": clients, "as_of": utcnow().isoformat(), "writes": "disabled"}
+
+
+@app.get("/api/shopify/order")
+@protected
+def shopify_order():
+    """#13: the Shopify order behind one ShipSidekick shipment, read on demand. Read-only.
+    The shipping address goes only to this signed-in response (no-store); it is never cached,
+    logged or exported."""
+    if not shopify_source.enabled():
+        return jsonify(error="Shopify is not connected."), 503
+    if not ssk_source.enabled():
+        return jsonify(error="Needs the ShipSidekick shipment queue."), 503
+    client_id, tracking = request.args.get("client_id", ""), request.args.get("tracking", "")
+    if client_id not in [client["id"] for client in CLIENTS] or not tracking or len(tracking) > 120:
+        return jsonify(error="Choose one shipment."), 400
+    try:
+        store = ssk_source.read_shipments(client_id, ssk_source.lookback_days())
+    except ssk_source.SourceError as error:
+        return jsonify(error=ssk_source.ERRORS.get(error.code, ssk_source.ERRORS["read_failed"])), 502
+    shipment = next((row for row in store["rows"] if row["tracking_number"] == tracking), None)
+    if shipment is None:
+        return jsonify(error="That shipment is not in this client's current queue."), 404
+    name = shipment.get("order_number")
+    if not name:
+        return {"order": None, **order_check.check(client_id, shipment, []), "writes": "disabled"}
+    same_order = sum(row.get("order_number") == name for row in store["rows"])
+    try:
+        orders = shopify_source.read_order(client_id, name)
+    except ValueError:
+        return jsonify(error="This shipment's order number cannot be looked up in Shopify."), 422
+    except shopify_source.SourceError as error:
+        shopify_source.failure(client_id, error.code, error.status)
+        return jsonify(error=shopify_source.ERRORS[error.code]), 502
+    result = order_check.check(client_id, shipment, orders, same_order)
+    return {"order": orders[0] if len(orders) == 1 else None, "matches": len(orders), **result,
+            "writes": "disabled"}
 
 
 @app.get("/api/ssk/shipment-fields")

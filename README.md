@@ -217,6 +217,15 @@ physical carrier scans reset the clock, and label-only shipments fall back to
 the label date. Addresses, line items, prices and label files are never copied
 into a row. Follow-up notes stay off until the database exists.
 
+Shopify order behind a shipment (#13): with `SHOPIFY_ENABLED=true` and the
+ShipSidekick queue on, opening a shipment in No Movement offers "Show Shopify
+order and address". It reads that one order by its exact name (read-only, needs
+`read_orders`; the address also needs `read_customers`) and shows payment and
+fulfillment status, items on both sides, and the current ship-to address. Flags
+(not found, cancelled, refunded, items differ, several shipments) are for review
+only and never change a shipment's age or priority. The address is never cached,
+logged, exported or stored, and is cleared from the page when the panel closes.
+
 ## Calculated inventory (shadow check)
 
 See `docs/V1_PLAN.md`. Off by default; set `INVENTORY_LEDGER_ENABLED=true` in the private Render settings after the Sheets connection works. Approved counts for clients without a Manual Counts tab go in `INVENTORY_BASELINES_JSON` (format in the plan). Only nine ShipSidekick columns are read; customer names and addresses are never requested.

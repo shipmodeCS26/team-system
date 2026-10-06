@@ -73,3 +73,6 @@ td,.metric strong,.inventory-cards strong{font-variant-numeric:tabular-nums}
 #shopify-error{margin:0 22px 16px}
 .heading-actions .badge{white-space:nowrap}
 #ssk-error{margin:0 22px 16px}
+
+.order-flags{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.ship-to{font-style:normal;line-height:1.5;margin:6px 0 10px}
