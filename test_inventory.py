@@ -81,6 +81,7 @@ class DashboardAdapterTests(unittest.TestCase):
         result = parse_dashboard(values)
         self.assertEqual(len(result["rows"]), 25)
         self.assertTrue(any("past row 39" in warning for warning in result["warnings"]))
+        self.assertTrue(result["may_continue"])
         values = dashboard(["Product", "Remaining stocks"], [[f"P{i}", "1"] for i in range(24)] + [["TOTAL", "24"]])
         self.assertFalse(any("past row 39" in warning for warning in parse_dashboard(values)["warnings"]))
 

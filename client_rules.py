@@ -40,6 +40,11 @@ class AliasRules:
             usage[sku] += qty
         return OrderResult(usage=usage, raw=dict(usage), unknown_items=unknown)
 
+    def shopify_match(self, variant: dict) -> dict | None:
+        """A Shopify variant maps when its SKU is a ShipSidekick product code in this package."""
+        sku = self.aliases.get(variant.get("sku", "").strip().upper())
+        return {"sku": sku, "how": "Shopify SKU = ShipSidekick code"} if sku else None
+
 
 PROPOSED = "PROPOSED — mapping taken from ShipSidekick exports and the client Sheet; needs ShipMode approval"
 
