@@ -1,6 +1,6 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null, inventorySources:null, inventoryAsOf:null, inventoryRequest:0, calculated:null, calculatedError:null, shopify:null, shopifyError:null, ssk:null, sskError:null, panelRequests:{}};
+const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null, inventorySources:null, inventoryAsOf:null, inventoryRequest:0, calculated:null, calculatedError:null, shopify:null, shopifyError:null, ssk:null, sskError:null, panelRequests:{}, shopifyShown:200};
 const PAGE_SIZE = 10;
 const tierNames = {critical:"Critical",urgent:"Urgent",watch:"Watch",monitoring:"Monitoring",delivered:"Delivered",cancelled:"Cancelled",data_gap:"Missing data"};
 const statusNames = {pre_transit:"Label created",in_transit:"In transit",out_for_delivery:"Out for delivery",available_for_pickup:"Ready for pickup",delivered:"Delivered",unknown:"Unknown",failure:"Carrier exception",return_to_sender:"Returning",cancelled:"Cancelled"};
@@ -73,7 +73,8 @@ function shopifyRows(){return (state.shopify||[]).filter(c=>!c.error).flatMap(c=
 function renderShopify(){
   const clients=state.shopify||[], rows=shopifyRows();
   const badge={mapped:"delivered",component:"in_transit",unmapped:"critical",no_rules:"data_gap"};
-  $("shopify-rows").innerHTML=rows.length?rows.map(r=>`<tr><td><strong>${esc(r.product)}${r.variant&&r.variant!=="Default Title"?" · "+esc(r.variant):""}</strong><small>${esc(clientName(r.client))} · ${esc(r.product_status.toLowerCase())}</small></td><td>${r.sku?esc(r.sku):'<span class="muted">blank</span>'}</td><td>${r.internal_sku?`<strong>${esc(r.internal_sku)}</strong><small>${esc(r.label)}</small>`:"—"}</td><td class="inventory-source"><span class="badge ${badge[r.status]||""}">${esc(r.status_text)}</span><small>${esc(r.how)}</small></td><td class="inventory-source">${r.flag_text.length?r.flag_text.map(t=>`<small class="finding">${esc(t)}</small>`).join(""):'<small>OK</small>'}</td></tr>`).join(""):(state.shopify===null?'<tr><td colspan="5" class="empty-cell"><strong>Loading…</strong>Reading Shopify.</td></tr>':'<tr><td colspan="5" class="empty-cell"><strong>No Shopify products</strong>'+esc(state.shopifyError||"No connected store returned products.")+'</td></tr>');
+  const shown=rows.slice(0,state.shopifyShown);
+  $("shopify-rows").innerHTML=rows.length?shown.map(r=>`<tr><td><strong>${esc(r.product)}${r.variant&&r.variant!=="Default Title"?" · "+esc(r.variant):""}</strong><small>${esc(clientName(r.client))} · ${esc(r.product_status.toLowerCase())}</small></td><td>${r.sku?esc(r.sku):'<span class="muted">blank</span>'}</td><td>${r.internal_sku?`<strong>${esc(r.internal_sku)}</strong><small>${esc(r.label)}</small>`:"—"}</td><td class="inventory-source"><span class="badge ${badge[r.status]||""}">${esc(r.status_text)}</span><small>${esc(r.how)}</small></td><td class="inventory-source">${r.flag_text.length?r.flag_text.map(t=>`<small class="finding">${esc(t)}</small>`).join(""):'<small>OK</small>'}</td></tr>`).join(""):(state.shopify===null?'<tr><td colspan="5" class="empty-cell"><strong>Loading…</strong>Reading Shopify.</td></tr>':'<tr><td colspan="5" class="empty-cell"><strong>No Shopify products</strong>'+esc(state.shopifyError||"No connected store returned products.")+'</td></tr>');
   const problems=clients.filter(c=>c.error).map(c=>`<div class="source-problem failed"><strong>${esc(clientName(c.client_id))} — not loaded</strong> ${esc(c.error)}</div>`)
     .concat(clients.filter(c=>!c.error).flatMap(c=>(c.warnings||[]).map(w=>`<div class="source-problem"><strong>${esc(clientName(c.client_id))}</strong> ${esc(w)}</div>`)));
   $("shopify-error").innerHTML=problems.join("");$("shopify-error").hidden=!problems.length;
@@ -83,6 +84,8 @@ function renderShopify(){
   const complete=clients.length&&clients.every(c=>!c.error&&!c.truncated);
   $("shopify-status").textContent=state.shopify===null?"Not loaded":!clients.some(c=>!c.error)?"Not connected":review?`${review} to review`:complete?"All mapped":"Incomplete · not all stores loaded";
   $("shopify-export").disabled=!rows.length;
+  $("shopify-more").hidden=rows.length<=state.shopifyShown;
+  $("shopify-more").textContent=`Show more (${Math.min(state.shopifyShown,rows.length).toLocaleString()} of ${rows.length.toLocaleString()} shown · CSV export has all)`;
 }
 const loadShopify=makePanelLoader(state,(...a)=>api(...a),"shopify","/api/shopify/sku-check",()=>renderShopify());
 function exportShopify(){
@@ -101,7 +104,7 @@ function renderSsk(){
   const problems=clients.filter(c=>c.error).map(c=>`<div class="source-problem failed"><strong>${esc(clientName(c.client_id))} — not loaded</strong> ${esc(c.error)}</div>`)
     .concat(clients.filter(c=>!c.error).flatMap(c=>(c.warnings||[]).concat(c.sheet_error?["Sheet: "+c.sheet_error]:[]).map(w=>`<div class="source-problem"><strong>${esc(clientName(c.client_id))}</strong> ${esc(w)}</div>`)));
   $("ssk-error").innerHTML=problems.join("");$("ssk-error").hidden=!problems.length;
-  $("ssk-extra").innerHTML=clients.filter(c=>!c.error&&(c.unmatched_ssk.length||c.unmatched_sheet.length||c.components.length||c.blank_skus||c.duplicate_skus.length)).map(c=>`<div class="eod-card"><strong>${esc(clientName(c.client_id))} — needs mapping review</strong>${c.unmatched_ssk.map(v=>`<small class="finding">ShipSidekick SKU not in rules: ${esc(v.sku||"(blank)")} · ${esc(v.title)} · ${fmt(v.available)} available</small>`).join("")}${c.components.map(v=>`<small>${esc(v.sku)} · ${esc(v.title)}: ${esc(v.note)}</small>`).join("")}${c.unmatched_sheet.map(p=>`<small class="finding">Sheet row not matched to a SKU: ${esc(p)}</small>`).join("")}${c.blank_skus?`<small class="finding">${c.blank_skus} ShipSidekick item(s) with a blank SKU</small>`:""}${c.duplicate_skus.map(s=>`<small class="finding">SKU used by more than one ShipSidekick product: ${esc(s)}</small>`).join("")}</div>`).join("");
+  $("ssk-extra").innerHTML=clients.filter(c=>!c.error&&(c.unmatched_ssk.length||c.unmatched_sheet.length||c.components.length||c.blank_skus||c.duplicate_skus.length)).map(c=>`<div class="eod-card"><strong>${esc(clientName(c.client_id))} — needs mapping review</strong>${c.unmatched_ssk.slice(0,50).map(v=>`<small class="finding">ShipSidekick SKU not in rules: ${esc(v.sku||"(blank)")} · ${esc(v.title)} · ${fmt(v.available)} available</small>`).join("")}${c.components.map(v=>`<small>${esc(v.sku)} · ${esc(v.title)}: ${esc(v.note)}</small>`).join("")}${c.unmatched_ssk.length>50?`<small class="finding">…and ${(c.unmatched_ssk.length-50).toLocaleString()} more ShipSidekick SKUs not in rules</small>`:""}${c.unmatched_sheet.map(p=>`<small class="finding">Sheet row not matched to a SKU: ${esc(p)}</small>`).join("")}${c.blank_skus?`<small class="finding">${c.blank_skus} ShipSidekick item(s) with a blank SKU</small>`:""}${c.duplicate_skus.map(s=>`<small class="finding">SKU used by more than one ShipSidekick product: ${esc(s)}</small>`).join("")}</div>`).join("");
   const counts=rows.reduce((m,r)=>(m[r.status]=(m[r.status]||0)+1,m),{});
   const loaded=clients.filter(c=>!c.error);
   $("ssk-status").textContent=state.ssk===null?"Not loaded":rows.length?Object.entries(counts).map(([k,v])=>`${v} ${k.toLowerCase()}`).join(" · "):loaded.length?"Connected · no rules yet":"Not connected";
@@ -195,7 +198,7 @@ function exportQueue(){
 }
 document.querySelectorAll("[data-section]").forEach(el=>el.addEventListener("click",()=>section(el.dataset.section)));
 document.querySelectorAll("[data-tier],[data-filter]").forEach(el=>el.addEventListener("click",()=>{state.filter=el.dataset.tier||el.dataset.filter;state.page=1;render()}));
-$("client-select").addEventListener("change",e=>{state.client=e.target.value;state.page=1;resetPanels(state,["calculated","shopify","ssk"]);renderCalculated();renderShopify();renderSsk();try{localStorage.setItem("shipmode-client",state.client)}catch{}render();if(state.section==="inventory")loadInventory()});
+$("client-select").addEventListener("change",e=>{state.client=e.target.value;state.page=1;resetPanels(state,["calculated","shopify","ssk"]);state.shopifyShown=200;renderCalculated();renderShopify();renderSsk();try{localStorage.setItem("shipmode-client",state.client)}catch{}render();if(state.section==="inventory")loadInventory()});
 $("search").addEventListener("input",e=>{state.search=e.target.value;state.page=1;render()});
 $("carrier-filter").addEventListener("change",e=>{state.carrier=e.target.value;state.page=1;render()});
 $("previous").addEventListener("click",()=>{state.page--;render()});$("next").addEventListener("click",()=>{state.page++;render()});
@@ -205,6 +208,7 @@ document.querySelectorAll(".close-dialog").forEach(el=>el.addEventListener("clic
 $("export-button").addEventListener("click",exportQueue);
 $("inventory-refresh").addEventListener("click",loadInventory);
 $("shopify-export").addEventListener("click",exportShopify);
+$("shopify-more").addEventListener("click",()=>{state.shopifyShown+=200;renderShopify()});
 $("ssk-export").addEventListener("click",exportSsk);
   $("import-button").addEventListener("click",()=>{if(!state.data||state.data.mode==="demo"){$("setup-dialog").showModal();return}if(state.client!=="all")$("import-client").value=state.client;$("import-result").textContent="";$("import-dialog").showModal()});
 $("confirm-import").addEventListener("click",async()=>{

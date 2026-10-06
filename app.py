@@ -223,7 +223,7 @@ def ssk_inventory():
         if "error_code" in store:
             clients.append({"client_id": store["id"], "error_code": store["error_code"], "error": store["error"]})
             continue
-        result = ssk_check.compare(store["id"], store["levels"], sheets.get(store["id"]))
+        result = ssk_check.compare(store["id"], store["levels"], sheets.get(store["id"]), store["truncated"])
         warnings = []
         if store["truncated"]:
             warnings.append(f"More than {ssk_source.PAGE_SIZE * ssk_source.MAX_PAGES:,} inventory rows; the rest were not read.")

@@ -43,9 +43,11 @@ def check(client_id: str, variants: list[dict]) -> dict:
         if not variant["tracked"]:
             flags.append("untracked")
 
-        match = rules.shopify_match(variant) if rules else None
+        match = rules.shopify_match(variant) if rules and not variant.get("bundle") else None
         if rules is None:
             status, internal, how = "no_rules", None, "No rule package for this client"
+        elif variant.get("bundle"):
+            status, internal, how = "unmapped", None, "Shopify bundle (requiresComponents): not matched to one SKU"
         elif match and match.get("sku"):
             status, internal, how = "mapped", match["sku"], match["how"]
         elif match and match.get("covers"):

@@ -170,6 +170,13 @@ class SourceTests(ShopifyTestCase):
         fake = FakeShopify({SHOPS["muravai"]: {"scopes": READ_SCOPES, "errors": [{"extensions": {"code": "ACCESS_DENIED"}}]}})
         self.assertEqual(self.read(fake, ["muravai"])["muravai"]["error_code"], "missing_scope")
 
+    def test_requires_components_is_read(self):
+        self.assertIn("requiresComponents", shopify_source.VARIANTS_QUERY)
+        bundle = dict(node("Premium Shower Hose", "PSH"), requiresComponents=True)
+        fake = FakeShopify({SHOPS["muravai"]: {"scopes": READ_SCOPES, "pages": [[bundle, node("Shower Hose", "H")]]}})
+        result = self.read(fake, ["muravai"])
+        self.assertEqual({v["sku"]: v["bundle"] for v in result["muravai"]["variants"]}, {"PSH": True, "H": False})
+
     def test_pagination_and_truncation_warning(self):
         pages = [[node(f"P{i}", f"S{i}")] for i in range(3)]
         fake = FakeShopify({SHOPS["muravai"]: {"scopes": READ_SCOPES, "pages": pages}})
@@ -299,6 +306,14 @@ class SkuCheckTests(unittest.TestCase):
         self.assertEqual({r["internal_sku"]: r["state"] for r in result["rules"]},
                          {"MUR001": "found", "MUR002": "found", "MUR003": "found", "MUR004": "found", "MUR005": "found"})
         self.assertEqual(result["rule_status"], "APPROVED")
+
+    def test_shopify_bundle_flag_wins_over_name(self):
+        bundle = dict(variant("Premium Shower Hose", "PSH"), bundle=True)
+        result = sku_check.check("muravai", [bundle, variant("Shower Hose", "H")])
+        rows = {r["sku"]: r for r in result["variants"]}
+        self.assertEqual((rows["PSH"]["status"], rows["PSH"]["internal_sku"]), ("unmapped", None))
+        self.assertIn("requiresComponents", rows["PSH"]["how"])
+        self.assertEqual(rows["H"]["internal_sku"], "MUR004")
 
     def test_set_alone_is_never_all_mapped(self):
         catalog = [variant("Filtered Showerhead", "A"), variant("Replacement Filters", "B", "3 pack"),

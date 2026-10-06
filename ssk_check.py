@@ -60,7 +60,7 @@ def match_sheet_row(rules, product):
     return next((sku for sku, label in rules.labels.items() if label.strip().lower() == wanted), None)
 
 
-def compare(client_id, levels, sheet):
+def compare(client_id, levels, sheet, truncated=False):
     """`sheet` is a Dashboard read result from inventory.read_dashboards, or None/an error dict."""
     rules = client_rules.package(client_id)
     by_sku, unmatched, components = defaultdict(list), [], []
@@ -85,6 +85,8 @@ def compare(client_id, levels, sheet):
     for sku in (rules.skus if rules else ()):
         ssk, rows = by_sku.get(sku, []), sheet_rows.get(sku, [])
         notes, basis = [], ""
+        if truncated:
+            notes.append("ShipSidekick inventory list was cut off; not reconciled")
         sheet_value = None
         if not sheet_ok:
             notes.append("Sheet not loaded")

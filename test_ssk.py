@@ -276,6 +276,15 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(row["status"], "REVIEW")
         self.assertTrue(any("incoming" in n for n in row["notes"]))
 
+    def test_truncated_inventory_is_never_reconciled(self):
+        items = levels(("H", "Shower Hose", 20, 0))
+        full = ssk_check.compare("muravai", items, sheet(("Shower Hose", "20")))
+        self.assertEqual({r["sku"]: r for r in full["skus"]}["MUR004"]["status"], "MATCH")
+        cut = ssk_check.compare("muravai", items, sheet(("Shower Hose", "20")), truncated=True)
+        for row in cut["skus"]:
+            self.assertEqual(row["status"], "REVIEW")
+            self.assertIn("ShipSidekick inventory list was cut off; not reconciled", row["notes"])
+
     def test_duplicate_skus_listed_once(self):
         items = levels(("A1", "Thing", 1, 0), ("a1", "Other", 1, 0), ("B", "Third", 1, 0))
         self.assertEqual(ssk_check.compare("onset", items, None)["duplicate_skus"], ["A1", "a1"])

@@ -48,7 +48,7 @@ _lock = threading.Lock()
 SCOPES_QUERY = "query ShipModeScopes { currentAppInstallation { accessScopes { handle } } }"
 VARIANTS_QUERY = """query ShipModeVariants($after: String) {
   productVariants(first: %d, after: $after) {
-    nodes { title sku product { title status } inventoryItem { tracked } }
+    nodes { title sku requiresComponents product { title status } inventoryItem { tracked } }
     pageInfo { hasNextPage endCursor }
   }
 }""" % PAGE_SIZE
@@ -212,6 +212,7 @@ def read_variants(store):
                 "sku": (node.get("sku") or "").strip(),
                 "product_status": (product.get("status") or "").upper(),
                 "tracked": bool((node.get("inventoryItem") or {}).get("tracked")),
+                "bundle": node.get("requiresComponents") is True,
             })
         info = connection.get("pageInfo") or {}
         if not info.get("hasNextPage"):
