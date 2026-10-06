@@ -68,7 +68,7 @@ ORDER_ADDRESS_QUERY = """query ShipModeOrderAddress($id: ID!) {
   order(id: $id) { shippingAddress { name address1 address2 city provinceCode zip countryCodeV2 } }
 }"""
 ORDER_FULFILLMENTS_QUERY = """query ShipModeOrderFulfillments($id: ID!) {
-  order(id: $id) { fulfillments { status trackingInfo(first: 10) { number } } }
+  order(id: $id) { fulfillments { status requiresShipping trackingInfo(first: 10) { number } } }
 }"""
 READ_QUERIES = frozenset({SCOPES_QUERY, VARIANTS_QUERY, ORDER_QUERY, ORDER_ADDRESS_QUERY, ORDER_FULFILLMENTS_QUERY})
 # Merchants can customise order prefixes/suffixes, so any printable name is allowed; it is escaped
@@ -360,7 +360,9 @@ def read_order(client_id, order_name):
         if found is not None:
             listed = [f for f in (((found.get("order") or {}).get("fulfillments")) or []) if isinstance(f, dict)]
             # Cancelled or failed attempts are not parcels; a replacement after one is still one shipment.
-            fulfillments = [f for f in listed if str(f.get("status") or "").upper() not in ("CANCELLED", "ERROR", "FAILURE")]
+            # Digital-only fulfillments (requiresShipping false) are not parcels either.
+            fulfillments = [f for f in listed if str(f.get("status") or "").upper() not in ("CANCELLED", "ERROR", "FAILURE")
+                            and f.get("requiresShipping") is not False]
             numbers = {str(info.get("number")).strip() for f in fulfillments
                        for info in (f.get("trackingInfo") or []) if isinstance(info, dict) and info.get("number")}
             order["tracking_numbers"] = sorted(numbers)

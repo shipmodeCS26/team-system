@@ -38,8 +38,8 @@ class FakeShopify:
         if json["query"] == shopify_source.ORDER_ADDRESS_QUERY:
             return Resp({"data": {"order": {"shippingAddress": self.address}}})
         if json["query"] == shopify_source.ORDER_FULFILLMENTS_QUERY:
-            return Resp({"data": {"order": {"fulfillments": [{"status": st, "trackingInfo": [{"number": n}]}
-                                                             for n, st in self.tracking]}}})
+            return Resp({"data": {"order": {"fulfillments": [{"status": t[1], "requiresShipping": t[2] if len(t) > 2 else True,
+                                                              "trackingInfo": [{"number": t[0]}]} for t in self.tracking]}}})
         assert json["query"] == shopify_source.ORDER_QUERY
         page = int(json["variables"].get("after") or 0)
         more = getattr(self, "pages", 1) > page + 1
@@ -170,6 +170,11 @@ class UnknownSplitTests(unittest.TestCase):
                             tracking=tuple((f"C{i}", "CANCELLED") for i in range(19)) + (("OK", "SUCCESS"),))
         self.assertEqual(orders[0]["fulfillment_count"], 1)
         self.assertNotIn("first:", shopify_source.ORDER_FULFILLMENTS_QUERY.split("trackingInfo")[0])
+
+    def test_digital_fulfillment_is_not_a_parcel(self):
+        orders, _ = read(["read_orders", "read_all_orders", "read_products"], [order_node()],
+                         tracking=(("T1", "SUCCESS"), ("GC", "SUCCESS", False)))
+        self.assertEqual(orders[0]["fulfillment_count"], 1)
 
     def test_refunded_after_shipping_is_unverified_not_differ(self):
         order = dict(self.ORDER, fulfillment_count=1,
