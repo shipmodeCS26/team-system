@@ -276,6 +276,7 @@ class SkuCheckTests(unittest.TestCase):
     def test_client_without_rules_maps_nothing(self):
         result = sku_check.check("onset", [variant("Onset Gel", "ONS-1")])
         self.assertEqual(result["variants"][0]["status"], "no_rules")
+        self.assertEqual(result["summary"]["needs_review"], 1)
         self.assertIsNone(result["variants"][0]["internal_sku"])
         self.assertEqual(result["rules"], [])
 

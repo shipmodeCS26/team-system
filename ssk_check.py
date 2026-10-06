@@ -13,13 +13,18 @@ import client_rules
 
 
 def _int(value):
+    """Whole-number Sheet balances only; fractions and text return None (never truncated)."""
     text = str(value or "").replace(",", "").strip()
     if text.startswith("(") and text.endswith(")"):
         text = "-" + text[1:-1]
     try:
-        return int(float(text))
+        number = float(text)
     except ValueError:
         return None
+    return int(number) if number.is_integer() else None
+
+
+KIT_USED = "Used to split kits (see MUR003–MUR005)"
 
 
 def _match(rules, product, variant, sku):
@@ -62,7 +67,7 @@ def compare(client_id, levels, sheet):
         if found and found.get("sku"):
             by_sku[found["sku"]].append(level)
         elif found:
-            components.append({**level, "note": found["how"]})
+            components.append({**level, "note": found["how"], "covers": found.get("covers")})
         else:
             unmatched.append(level)
 
@@ -72,23 +77,32 @@ def compare(client_id, levels, sheet):
         sku = match_sheet_row(rules, row["product"])
         (sheet_rows[sku].append(row) if sku else sheet_unmatched.append(row["product"]))
 
+    derived = rules.decompose_stock(by_sku, components) if hasattr(rules, "decompose_stock") else {}
+
     out = []
     for sku in (rules.skus if rules else ()):
         ssk, rows = by_sku.get(sku, []), sheet_rows.get(sku, [])
-        notes = []
+        notes, basis = [], ""
         sheet_value = None
         if not sheet_ok:
             notes.append("Sheet not loaded")
         elif len(rows) == 1:
             sheet_value = _int(rows[0]["remaining"])
             if sheet_value is None:
-                notes.append(f"Sheet value is not a number: {rows[0]['remaining']}")
+                notes.append(f"Sheet value is not a whole number: {rows[0]['remaining']}")
         elif len(rows) > 1:
             notes.append("Several Sheet rows match this SKU; not compared")
         else:
             notes.append("No Sheet row matches this SKU")
-        quantities = None
-        if len(ssk) == 1:
+        quantities, ssk_skus = None, [v["sku"] for v in ssk]
+        if sku in derived:
+            item = derived[sku]
+            quantities, ssk_skus, basis = item["quantities"], item["sources"], item["basis"]
+            if item.get("review"):
+                notes.append(item["review"])
+            elif quantities["available"] < 0 or quantities["available"] + quantities["committed"] < 0:
+                notes.append("Negative after splitting kits: fewer parts than Teflon tapes in ShipSidekick")
+        elif len(ssk) == 1:
             quantities = {k: ssk[0][k] for k in ("available", "committed", "incoming", "damaged",
                                                   "reserved", "quality_control")}
         elif len(ssk) > 1:
@@ -102,7 +116,7 @@ def compare(client_id, levels, sheet):
                      "vs_available_committed": quantities["available"] + quantities["committed"] - sheet_value}
         status = ("REVIEW" if notes else
                   "MATCH" if 0 in diffs.values() else "DIFFERENT")
-        out.append({"sku": sku, "label": rules.labels.get(sku, ""), "ssk_skus": [v["sku"] for v in ssk],
+        out.append({"sku": sku, "label": rules.labels.get(sku, ""), "ssk_skus": ssk_skus, "basis": basis,
                     "sheet_product": rows[0]["product"] if len(rows) == 1 else "",
                     "sheet_remaining": sheet_value, "ssk": quantities, **diffs,
                     "status": status, "notes": notes})
@@ -115,7 +129,9 @@ def compare(client_id, levels, sheet):
         "skus": out,
         "unmatched_ssk": [{"sku": v["sku"], "title": v["title"], "product": v["product"],
                            "available": v["available"], "committed": v["committed"]} for v in unmatched],
-        "components": [{"sku": v["sku"], "title": v["title"], "available": v["available"], "note": v["note"]}
+        "components": [{"sku": v["sku"], "title": v["title"], "available": v["available"],
+                        "note": KIT_USED if derived and v.get("covers") and not any(
+                            d.get("review") for d in derived.values()) else v["note"]}
                        for v in components],
         "unmatched_sheet": sheet_unmatched,
         "blank_skus": sum(1 for v in levels if not v["sku"]),

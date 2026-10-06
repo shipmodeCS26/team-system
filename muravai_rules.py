@@ -90,6 +90,36 @@ def shopify_match(variant: dict) -> dict | None:
     return {"sku": KIND_SKUS[kind], "how": "Product name matches the Muravai rule"} if kind else None
 
 
+STOCK_FIELDS = ("available", "committed", "incoming", "damaged", "reserved", "quality_control")
+KIT_BASIS = "Per RULES.md: MUR003 = Teflon tape; MUR004 = hoses − tape; MUR005 = connectors − tape"
+
+
+def decompose_stock(matched: dict, components: list) -> dict:
+    """Split ShipSidekick's separately stocked kit parts the way RULES.md defines the SKUs.
+
+    ShipSidekick holds hoses, connectors and Teflon tape as separate items; a kit is one of each,
+    and the number of kits is the tape quantity. Only applied when exactly one tape, one hose and
+    one connector item exist and no explicit kit item does; otherwise MUR003–005 go to review.
+    Negative results are kept (they are discrepancies, never raised to zero).
+    """
+    tapes = [c for c in components if c.get("covers") == "MUR003"]
+    if not tapes:
+        return {}
+    hoses, connectors = matched.get("MUR004", []), matched.get("MUR005", [])
+    if len(tapes) != 1 or len(hoses) != 1 or len(connectors) != 1 or matched.get("MUR003"):
+        review = "Kit parts (hose / connector / tape) could not be split per RULES.md; not compared"
+        return {sku: {"quantities": None, "sources": [], "basis": "", "review": review}
+                for sku in ("MUR003", "MUR004", "MUR005")}
+    tape, hose, connector = tapes[0], hoses[0], connectors[0]
+    return {
+        "MUR003": {"quantities": {k: tape[k] for k in STOCK_FIELDS}, "sources": [tape["sku"]], "basis": KIT_BASIS},
+        "MUR004": {"quantities": {k: hose[k] - tape[k] for k in STOCK_FIELDS},
+                   "sources": [hose["sku"], tape["sku"]], "basis": KIT_BASIS},
+        "MUR005": {"quantities": {k: connector[k] - tape[k] for k in STOCK_FIELDS},
+                   "sources": [connector["sku"], tape["sku"]], "basis": KIT_BASIS},
+    }
+
+
 class _Rules:
     client_id = "muravai"
     organization = ORGANIZATION
@@ -100,6 +130,7 @@ class _Rules:
     order_usage = staticmethod(lambda items: order_usage(items))
     shopify_match = staticmethod(lambda variant: shopify_match(variant))
     sheet_names = SHEET_NAMES
+    decompose_stock = staticmethod(lambda matched, components: decompose_stock(matched, components))
 
 
 RULES = _Rules()

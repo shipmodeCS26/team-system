@@ -119,6 +119,27 @@ class SourceTests(SskTestCase):
         self.assertEqual(len(result["muravai"]["levels"]), 2 * ssk_source.PAGE_SIZE)
         self.assertTrue(result["muravai"]["truncated"])
 
+    def test_has_more_decides_truncation(self):
+        full = [[level(f"S{p}-{i}", "x", 1) for i in range(ssk_source.PAGE_SIZE)] for p in range(2)]
+
+        class Paged(FakeSsk):
+            def __init__(self, pages, last_has_more):
+                super().__init__({"ssk_secret_muravai": pages})
+                self.last_has_more = last_has_more
+
+            def get(self, url, params=None, headers=None, timeout=None):
+                response = super().get(url, params, headers, timeout)
+                response._body["hasMore"] = params["page"] < 2 or self.last_has_more
+                return response
+
+        with patch("ssk_source.MAX_PAGES", 2):
+            exact = self.read(Paged(full, False), ["muravai"])["muravai"]
+            ssk_source._cache.clear()
+            more = self.read(Paged(full, True), ["muravai"])["muravai"]
+        self.assertEqual(len(exact["levels"]), 2 * ssk_source.PAGE_SIZE)
+        self.assertFalse(exact["truncated"])
+        self.assertTrue(more["truncated"])
+
     def test_unexpected_body_is_read_failed_and_not_cached(self):
         answers = {"ssk_secret_muravai": 500}
         fake = FakeSsk(answers)
@@ -186,16 +207,54 @@ class CompareTests(unittest.TestCase):
         rows = self.by_sku(result)
         self.assertEqual(rows["MUR001"]["ssk_skus"], ["3 filters"])
         self.assertEqual(rows["MUR002"]["ssk_skus"], ["showerhead"])
-        self.assertEqual(rows["MUR004"]["ssk_skus"], ["shower hose"])
-        self.assertEqual(rows["MUR005"]["ssk_skus"], ["shower connector"])
         self.assertEqual(rows["MUR001"]["vs_available_committed"], 8143 - 384)
         not_compared = {c["sku"] for c in result["components"]} | {v["sku"] for v in result["unmatched_ssk"]}
         self.assertEqual(not_compared, {"Teflon Tape-360-USA", "1x hose and connector",
                                         "hose and connector set", "showerhead + hose and connector"})
-        self.assertEqual(rows["MUR003"]["ssk_skus"], [])
+        # Kit parts split per RULES.md: kits = tape, standalone hose/connector = parts − tape.
+        self.assertEqual(rows["MUR003"]["ssk_skus"], ["Teflon Tape-360-USA"])
+        self.assertEqual(rows["MUR003"]["ssk"]["available"], 975)
+        self.assertEqual(rows["MUR004"]["ssk_skus"], ["shower hose", "Teflon Tape-360-USA"])
+        self.assertEqual((rows["MUR004"]["ssk"]["available"], rows["MUR004"]["ssk"]["committed"]), (18, 0))
+        self.assertEqual(rows["MUR005"]["ssk"]["available"], 1003 - 975)
+        self.assertIn("RULES.md", rows["MUR004"]["basis"])
         self.assertEqual(rows["MUR003"]["sheet_remaining"], 1291)
+        self.assertEqual(rows["MUR003"]["vs_available_committed"], 975 + 77 - 1291)
         self.assertEqual((rows["MUR004"]["sheet_remaining"], rows["MUR005"]["sheet_remaining"]), (0, 561))
         self.assertEqual(result["unmatched_sheet"], [])
+
+    def test_kit_split_needs_exactly_one_of_each_part(self):
+        result = ssk_check.compare("muravai", levels(("T1", "Teflon Tape", 10, 0), ("T2", "Teflon Tape 2", 5, 0),
+                                                      ("H", "Shower Hose", 20, 0), ("C", "Shower Connector", 20, 0)),
+                                   sheet(("Shower Hose", "10")))
+        rows = self.by_sku(result)
+        for sku in ("MUR003", "MUR004", "MUR005"):
+            self.assertIsNone(rows[sku]["ssk"])
+            self.assertEqual(rows[sku]["status"], "REVIEW")
+            self.assertTrue(any("could not be split" in n for n in rows[sku]["notes"]))
+
+    def test_negative_split_is_kept_and_flagged(self):
+        result = ssk_check.compare("muravai", levels(("T", "Teflon Tape", 30, 0), ("H", "Shower Hose", 20, 0),
+                                                      ("C", "Shower Connector", 40, 0)), sheet(("Shower Hose", "0")))
+        row = self.by_sku(result)["MUR004"]
+        self.assertEqual(row["ssk"]["available"], -10)
+        self.assertEqual(row["status"], "REVIEW")
+
+    def test_no_tape_means_no_split(self):
+        result = ssk_check.compare("muravai", levels(("H", "Shower Hose", 20, 0)), sheet(("Shower Hose", "20")))
+        row = self.by_sku(result)["MUR004"]
+        self.assertEqual((row["ssk"]["available"], row["basis"], row["status"]), (20, "", "MATCH"))
+
+    def test_fractional_sheet_value_is_not_truncated(self):
+        result = ssk_check.compare("fascial-labs", levels(("FASCSUPP-1", "Support", 12, 0)),
+                                   sheet(("TrueForm Fascial Release Support", "12.5")))
+        row = self.by_sku(result)["FAS001"]
+        self.assertIsNone(row["sheet_remaining"])
+        self.assertEqual(row["status"], "REVIEW")
+        self.assertIn("Sheet value is not a whole number: 12.5", row["notes"])
+        whole = ssk_check.compare("fascial-labs", levels(("FASCSUPP-1", "Support", 12, 0)),
+                                  sheet(("TrueForm Fascial Release Support", "12.0")))
+        self.assertEqual(self.by_sku(whole)["FAS001"]["status"], "MATCH")
 
     def test_several_ssk_variants_for_one_sku_are_not_added(self):
         result = ssk_check.compare("muravai", levels(("MV-SH1", "Filtered Showerhead", 5, 0),

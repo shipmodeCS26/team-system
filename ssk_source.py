@@ -88,15 +88,17 @@ def _get(key, path, params=None, method="GET"):
     body = response.json()
     if not isinstance(body, dict) or not isinstance(body.get("data"), list):
         raise SourceError("read_failed")
-    return body["data"]
+    return body
 
 
 def get_all(key, path, params=None):
     rows, truncated = [], False
     for page in range(1, MAX_PAGES + 1):
-        data = _get(key, path, {**(params or {}), "limit": PAGE_SIZE, "page": page})
-        rows.extend(data)
-        if len(data) < PAGE_SIZE:
+        body = _get(key, path, {**(params or {}), "limit": PAGE_SIZE, "page": page})
+        rows.extend(body["data"])
+        # Prefer ShipSidekick's own hasMore; fall back to "short page = last page" if it is absent.
+        more = body["hasMore"] if isinstance(body.get("hasMore"), bool) else len(body["data"]) == PAGE_SIZE
+        if not more:
             break
         if page == MAX_PAGES:
             truncated = True
