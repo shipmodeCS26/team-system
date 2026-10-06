@@ -124,6 +124,22 @@ class ParseIncomingTests(unittest.TestCase):
         self.assertEqual(incoming.whole_units("1,200"), 1200)
         self.assertEqual(incoming.whole_units("12.0"), 12)
 
+    def test_negative_quantity_is_left_out(self):
+        self.assertIsNone(incoming.whole_units("-100"))
+        row = line("PO9", "T", "Filtered Showerhead", "MUR002", "-100", "In Transit", "NOT ARRIVED")
+        self.assertEqual(parse_incoming(columns([row]), TODAY)["incoming_by_sku"], [])
+
+    def test_negated_transfer_still_needs_transfer(self):
+        for status in ("Not transferred", "Never transferred", "Not yet transferred"):
+            row = line("PO9", "T", "Filtered Showerhead", "MUR002", "10", status, "NOT ARRIVED", "1")
+            self.assertIn("needs_transfer", parse_incoming(columns([row]), TODAY)["shipments"][0]["flags"], status)
+
+    def test_rows_without_po_or_tracking_stay_separate(self):
+        rows = [line("", "", "Filtered Showerhead", "MUR002", "10", "In Transit", "NOT ARRIVED", where="Utah"),
+                line("", "", "Shower Hose", "MUR004", "5", "In Transit", "NOT ARRIVED", where="At sea")]
+        groups = parse_incoming(columns(rows), TODAY)["shipments"]
+        self.assertEqual([g["po"] for g in groups], ["No PO (Sheet row 2)", "No PO (Sheet row 3)"])
+
     def test_values_are_not_rewritten(self):
         self.assertEqual(self.by_po["PO23"]["lines"][0]["units"], "2,880")
 

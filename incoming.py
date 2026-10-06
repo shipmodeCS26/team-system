@@ -54,16 +54,17 @@ NEGATED = re.compile(r"\b(not|never|un)\s*(yet\s+)?(arrived|delivered|received)\
 
 
 def whole_units(value) -> int | None:
-    """A whole-number quantity, or None. '10.9' is rejected, never truncated to 10."""
+    """A whole, non-negative quantity, or None. '10.9' and '-100' are rejected, never used."""
     number = parse_int(value)
     text = str(value or "").replace(",", "").strip().strip("()")
     try:
-        return number if number is not None and float(text) == number else None
+        return number if number is not None and number >= 0 and float(text) == number else None
     except ValueError:
         return None
 
 
 TRANSFER_DONE = re.compile(r"\btransferred\b|\btransfer\s+(complete|completed|done|finished)\b")
+TRANSFER_NEGATED = re.compile(r"\b(not|never|un)\s*(yet\s+)?transferred\b|\btransfer\s+not\s+(complete|done|finished)")
 
 
 def _says_received(status: str) -> bool:
@@ -82,7 +83,7 @@ def line_flags(line: dict, today: date) -> list[str]:
         flags.append("missing_boxes")
     if _says_received(status) and _none(line["boxes_received"]):
         flags.append("receipt_not_recorded")
-    if "transfer" in status and not TRANSFER_DONE.search(status):
+    if "transfer" in status and (TRANSFER_NEGATED.search(status) or not TRANSFER_DONE.search(status)):
         flags.append("needs_transfer")
     if line["treatment"].upper().startswith("REVIEW") or line["sku"].upper() in ("", "REVIEW"):
         flags.append("sku_unverified")
@@ -101,9 +102,10 @@ def parse_incoming(values_by_key: dict[str, list], today: date) -> dict:
                 for key, column in values_by_key.items()}
         if not any(line.values()):
             continue
-        key = (line["po"], line["tracking"])
+        # A row with neither PO nor tracking is its own shipment; unrelated rows are never merged.
+        key = (line["po"], line["tracking"]) if line["po"] or line["tracking"] else ("", "", i)
         if key not in groups:
-            groups[key] = {"po": line["po"] or "No PO", "tracking": line["tracking"], "lines": []}
+            groups[key] = {"po": line["po"] or f"No PO (Sheet row {i + 2})", "tracking": line["tracking"], "lines": []}
             order.append(key)
         line["flags"] = line_flags(line, today)
         groups[key]["lines"].append(line)
