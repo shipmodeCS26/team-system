@@ -208,14 +208,17 @@ def _norm(value):
 def open_shipments(key, days):
     """Shipments created in the last `days` days that are not delivered. GET only."""
     since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
-    found, truncated, counts = {}, False, {}
+    found, truncated, counts, rejected = {}, False, {}, []
     for state in QUEUE_STATUSES:
         try:
             rows, cut = get_all(key, "/shipments", {"trackingStatus": state, "dateRange[from]": since})
         except SourceError as error:
             if error.status != 400:
                 raise
-            counts[state] = "rejected"  # ShipSidekick does not accept this status word; the others still load
+            # ShipSidekick does not accept this status word; the others still load, and the store is
+            # reported as incomplete (never as full coverage).
+            counts[state] = "rejected"
+            rejected.append(state)
             continue
         # If ShipSidekick ignored the filter, other statuses would come back; refuse rather than show a partial queue.
         if any(_norm((row.get("tracker") or {}).get("status") if isinstance(row, dict) else None) != state
@@ -227,7 +230,7 @@ def open_shipments(key, days):
             found[str(row.get("id") or len(found))] = row
     if all(value == "rejected" for value in counts.values()):
         raise SourceError("filter_ignored")
-    return list(found.values()), truncated, counts
+    return list(found.values()), truncated, counts, rejected
 
 
 def read_shipments(client_id, days):
@@ -240,10 +243,11 @@ def read_shipments(client_id, days):
         cached = _shipment_cache.get(cache_key)
         if cached and time.monotonic() - cached[0] < CACHE_SECONDS:
             return cached[1]
-    raw, truncated, counts = open_shipments(key, days)
+    raw, truncated, counts, rejected = open_shipments(key, days)
     rows = [row for row in (to_row(s, client_id) for s in raw) if row]
     log.info("ssk shipments client=%s days=%s counts=%s", client_id, days, counts)
-    result = {"id": client_id, "rows": rows, "truncated": truncated,
+    result = {"id": client_id, "rows": rows, "truncated": truncated, "skipped_statuses": rejected,
+              "environment": "test" if base_url() == TEST else "production",
               "fetched_at": datetime.now(timezone.utc).isoformat()}
     with _lock:
         _shipment_cache[cache_key] = (time.monotonic(), result)

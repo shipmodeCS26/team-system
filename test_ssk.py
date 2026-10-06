@@ -567,6 +567,8 @@ class ShipmentReaderTests(unittest.TestCase):
         self.assertEqual(sorted(r["tracking_number"] for r in result[0]["rows"]), ["TRK1", "TRK2"])
         self.assertEqual(result[1]["error_code"], "not_configured")
         self.assertNotIn("delivered", {c["trackingStatus"] for c in calls})
+        self.assertEqual(result[0]["skipped_statuses"], ["error"])
+        self.assertEqual(result[0]["environment"], "production")
         self.assertTrue(all(c["dateRange[from]"] for c in calls))
 
     def test_ignored_filter_refuses_partial_queue(self):
@@ -585,6 +587,9 @@ class ShipmentReaderTests(unittest.TestCase):
             self.assertEqual(client.get("/api/workspace").status_code, 401)
             body = client.get("/api/workspace", headers=auth).get_json()
         self.assertEqual(body["mode"], "ssk")
+        sources = {src["client_id"]: src for src in body["sources"]}
+        self.assertEqual(sources["onset"]["error_code"], "not_configured")
+        self.assertEqual((sources["muravai"]["skipped_statuses"], sources["muravai"]["environment"]), ([], "production"))
         self.assertEqual(body["writes"], "disabled")
         muravai = [r for r in body["shipments"] if r["client_id"] == "muravai"]
         self.assertEqual([r["tracking_number"] for r in muravai], ["TRK1"])

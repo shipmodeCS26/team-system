@@ -144,7 +144,8 @@ def workspace():
                 continue
             records.extend(store["rows"])
             sources.append({"client_id": store["id"], "shipments": len(store["rows"]),
-                            "truncated": store["truncated"], "fetched_at": store["fetched_at"]})
+                            "truncated": store["truncated"], "skipped_statuses": store["skipped_statuses"],
+                            "environment": store["environment"], "fetched_at": store["fetched_at"]})
         return {"mode": "ssk", "clients": CLIENTS, "sources": sources, "lookback_days": days,
                 "shipments": [classify(dict(row, id=index + 1)) for index, row in enumerate(records)],
                 "as_of": utcnow().isoformat(), "writes": "disabled",

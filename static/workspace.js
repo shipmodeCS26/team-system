@@ -193,9 +193,12 @@ async function load(){
       $("client-select").value=state.client;
     }
     if(state.data.mode==="ssk"){
-      const ok=(state.data.sources||[]).filter(s=>!s.error_code), bad=(state.data.sources||[]).filter(s=>s.error_code&&s.error_code!=="not_configured");
-      $("mode-notice").querySelector("strong").textContent="ShipSidekick shipments (read-only)";
-      $("mode-notice").querySelector("div span").textContent=(ok.length?`Not delivered, created in the last ${state.data.lookback_days} days: ${ok.map(s=>`${clientName(s.client_id)} ${s.shipments.toLocaleString()}${s.truncated?" (incomplete)":""}`).join(", ")}.`:"No store loaded.")+(bad.length?" Not loaded: "+bad.map(s=>`${clientName(s.client_id)} — ${s.error}`).join("; "):"");
+      const sources=state.data.sources||[], ok=sources.filter(s=>!s.error_code);
+      const bad=sources.filter(s=>s.error_code&&s.error_code!=="not_configured"), nokey=sources.filter(s=>s.error_code==="not_configured");
+      const partial=s=>s.truncated?" (INCOMPLETE: list cut off)":s.skipped_statuses&&s.skipped_statuses.length?` (INCOMPLETE: ${s.skipped_statuses.join(", ")} not read)`:"";
+      const test=ok.some(s=>s.environment==="test");
+      $("mode-notice").querySelector("strong").textContent=test?"ShipSidekick TEST environment — not production shipments":"ShipSidekick shipments (read-only)";
+      $("mode-notice").querySelector("div span").textContent=(ok.length?`Not delivered, created in the last ${state.data.lookback_days} days: ${ok.map(s=>`${clientName(s.client_id)} ${s.shipments.toLocaleString()}${partial(s)}`).join(", ")}.`:"No store loaded.")+(bad.length?" Not loaded: "+bad.map(s=>`${clientName(s.client_id)} — ${s.error}`).join("; ")+".":"")+(nokey.length?" No ShipSidekick key yet, so no shipments shown: "+nokey.map(s=>clientName(s.client_id)).join(", ")+".":"");
       $("side-connection").textContent=ok.length?`Connected · ${ok.map(s=>clientName(s.client_id)).join(", ")}`:"Not connected";
       $("setup-button").hidden=true;
     }else if(state.data.mode==="live"){
