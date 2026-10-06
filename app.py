@@ -133,6 +133,22 @@ def workspace():
     if live():
         with db() as conn:
             records = [dict(record, id=identity) for identity, record in conn.execute("SELECT id,record FROM shipments ORDER BY id").fetchall()]
+    elif ssk_source.enabled():
+        # Issue #17: real shipments pulled read-only from each store's ShipSidekick account; no database.
+        days = ssk_source.lookback_days()
+        stores = ssk_source.read_shipment_stores([client["id"] for client in CLIENTS], days)
+        records, sources = [], []
+        for store in stores:
+            if "error_code" in store:
+                sources.append({"client_id": store["id"], "error_code": store["error_code"], "error": store["error"]})
+                continue
+            records.extend(store["rows"])
+            sources.append({"client_id": store["id"], "shipments": len(store["rows"]),
+                            "truncated": store["truncated"], "fetched_at": store["fetched_at"]})
+        return {"mode": "ssk", "clients": CLIENTS, "sources": sources, "lookback_days": days,
+                "shipments": [classify(dict(row, id=index + 1)) for index, row in enumerate(records)],
+                "as_of": utcnow().isoformat(), "writes": "disabled",
+                "integration": "ShipSidekick API (read-only)"}
     else:
         records = sample_shipments()
     return {"mode": "live" if live() else "demo", "clients": CLIENTS,
