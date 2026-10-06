@@ -74,6 +74,10 @@ SHEET_NAMES = {"replacement filters, 3-pack": "MUR001", "filtered showerhead": "
 
 PACK_SIZE = re.compile(r"\b(\d+)\s*[-x]?\s*(?:pack|pk|filters?)\b")
 
+# Whole words, so punctuated names ("Bundle: Shower Hose", "Kit/Set") are still caught.
+BUNDLE_MARKER = re.compile(r"(?<![a-z])(?:sets?|bundles?)(?![a-z])|[+&]")
+KIT_MARKER = re.compile(r"(?<![a-z])(?:sets?|kits?|bundles?)(?![a-z])|[+&]")
+
 KIND_SKUS = {"filter": "MUR001", "showerhead": "MUR002", "kit": "MUR003", "hose": "MUR004", "connector": "MUR005"}
 
 
@@ -84,9 +88,8 @@ def shopify_match(variant: dict) -> dict | None:
     kind = classify(text)
     # Sets/kits/bundles in ShipSidekick or Shopify (e.g. "Shower Hose & Connector Set", BOM items) contain
     # several products; matching them to one SKU by name would count a kit as a hose. Never compared.
-    lowered = f" {text.lower()} "
-    markers = (" set ", " bundle ", " + ", " & ") if kind == "kit" else (" set ", " kit ", " bundle ", " + ", " & ")
-    if any(word in lowered for word in markers):
+    marker = BUNDLE_MARKER if kind == "kit" else KIT_MARKER
+    if marker.search(text.lower()):
         return {"sku": None, "how": "Set/kit of several products: not matched to one SKU"}
     if kind == "filter":
         # MUR001 is one retail box of three filters; other pack sizes are not the same unit.

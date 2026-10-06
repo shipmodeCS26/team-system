@@ -314,11 +314,22 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(self.by_sku(result)["MUR003"]["ssk_skus"], ["CK"])
         self.assertIn("CKS", {c["sku"] for c in result["components"]})
 
+    def test_sheet_error_as_of_is_not_reconciled(self):
+        for bad in ("#REF!", "not a date"):
+            row = next(r for r in ssk_check.compare("muravai", levels(("H-1", "Shower Hose", 20, 0)),
+                                                    sheet(("Shower Hose", "20"), as_of=bad))["skus"] if r["sku"] == "MUR004")
+            self.assertNotEqual(row["status"], "MATCH")
+
+    def test_punctuated_bundle_names_are_not_mapped(self):
+        import muravai_rules
+        for name in ("Shower Hose Kit: Chrome", "Bundle: Shower Hose", "Connector Kit Bundle/Set"):
+            self.assertIsNone(muravai_rules.shopify_match({"product": name, "variant": "", "sku": ""})["sku"], name)
+
     def test_sheet_without_as_of_is_not_reconciled(self):
         undated = sheet(("Shower Hose", "20"), as_of="")
         row = self.by_sku(ssk_check.compare("muravai", levels(("H", "Shower Hose", 20, 0)), undated))["MUR004"]
         self.assertEqual(row["status"], "REVIEW")
-        self.assertIn("Sheet has no as-of date; not reconciled", row["notes"])
+        self.assertIn("Sheet has no usable as-of date; not reconciled", row["notes"])
 
     def test_duplicate_skus_listed_once(self):
         items = levels(("A1", "Thing", 1, 0), ("a1", "Other", 1, 0), ("B", "Third", 1, 0))

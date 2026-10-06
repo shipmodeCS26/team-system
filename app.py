@@ -234,7 +234,7 @@ def ssk_inventory():
             warnings.append(f"More than {ssk_source.PAGE_SIZE * ssk_source.MAX_PAGES:,} inventory rows; the rest were not read.")
         if store["environment"] == "test":
             warnings.append("Reading ShipSidekick's TEST environment, not production.")
-        clients.append(dict(result, warnings=warnings, fetched_at=store["fetched_at"]))
+        clients.append(dict(result, warnings=warnings, environment=store["environment"], fetched_at=store["fetched_at"]))
     return {"clients": clients, "as_of": utcnow().isoformat(), "writes": "disabled"}
 
 

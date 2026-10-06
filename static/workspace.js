@@ -95,7 +95,8 @@ function exportShopify(){
   for(const c of clients)done[c.client_id]=c.error?"NOT LOADED: "+c.error:c.truncated?"INCOMPLETE: catalog cut off; later variants not checked":"complete";
   const data=[["client","catalog","shopify_product","shopify_variant","product_status","shopify_sku","internal_sku","mapping","how","checks"],
     ...clients.filter(c=>c.error).map(c=>[clientName(c.client_id),done[c.client_id],"","","","","","","",""]),
-    ...rows.map(r=>[clientName(r.client),done[r.client],r.product,r.variant,r.product_status,r.sku,r.internal_sku,r.status_text,r.how,r.flag_text.join("; ")])];
+    ...rows.map(r=>[clientName(r.client),done[r.client],r.product,r.variant,r.product_status,r.sku,r.internal_sku,r.status_text,r.how,r.flag_text.join("; ")]),
+    ...clients.filter(c=>!c.error).flatMap(c=>c.rules.filter(r=>r.state!=="found").map(r=>[clientName(c.client_id),done[c.client_id],"","","","",r.internal_sku,r.state==="missing"?"RULE SKU NOT IN SHOPIFY":"RULE SKU ONLY ON DRAFT/ARCHIVED",r.label,""]))];
   const url=URL.createObjectURL(new Blob([data.map(row=>row.map(cell).join(",")).join("\r\n")],{type:"text/csv;charset=utf-8"}));
   const a=document.createElement("a");a.href=url;a.download="shipmode-shopify-sku-mapping.csv";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
@@ -112,6 +113,8 @@ function renderSsk(){
   const counts=rows.reduce((m,r)=>(m[r.status]=(m[r.status]||0)+1,m),{});
   const loaded=clients.filter(c=>!c.error);
   $("ssk-status").textContent=state.ssk===null?"Not loaded":rows.length?Object.entries(counts).map(([k,v])=>`${v} ${k.toLowerCase()}`).join(" · "):loaded.length?"Connected · no rules yet":"Not connected";
+  const read=loaded.filter(c=>c.fetched_at).map(c=>`${clientName(c.client_id)} read ${new Date(c.fetched_at).toLocaleTimeString([], {hour:"numeric",minute:"2-digit"})}`);
+  if(read.length)$("ssk-status").textContent+=" · "+read.join(", ");
   $("ssk-export").disabled=!rows.length&&!sskReviewRows().length;
 }
 const loadSsk=makePanelLoader(state,(...a)=>api(...a),"ssk","/api/ssk/inventory",()=>renderSsk());
@@ -122,7 +125,8 @@ function exportSsk(){
   const rows=sskRows(), review=sskReviewRows();if(!rows.length&&!review.length)return;
   const cell=v=>'"'+String(v??"").replace(/^[=+@\-\t\r]/,"'$&").replace(/"/g,'""')+'"';
   const q=(r,k)=>r.ssk?r.ssk[k]:"";
-  const data=[["client","sku","label","shipsidekick_skus","sheet_remaining","ssk_available","ssk_committed","ssk_incoming","ssk_damaged","diff_vs_available","diff_vs_available_committed","status","notes"],...rows.map(r=>[clientName(r.client),r.sku,r.label,r.ssk_skus.join(" "),r.sheet_remaining,q(r,"available"),q(r,"committed"),q(r,"incoming"),q(r,"damaged"),r.vs_available,r.vs_available_committed,r.status,r.notes.join("; ")]),...review];
+  const src={};for(const c of state.ssk||[])src[clientName(c.client_id)]=[c.environment==="test"?"TEST (not production)":"production",c.fetched_at||""];
+  const data=[["client","ssk_environment","ssk_read_at","sku","label","shipsidekick_skus","sheet_remaining","ssk_available","ssk_committed","ssk_incoming","ssk_damaged","diff_vs_available","diff_vs_available_committed","status","notes"],...[...rows.map(r=>[clientName(r.client),r.sku,r.label,r.ssk_skus.join(" "),r.sheet_remaining,q(r,"available"),q(r,"committed"),q(r,"incoming"),q(r,"damaged"),r.vs_available,r.vs_available_committed,r.status,r.notes.join("; ")]),...review].map(r=>[r[0],...(src[r[0]]||["",""]),...r.slice(1)])];
   const url=URL.createObjectURL(new Blob([data.map(row=>row.map(cell).join(",")).join("\r\n")],{type:"text/csv;charset=utf-8"}));
   const a=document.createElement("a");a.href=url;a.download="shipmode-shipsidekick-vs-sheet.csv";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
@@ -132,13 +136,15 @@ async function loadInventory(){
   state.inventorySources=null;state.inventoryAsOf=null;renderInventory();
   $("inventory-refresh").disabled=true;
   $("inventory-sync").textContent="Reading Google Sheets…";
+  // Independent panels start now, so a slow Sheet never delays ShipSidekick or Shopify.
+  loadCalculated();loadShopify();loadSsk();
   try{
     const result=await api(`/api/inventory?client_id=${encodeURIComponent(client)}`);
     if(request!==state.inventoryRequest)return;
-    state.inventorySources=result.sources;state.inventoryAsOf=result.as_of;renderInventory();loadCalculated();loadShopify();loadSsk();
+    state.inventorySources=result.sources;state.inventoryAsOf=result.as_of;renderInventory();
   }catch(error){
     if(request!==state.inventoryRequest)return;
-    state.inventorySources=[];state.inventoryAsOf=null;renderInventory();loadCalculated();loadShopify();loadSsk();
+    state.inventorySources=[];state.inventoryAsOf=null;renderInventory();
     $("inventory-error").textContent=error.message;$("inventory-error").hidden=false;
   }finally{if(request===state.inventoryRequest)$("inventory-refresh").disabled=false}
 }

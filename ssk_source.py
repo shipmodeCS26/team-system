@@ -26,7 +26,7 @@ TEST = "https://test.shipsidekick.com/api/v1"
 READ_PATHS = frozenset({"/inventory/levels", "/products", "/orders", "/shipments"})
 PAGE_SIZE = 100
 MAX_PAGES = 50  # 5,000 rows per store; more is reported as a warning, never silently dropped.
-CACHE_SECONDS = 300
+CACHE_SECONDS = 55  # stock moves all day; the Inventory tab refreshes every minute
 
 log = logging.getLogger(__name__)
 _cache = {}

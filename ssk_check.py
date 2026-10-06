@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 
 import client_rules
+from inventory import ERROR_VALUE
 
 
 def _int(value):
@@ -66,6 +67,12 @@ def match_sheet_row(rules, product):
     return next((sku for sku, label in rules.labels.items() if label.strip().lower() == wanted), None)
 
 
+def _usable_as_of(value):
+    """A Sheet date must be present, contain a digit, and not be a formula error or pending value."""
+    text = str(value or "").strip()
+    return bool(text) and any(c.isdigit() for c in text) and not ERROR_VALUE.search(text)
+
+
 def compare(client_id, levels, sheet, truncated=False):
     """`sheet` is a Dashboard read result from inventory.read_dashboards, or None/an error dict."""
     rules = client_rules.package(client_id)
@@ -93,8 +100,8 @@ def compare(client_id, levels, sheet, truncated=False):
         notes, basis = [], ""
         if truncated:
             notes.append("ShipSidekick inventory list was cut off; not reconciled")
-        if sheet_ok and not str(sheet.get("as_of") or "").strip():
-            notes.append("Sheet has no as-of date; not reconciled")
+        if sheet_ok and not _usable_as_of(sheet.get("as_of")):
+            notes.append("Sheet has no usable as-of date; not reconciled")
         if sheet_ok and sheet.get("may_continue"):
             notes.append("Sheet may list more products past its last read row; not reconciled")
         sheet_value = None
