@@ -16,22 +16,29 @@ ADDRESS = {"name": "Jane Customer", "address1": "1 Main St", "address2": None, "
            "provinceCode": "FL", "zip": "33101", "countryCodeV2": "US"}
 
 
-def order_node(name="#1001", cancelled=None, financial="PAID", items=(("Filtered Showerhead", "", 1),)):
-    return {"name": name, "createdAt": "2026-10-01T10:00:00Z", "updatedAt": "2026-10-01T10:00:00Z",
+def order_node(name="#1001", cancelled=None, financial="PAID", items=(("Filtered Showerhead", "", 1),), more=False):
+    return {"id": "gid://shopify/Order/1", "name": name, "createdAt": "2026-10-01T10:00:00Z",
             "cancelledAt": cancelled, "displayFinancialStatus": financial, "displayFulfillmentStatus": "FULFILLED",
-            "lineItems": {"nodes": [{"name": n, "sku": s, "quantity": q, "currentQuantity": q} for n, s, q in items]},
-            "shippingAddress": ADDRESS}
+            "lineItems": {"nodes": [{"name": n, "sku": s, "quantity": q, "currentQuantity": q} for n, s, q in items],
+                          "pageInfo": {"hasNextPage": more}}}
 
 
 class FakeShopify:
-    def __init__(self, scopes, nodes):
+    def __init__(self, scopes, nodes, address=ADDRESS, tracking=("T1",), refuse=()):
         self.scopes, self.nodes, self.calls = scopes, nodes, []
+        self.address, self.tracking, self.refuse = address, tracking, refuse
 
     def post(self, url, json=None, data=None, headers=None, timeout=None):
         self.calls.append(json)
         assert "mutation" not in json["query"]
         if json["query"] == shopify_source.SCOPES_QUERY:
             return Resp({"data": {"currentAppInstallation": {"accessScopes": [{"handle": s} for s in self.scopes]}}})
+        if json["query"] in self.refuse:
+            return Resp({"errors": [{"message": "denied", "extensions": {"code": "ACCESS_DENIED"}}]})
+        if json["query"] == shopify_source.ORDER_ADDRESS_QUERY:
+            return Resp({"data": {"order": {"shippingAddress": self.address}}})
+        if json["query"] == shopify_source.ORDER_FULFILLMENTS_QUERY:
+            return Resp({"data": {"order": {"fulfillments": [{"trackingInfo": [{"number": n}]} for n in self.tracking]}}})
         assert json["query"] == shopify_source.ORDER_QUERY
         return Resp({"data": {"orders": {"nodes": self.nodes}}})
 
@@ -46,8 +53,8 @@ class Resp:
         return self.body
 
 
-def read(scopes, nodes, name="#1001"):
-    fake = FakeShopify(scopes, nodes)
+def read(scopes, nodes, name="#1001", **kw):
+    fake = FakeShopify(scopes, nodes, **kw)
     with patch.dict("os.environ", {"SHOPIFY_STORES_JSON": json.dumps(STORES)}), \
             patch("shopify_source.requests.post", fake.post):
         return shopify_source.read_order("muravai", name), fake
@@ -60,7 +67,20 @@ class ReadOrderTests(unittest.TestCase):
         self.assertEqual([o["name"] for o in orders], ["#1001"])
         self.assertEqual(orders[0]["address"]["city"], "Miami")
         self.assertTrue(orders[0]["address_visible"])
-        self.assertEqual(fake.calls[-1]["variables"], {"q": 'name:"#1001"'})
+        self.assertEqual(fake.calls[1]["variables"], {"q": 'name:"#1001"'})
+        self.assertEqual(orders[0]["tracking_numbers"], ["T1"])
+
+    def test_refused_address_keeps_the_order(self):
+        orders, _ = read(["read_orders", "read_customers", "read_products"], [order_node()],
+                         refuse=(shopify_source.ORDER_ADDRESS_QUERY, shopify_source.ORDER_FULFILLMENTS_QUERY))
+        self.assertEqual((orders[0]["name"], orders[0]["address"], orders[0]["address_visible"]), ("#1001", None, False))
+        self.assertIsNone(orders[0]["tracking_numbers"])
+
+    def test_custom_order_names_are_escaped_not_refused(self):
+        orders, fake = read(["read_orders", "read_products"], [order_node('SM/10+1 "A"')], name='SM/10+1 "A"')
+        self.assertEqual(len(orders), 1)
+        self.assertEqual(fake.calls[1]["variables"], {"q": 'name:"SM/10+1 \\"A\\""'})
+        self.assertIsNone(orders[0]["address"])  # no read_customers: address never requested
 
     def test_write_scope_and_missing_order_scope_are_refused(self):
         with self.assertRaises(shopify_source.SourceError) as caught:
@@ -70,13 +90,15 @@ class ReadOrderTests(unittest.TestCase):
             read(["read_products"], [order_node()])
         self.assertEqual(caught.exception.code, "order_scope")
 
-    def test_odd_order_names_are_not_sent(self):
-        with self.assertRaises(ValueError):
-            read(["read_products", "read_orders"], [], name='#1" OR name:*')
+    def test_control_characters_are_not_sent(self):
+        with self.assertRaises(shopify_source.InvalidOrderName):
+            read(["read_products", "read_orders"], [], name="#10\x0101")
 
     def test_order_query_is_allowlisted_read(self):
-        self.assertIn(shopify_source.ORDER_QUERY, shopify_source.READ_QUERIES)
-        self.assertNotRegex(shopify_source.ORDER_QUERY, shopify_source.WRITE_OPERATION)
+        for query in (shopify_source.ORDER_QUERY, shopify_source.ORDER_ADDRESS_QUERY,
+                      shopify_source.ORDER_FULFILLMENTS_QUERY):
+            self.assertIn(query, shopify_source.READ_QUERIES)
+            self.assertNotRegex(query, shopify_source.WRITE_OPERATION)
 
 
 class FlagTests(unittest.TestCase):
@@ -101,6 +123,9 @@ class FlagTests(unittest.TestCase):
         self.assertIn("items_differ", self.flags([self.order(items=[{"name": "Filtered Showerhead", "sku": "", "qty": 2}])]))
         self.assertIn("items_unverified", self.flags([self.order(items=[{"name": "Mystery item", "sku": "", "qty": 1}])]))
         self.assertIn("several_shipments", self.flags([self.order()], same=2))
+        self.assertIn("several_shipments", self.flags([dict(self.order(), tracking_numbers=["A", "B"])]))
+        self.assertIn("items_unverified", self.flags([dict(self.order(), items_truncated=True)]))
+        self.assertEqual(order_check.check("muravai", self.SHIPMENT, [], unlinked=True)["flags"], ["unlinked"])
 
     def test_removed_lines_are_ignored(self):
         items = [{"name": "Filtered Showerhead", "sku": "", "qty": 1}, {"name": "Shower Hose", "sku": "", "qty": 0}]
@@ -113,8 +138,10 @@ class OrderEndpointTests(unittest.TestCase):
            "WORKSPACE_PASSWORD_HASH": generate_password_hash("pw", method="pbkdf2:sha256")}
     AUTH = {"Authorization": "Basic " + base64.b64encode(b"owner:pw").decode()}
     STORE = {"id": "muravai", "rows": [
-        {"tracking_number": "TRK1", "order_number": "#1001", "items": [{"sku": "", "name": "Filtered Showerhead", "qty": 1}]},
-        {"tracking_number": "TRK2", "order_number": "#1001", "items": []}]}
+        {"ssk_id": "s1", "tracking_number": "TRK1", "order_number": "#1001",
+         "items": [{"sku": "", "name": "Filtered Showerhead", "qty": 1}]},
+        {"ssk_id": "s2", "tracking_number": "TRK2", "order_number": "#1001", "items": []},
+        {"ssk_id": "s3", "tracking_number": "TRK3", "order_number": None, "items": []}]}
 
     def test_requires_sign_in_reads_only_that_client_and_never_logs_address(self):
         client = app.test_client()
@@ -122,12 +149,16 @@ class OrderEndpointTests(unittest.TestCase):
         with patch.dict("os.environ", self.ENV, clear=True), \
                 patch("app.ssk_source.read_shipments", return_value=self.STORE) as shipments, \
                 patch("shopify_source.requests.post", fake.post):
-            self.assertEqual(client.get("/api/shopify/order?client_id=muravai&tracking=TRK1").status_code, 401)
+            self.assertEqual(client.get("/api/shopify/order?client_id=muravai&shipment=s1").status_code, 401)
             with self.assertLogs(level="DEBUG") as logs:
                 import logging
                 logging.getLogger("test").debug("marker")
-                body = client.get("/api/shopify/order?client_id=muravai&tracking=TRK1", headers=self.AUTH).get_json()
-            missing = client.get("/api/shopify/order?client_id=muravai&tracking=NOPE", headers=self.AUTH)
+                body = client.get("/api/shopify/order?client_id=muravai&shipment=s1", headers=self.AUTH).get_json()
+            missing = client.get("/api/shopify/order?client_id=muravai&shipment=NOPE", headers=self.AUTH)
+            unlinked = client.get("/api/shopify/order?client_id=muravai&shipment=s3", headers=self.AUTH).get_json()
+            workspace_clients = __import__("app").shopify_order_clients()
+        self.assertEqual(unlinked["flags"], ["unlinked"])
+        self.assertEqual(workspace_clients, ["fascial-labs", "muravai"])
         shipments.assert_called_with("muravai", 30)
         self.assertEqual(body["order"]["address"]["address1"], "1 Main St")
         self.assertEqual(body["flags"], ["several_shipments"])
@@ -137,9 +168,18 @@ class OrderEndpointTests(unittest.TestCase):
             self.assertNotIn("Main St", line)
             self.assertNotIn("Jane", line)
 
+    def test_shopify_failure_is_reported_not_mislabelled(self):
+        client = app.test_client()
+        with patch.dict("os.environ", self.ENV, clear=True), \
+                patch("app.ssk_source.read_shipments", return_value=self.STORE), \
+                patch("app.shopify_source.read_order", side_effect=shopify_source.SourceError("unavailable")):
+            response = client.get("/api/shopify/order?client_id=muravai&shipment=s1", headers=self.AUTH)
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("did not respond", response.get_json()["error"])
+
     def test_disabled_exposes_nothing(self):
         with patch.dict("os.environ", {}, clear=True):
-            self.assertEqual(app.test_client().get("/api/shopify/order?client_id=muravai&tracking=T").status_code, 503)
+            self.assertEqual(app.test_client().get("/api/shopify/order?client_id=muravai&shipment=s1").status_code, 503)
 
 
 if __name__ == "__main__":

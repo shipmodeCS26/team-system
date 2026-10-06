@@ -55,14 +55,23 @@ VARIANTS_QUERY = """query ShipModeVariants($after: String) {
 ORDER_QUERY = """query ShipModeOrder($q: String!) {
   orders(first: 5, query: $q) {
     nodes {
-      name createdAt updatedAt cancelledAt displayFinancialStatus displayFulfillmentStatus
-      lineItems(first: 50) { nodes { name sku quantity currentQuantity } }
-      shippingAddress { name address1 address2 city provinceCode zip countryCodeV2 }
+      id name createdAt cancelledAt displayFinancialStatus displayFulfillmentStatus
+      lineItems(first: 100) { nodes { name sku quantity currentQuantity } pageInfo { hasNextPage } }
     }
   }
 }"""
-READ_QUERIES = frozenset({SCOPES_QUERY, VARIANTS_QUERY, ORDER_QUERY})
-ORDER_NAME = re.compile(r"#?[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
+# Separate reads: protected customer fields and fulfillment data need extra access. If either is
+# refused, the order itself still shows ("address unavailable" / shipment count unknown).
+ORDER_ADDRESS_QUERY = """query ShipModeOrderAddress($id: ID!) {
+  order(id: $id) { shippingAddress { name address1 address2 city provinceCode zip countryCodeV2 } }
+}"""
+ORDER_FULFILLMENTS_QUERY = """query ShipModeOrderFulfillments($id: ID!) {
+  order(id: $id) { fulfillments(first: 20) { trackingInfo(first: 10) { number } } }
+}"""
+READ_QUERIES = frozenset({SCOPES_QUERY, VARIANTS_QUERY, ORDER_QUERY, ORDER_ADDRESS_QUERY, ORDER_FULFILLMENTS_QUERY})
+# Merchants can customise order prefixes/suffixes, so any printable name is allowed; it is escaped
+# inside the quoted search term. Control characters are refused.
+ORDER_NAME = re.compile(r"[^\x00-\x1f\x7f]{1,100}")
 
 # Shown to signed-in staff. Messages never include shop domains or credentials.
 ERRORS = {
@@ -82,6 +91,10 @@ class SourceError(ValueError):
         super().__init__(code)
         self.code = code
         self.status = status
+
+
+class InvalidOrderName(Exception):
+    """The order name cannot be searched safely; nothing is sent to Shopify."""
 
 
 class ReadOnlyViolation(RuntimeError):
@@ -278,32 +291,59 @@ def read_catalogs(client_ids):
         return result
 
 
+def _search_term(order_name):
+    return 'name:"' + order_name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _optional(store, document, variables):
+    """A read that may be refused for lack of extra access; the caller shows 'not available'."""
+    try:
+        return _graphql(store, document, variables, retry=False), None
+    except SourceError as error:
+        if error.code in ("missing_scope", "read_failed"):
+            return None, error.code
+        raise
+
+
 def read_order(client_id, order_name):
     """One client's Shopify order by its exact name, read on demand (#13). Never cached: it carries
     the shipping address, which is returned to the signed-in browser and never stored or logged."""
     store = store_config().get(client_id)
     if not _valid_store(store):
         raise SourceError("not_configured")
-    if not isinstance(order_name, str) or not ORDER_NAME.fullmatch(order_name):
-        raise ValueError("invalid order name")
+    if not isinstance(order_name, str) or not ORDER_NAME.fullmatch(order_name.strip()):
+        raise InvalidOrderName(order_name)
+    order_name = order_name.strip()
     scopes = granted_scopes(store)
     check_scopes(scopes)  # refuses a token with write access before any order is read
     if "read_orders" not in scopes:
         raise SourceError("order_scope")
-    data = _graphql(store, ORDER_QUERY, {"q": f'name:"{order_name}"'})
+    data = _graphql(store, ORDER_QUERY, {"q": _search_term(order_name)})
     orders = []
     for node in ((data.get("orders") or {}).get("nodes") or []):
-        if str(node.get("name") or "").lstrip("#").lower() != order_name.lstrip("#").lower():
+        if str(node.get("name") or "").strip().lower() != order_name.lower():
             continue  # Shopify search is fuzzy; only the exact order counts
-        address = node.get("shippingAddress") if isinstance(node.get("shippingAddress"), dict) else None
-        orders.append({
+        lines = node.get("lineItems") or {}
+        order = {
             "name": node.get("name"), "created_at": node.get("createdAt"), "cancelled_at": node.get("cancelledAt"),
             "financial": node.get("displayFinancialStatus") or "", "fulfillment": node.get("displayFulfillmentStatus") or "",
             "items": [{"name": (line.get("name") or "").strip(), "sku": (line.get("sku") or "").strip(),
                        "qty": line.get("currentQuantity") if isinstance(line.get("currentQuantity"), int) else line.get("quantity")}
-                      for line in ((node.get("lineItems") or {}).get("nodes") or []) if isinstance(line, dict)],
-            "address": {key: address.get(key) for key in
-                        ("name", "address1", "address2", "city", "provinceCode", "zip", "countryCodeV2")} if address else None,
-            "address_visible": "read_customers" in scopes,
-        })
+                      for line in (lines.get("nodes") or []) if isinstance(line, dict)],
+            "items_truncated": bool((lines.get("pageInfo") or {}).get("hasNextPage")),
+            "address": None, "address_visible": False, "tracking_numbers": None,
+        }
+        if "read_customers" in scopes:
+            found, _ = _optional(store, ORDER_ADDRESS_QUERY, {"id": node.get("id")})
+            address = ((found or {}).get("order") or {}).get("shippingAddress")
+            if isinstance(address, dict):
+                order["address"] = {key: address.get(key) for key in
+                                    ("name", "address1", "address2", "city", "provinceCode", "zip", "countryCodeV2")}
+            order["address_visible"] = found is not None
+        found, _ = _optional(store, ORDER_FULFILLMENTS_QUERY, {"id": node.get("id")})
+        if found is not None:
+            numbers = {str(info.get("number")).strip() for f in (((found.get("order") or {}).get("fulfillments")) or [])
+                       for info in (f.get("trackingInfo") or []) if isinstance(info, dict) and info.get("number")}
+            order["tracking_numbers"] = sorted(numbers)
+        orders.append(order)
     return orders

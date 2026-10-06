@@ -71,6 +71,7 @@ def to_row(shipment, client_id, now=None):
     url = str(tracker.get("trackingUrl") or "")
     return {
         "client_id": client_id,
+        "ssk_id": str(shipment.get("id") or "")[:64],
         "order_number": str(_dict(shipment.get("order")).get("name") or "")[:60] or None,
         "tracking_number": str(shipment.get("trackingCode") or tracker.get("trackingCode") or "")[:120],
         "carrier": str(tracker.get("carrierCode") or _dict(shipment.get("carrierAccount")).get("carrierCode")

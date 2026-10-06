@@ -11,13 +11,14 @@ from collections import Counter
 import client_rules
 
 FLAG_TEXT = {
+    "unlinked": "ShipSidekick has no order number for this shipment, so Shopify was not searched",
     "not_found": "Order not found in Shopify",
     "several_orders": "More than one Shopify order has this name",
     "cancelled": "Cancelled in Shopify, but a label exists",
     "refunded": "Refunded in Shopify",
     "partially_refunded": "Partially refunded in Shopify",
     "items_differ": "Items differ between the Shopify order and this shipment",
-    "items_unverified": "Items could not be compared (unmapped SKU)",
+    "items_unverified": "Items could not be compared (unmapped SKU or a very long order)",
     "several_shipments": "More than one shipment for this order (possible reship or split)",
 }
 
@@ -41,7 +42,9 @@ def _units(rules, items):
     return counts, unmapped
 
 
-def check(client_id, shipment, orders, shipments_for_order=1):
+def check(client_id, shipment, orders, shipments_for_order=1, unlinked=False):
+    if unlinked:
+        return {"flags": ["unlinked"], "flag_text": [FLAG_TEXT["unlinked"]]}
     flags = []
     if not orders:
         flags.append("not_found")
@@ -59,10 +62,13 @@ def check(client_id, shipment, orders, shipments_for_order=1):
         rules = client_rules.package(client_id)
         shopify, unmapped_a = _units(rules, [i for i in order.get("items", []) if (i.get("qty") or 0) > 0])
         shipped, unmapped_b = _units(rules, shipment.get("items") or [])
-        if unmapped_a or unmapped_b or not shipped:
+        if unmapped_a or unmapped_b or not shipped or order.get("items_truncated"):
             flags.append("items_unverified")
         elif shopify != shipped:
             flags.append("items_differ")
-    if shipments_for_order > 1:
+    # Shopify's own fulfillments also count: a sibling package may already be delivered or older
+    # than the No Movement lookback, so it is not in the queue.
+    numbers = (order or {}).get("tracking_numbers") or []
+    if max(shipments_for_order, len(numbers)) > 1:
         flags.append("several_shipments")
     return {"flags": flags, "flag_text": [FLAG_TEXT[f] for f in flags]}

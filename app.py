@@ -51,6 +51,17 @@ def inventory_ready():
     return all(os.getenv(k) for k in ("INVENTORY_SHEETS_JSON", "INVENTORY_SERVICE_ACCOUNT_JSON", "WORKSPACE_USER", "WORKSPACE_PASSWORD_HASH", "SECRET_KEY"))
 
 
+def shopify_order_clients():
+    """Clients whose Shopify store is mapped, so the order lookup is only offered where it can work."""
+    if not shopify_source.enabled():
+        return []
+    try:
+        stores = shopify_source.store_config()
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return []
+    return [client["id"] for client in CLIENTS if shopify_source._valid_store(stores.get(client["id"]))]
+
+
 def shopify_ready():
     return all(os.getenv(k) for k in ("SHOPIFY_STORES_JSON", "WORKSPACE_USER", "WORKSPACE_PASSWORD_HASH", "SECRET_KEY"))
 
@@ -169,7 +180,7 @@ def workspace():
                             "environment": store["environment"], "fetched_at": store["fetched_at"]})
         return {"mode": "ssk", "clients": CLIENTS, "sources": sources, "lookback_days": days,
                 "shipments": [classify(dict(row, id=index + 1)) for index, row in enumerate(records)],
-                "as_of": utcnow().isoformat(), "writes": "disabled", "shopify_orders": shopify_source.enabled(),
+                "as_of": utcnow().isoformat(), "writes": "disabled", "shopify_orders": shopify_order_clients(),
                 "integration": "ShipSidekick API (read-only)"}
     else:
         records = sample_shipments()
@@ -289,27 +300,29 @@ def shopify_order():
         return jsonify(error="Shopify is not connected."), 503
     if not ssk_source.enabled():
         return jsonify(error="Needs the ShipSidekick shipment queue."), 503
-    client_id, tracking = request.args.get("client_id", ""), request.args.get("tracking", "")
-    if client_id not in [client["id"] for client in CLIENTS] or not tracking or len(tracking) > 120:
+    client_id, shipment_id = request.args.get("client_id", ""), request.args.get("shipment", "")
+    if client_id not in [client["id"] for client in CLIENTS] or not shipment_id or len(shipment_id) > 64:
         return jsonify(error="Choose one shipment."), 400
     try:
         store = ssk_source.read_shipments(client_id, ssk_source.lookback_days())
     except ssk_source.SourceError as error:
         return jsonify(error=ssk_source.ERRORS.get(error.code, ssk_source.ERRORS["read_failed"])), 502
-    shipment = next((row for row in store["rows"] if row["tracking_number"] == tracking), None)
-    if shipment is None:
-        return jsonify(error="That shipment is not in this client's current queue."), 404
+    # ShipSidekick's own shipment id: unique, unlike a tracking number reused across carriers.
+    matches = [row for row in store["rows"] if row.get("ssk_id") == shipment_id]
+    if len(matches) != 1:
+        return jsonify(error="That shipment is not (uniquely) in this client's current queue."), 404
+    shipment = matches[0]
     name = shipment.get("order_number")
     if not name:
-        return {"order": None, **order_check.check(client_id, shipment, []), "writes": "disabled"}
+        return {"order": None, **order_check.check(client_id, shipment, [], unlinked=True), "writes": "disabled"}
     same_order = sum(row.get("order_number") == name for row in store["rows"])
     try:
         orders = shopify_source.read_order(client_id, name)
-    except ValueError:
-        return jsonify(error="This shipment's order number cannot be looked up in Shopify."), 422
     except shopify_source.SourceError as error:
         shopify_source.failure(client_id, error.code, error.status)
         return jsonify(error=shopify_source.ERRORS[error.code]), 502
+    except shopify_source.InvalidOrderName:
+        return jsonify(error="This shipment's order number cannot be looked up in Shopify."), 422
     result = order_check.check(client_id, shipment, orders, same_order)
     return {"order": orders[0] if len(orders) == 1 else None, "matches": len(orders), **result,
             "writes": "disabled"}
