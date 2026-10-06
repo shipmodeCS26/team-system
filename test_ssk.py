@@ -481,3 +481,117 @@ class ShipmentFieldsTests(unittest.TestCase):
         for text in logs.output + [response.get_data(as_text=True)]:
             self.assertNotIn("ssk_secret", text)
             self.assertNotIn("Jane", text)
+
+
+def shipment(sid, status="in-transit", details=(), label="2026-09-20T10:00:00Z", **extra):
+    return {"id": sid, "trackingCode": f"TRK{sid}", "createdAt": label, "updatedAt": "2026-10-06T01:00:00Z",
+            "order": {"id": "o" + sid, "name": "#" + sid},
+            "returnAddress": {"name": "ShipMode Warehouse", "street1": "9 Dock Rd"},
+            "shippingRate": {"shipToAddress": {"name": "Jane Customer", "street1": "1 Main St", "city": "Miami"}},
+            "carrierAccount": {"carrierCode": "cirro-ecommerce"},
+            "packages": [{"shippingLabel": {"createdAt": label, "pdfUrl": "https://labels.example/x.pdf"},
+                          "lineItems": [{"price": 30, "productVariant": {"sku": "MUR002"}}]}],
+            "tracker": {"status": status, "carrierCode": "cirro-ecommerce",
+                        "trackingUrl": "https://track.example/" + sid,
+                        "trackingDetails": [{"status": s, "createdAt": at, "message": m, "source": "carrier",
+                                             "trackingLocation": {"city": "Doral"}} for s, at, m in details]},
+            "voidStatus": None, **extra}
+
+
+class ShipmentMappingTests(unittest.TestCase):
+    NOW = ssk_source.datetime(2026, 10, 6, 12, tzinfo=ssk_source.timezone.utc)
+
+    def classify(self, raw):
+        from tracking import classify
+        import ssk_shipments
+        return classify(dict(ssk_shipments.to_row(raw, "muravai", self.NOW), id=1), self.NOW)
+
+    def test_stalled_after_physical_scan_uses_scan_time(self):
+        row = self.classify(shipment("1", "in-transit", [
+            ("pre-transit", "2026-09-20T10:00:00Z", "Shipping label created"),
+            ("in-transit", "2026-09-25T10:00:00Z", "Arrived at carrier facility")]))
+        self.assertEqual(row["carrier_status"], "in_transit")
+        self.assertEqual(row["last_movement_at"], "2026-09-25T10:00:00+00:00")
+        self.assertEqual((row["tier"], row["days"]), ("critical", 11))
+        self.assertEqual(row["anchor_source"], "Last carrier movement")
+
+    def test_label_only_falls_back_to_label_date(self):
+        row = self.classify(shipment("2", "pre-transit", [("pre-transit", "2026-09-30T10:00:00Z", "Label created")],
+                                     label="2026-09-30T09:00:00Z"))
+        self.assertEqual(row["carrier_status"], "pre_transit")
+        self.assertIsNone(row["last_movement_at"])
+        self.assertTrue(row["never_scanned"])
+        self.assertEqual((row["tier"], row["anchor_source"]), ("watch", "Label created"))
+
+    def test_electronic_in_transit_event_is_not_movement(self):
+        row = self.classify(shipment("3", "in-transit", [("in-transit", "2026-10-05T10:00:00Z",
+                                                           "Shipment information sent to carrier")]))
+        self.assertIsNone(row["last_movement_at"])
+        self.assertEqual(row["tier"], "data_gap")
+
+    def test_unknown_status_and_void_labels(self):
+        self.assertEqual(self.classify(shipment("4", "weird"))["carrier_status"], "unknown")
+        self.assertEqual(self.classify(shipment("5", voidStatus="voided"))["tier"], "cancelled")
+
+    def test_no_addresses_items_or_label_files_in_row(self):
+        import ssk_shipments
+        text = json.dumps(ssk_shipments.to_row(shipment("6", "in-transit", [
+            ("in-transit", "2026-10-01T10:00:00Z", "Arrived at carrier facility")]), "muravai", self.NOW))
+        for private in ("Jane", "Main St", "Dock Rd", "Warehouse", "Doral", "labels.example", "MUR002", "Miami"):
+            self.assertNotIn(private, text)
+        self.assertIn("https://track.example/6", text)
+
+
+class ShipmentReaderTests(unittest.TestCase):
+    def setUp(self):
+        ssk_source._shipment_cache.clear()
+        self.addCleanup(ssk_source._shipment_cache.clear)
+
+    def fake(self, by_status, reject=()):
+        calls = []
+
+        def get(url, params=None, headers=None, timeout=None):
+            calls.append(params)
+            state = params["trackingStatus"]
+            if state in reject:
+                return FakeResponse(400)
+            return FakeResponse(200, {"data": by_status.get(state, []) if params["page"] == 1 else [], "hasMore": False})
+        return get, calls
+
+    def test_reads_only_open_statuses_get_only(self):
+        get, calls = self.fake({"in-transit": [shipment("1", "in-transit")], "pre-transit": [shipment("2", "pre-transit")]},
+                               reject=("error",))
+        with patch.dict("os.environ", KEYS, clear=True), patch("ssk_source.requests.get", get), \
+                patch("ssk_source.requests.post", side_effect=AssertionError("POST sent")):
+            result = ssk_source.read_shipment_stores(["muravai", "onset"], 30)
+        self.assertEqual(sorted(r["tracking_number"] for r in result[0]["rows"]), ["TRK1", "TRK2"])
+        self.assertEqual(result[1]["error_code"], "not_configured")
+        self.assertNotIn("delivered", {c["trackingStatus"] for c in calls})
+        self.assertEqual(result[0]["skipped_statuses"], ["error"])
+        self.assertEqual(result[0]["environment"], "production")
+        self.assertTrue(all(c["dateRange[from]"] for c in calls))
+
+    def test_ignored_filter_refuses_partial_queue(self):
+        get, _ = self.fake({"in-transit": [shipment("1", "delivered")]})
+        with patch.dict("os.environ", KEYS, clear=True), patch("ssk_source.requests.get", get):
+            result = ssk_source.read_shipment_stores(["muravai"], 30)
+        self.assertEqual(result[0]["error_code"], "filter_ignored")
+
+    def test_workspace_uses_ssk_when_enabled(self):
+        client = app.test_client()
+        auth = {"Authorization": "Basic " + base64.b64encode(b"owner:pw").decode()}
+        env = {"SSK_API_ENABLED": "true", "WORKSPACE_USER": "owner", "SECRET_KEY": "s",
+               "WORKSPACE_PASSWORD_HASH": generate_password_hash("pw", method="pbkdf2:sha256"), **KEYS}
+        get, _ = self.fake({"in-transit": [shipment("1", "in-transit")]})
+        with patch.dict("os.environ", env, clear=True), patch("ssk_source.requests.get", get):
+            self.assertEqual(client.get("/api/workspace").status_code, 401)
+            body = client.get("/api/workspace", headers=auth).get_json()
+        self.assertEqual(body["mode"], "ssk")
+        sources = {src["client_id"]: src for src in body["sources"]}
+        self.assertEqual(sources["onset"]["error_code"], "not_configured")
+        self.assertEqual((sources["muravai"]["skipped_statuses"], sources["muravai"]["environment"]), ([], "production"))
+        self.assertEqual(body["writes"], "disabled")
+        muravai = [r for r in body["shipments"] if r["client_id"] == "muravai"]
+        self.assertEqual([r["tracking_number"] for r in muravai], ["TRK1"])
+        self.assertNotIn("Jane", json.dumps(body))
+        self.assertNotIn("DEMO-", json.dumps(body))

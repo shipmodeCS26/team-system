@@ -30,6 +30,15 @@ def parse_date(value):
     return parsed.astimezone(timezone.utc)
 
 
+ELECTRONIC = ("label created", "shipping label", "shipment information", "electronic notification",
+              "awaiting item", "pre-shipment")
+
+
+def is_physical(status, description):
+    """Electronic / label events never count as physical movement, even if a provider labels them in_transit."""
+    return status in MOVEMENT and not any(term in str(description).lower() for term in ELECTRONIC)
+
+
 def classify(row, now=None):
     now = now or utcnow()
     result = dict(row)
@@ -142,10 +151,8 @@ def tracker_update(payload):
             continue
         description = str(detail.get("description", ""))[:500]
         status = detail.get("status", "unknown")
-        # Electronic / label events never count as physical movement, even if a provider labels them in_transit.
-        electronic = any(term in description.lower() for term in ("label created", "shipping label", "shipment information", "electronic notification", "awaiting item", "pre-shipment"))
         events.append({"at": stamp.isoformat(), "status": status, "description": description,
-                       "movement": status in MOVEMENT and not electronic})
+                       "movement": is_physical(status, description)})
     events.sort(key=lambda x: x["at"])
     movement = [e["at"] for e in events if e["movement"]]
     stamp = parse_date(payload.get("created_at"))

@@ -175,6 +175,17 @@ A store without a key shows "not configured"; the others still load. Which
 ShipSidekick number should equal the Sheet's Remaining is undecided (#16), so
 both differences are shown.
 
+No Movement from ShipSidekick (#17): with `SSK_API_ENABLED=true` (and not
+`APP_MODE=live`), the No Movement queue shows each store's real shipments
+instead of sample data. For each store with a key it reads, GET only, shipments
+created in the last `SSK_SHIPMENT_DAYS` days (default 30, max 90) whose tracking
+status is not delivered, one status at a time. Each status is checked against
+what comes back: if the status filter is ignored, the store shows an error
+instead of a partial queue. The existing aging rules apply unchanged: only
+physical carrier scans reset the clock, and label-only shipments fall back to
+the label date. Addresses, line items, prices and label files are never copied
+into a row. Follow-up notes stay off until the database exists.
+
 ## Calculated inventory (shadow check)
 
 See `docs/V1_PLAN.md`. Off by default; set `INVENTORY_LEDGER_ENABLED=true` in the private Render settings after the Sheets connection works. Approved counts for clients without a Manual Counts tab go in `INVENTORY_BASELINES_JSON` (format in the plan). Only nine ShipSidekick columns are read; customer names and addresses are never requested.

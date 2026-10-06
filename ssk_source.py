@@ -18,7 +18,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -39,6 +39,7 @@ ERRORS = {
     "access_denied": "ShipSidekick refused the API key for this store. Check the key is current.",
     "unavailable": "ShipSidekick did not respond. Try again shortly.",
     "read_failed": "The ShipSidekick data could not be read.",
+    "filter_ignored": "ShipSidekick did not apply the tracking-status filter, so the queue was not loaded (it would be incomplete).",
 }
 QUANTITIES = ("available", "committed", "incoming", "reserved", "damaged", "quality_control", "safety_stock")
 
@@ -186,6 +187,90 @@ def shipment_fields(key, sample=25):
     return {"sampled": len(body["data"]),
             "fields": {path: sorted(kinds) for path, kinds in sorted(fields.items())},
             "values": {path: sorted(words)[:30] for path, words in sorted(values.items())}}
+
+
+# Every tracking status except delivered/cancelled, spelled the way ShipSidekick returns them ("pre-transit").
+# Reading only these keeps the request count small: delivered shipments are most of a store's volume.
+QUEUE_STATUSES = ("pre-transit", "in-transit", "out-for-delivery", "available-for-pickup",
+                  "return-to-sender", "failure", "unknown", "error")
+_shipment_cache = {}
+
+
+def lookback_days():
+    value = os.getenv("SSK_SHIPMENT_DAYS", "30").strip()
+    return min(max(int(value), 1), 90) if value.isdigit() else 30
+
+
+def _norm(value):
+    return str(value or "unknown").strip().lower().replace("_", "-")
+
+
+def open_shipments(key, days):
+    """Shipments created in the last `days` days that are not delivered. GET only."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    found, truncated, counts, rejected = {}, False, {}, []
+    for state in QUEUE_STATUSES:
+        try:
+            rows, cut = get_all(key, "/shipments", {"trackingStatus": state, "dateRange[from]": since})
+        except SourceError as error:
+            if error.status != 400:
+                raise
+            # ShipSidekick does not accept this status word; the others still load, and the store is
+            # reported as incomplete (never as full coverage).
+            counts[state] = "rejected"
+            rejected.append(state)
+            continue
+        # If ShipSidekick ignored the filter, other statuses would come back; refuse rather than show a partial queue.
+        if any(_norm((row.get("tracker") or {}).get("status") if isinstance(row, dict) else None) != state
+               for row in rows):
+            raise SourceError("filter_ignored")
+        counts[state] = len(rows)
+        truncated = truncated or cut
+        for row in rows:
+            found[str(row.get("id") or len(found))] = row
+    if all(value == "rejected" for value in counts.values()):
+        raise SourceError("filter_ignored")
+    return list(found.values()), truncated, counts, rejected
+
+
+def read_shipments(client_id, days):
+    from ssk_shipments import to_row
+    key = api_key(client_id)
+    if not key:
+        raise SourceError("not_configured")
+    cache_key = (client_id, days, hashlib.sha256(key.encode()).hexdigest())
+    with _lock:
+        cached = _shipment_cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] < CACHE_SECONDS:
+            return cached[1]
+    raw, truncated, counts, rejected = open_shipments(key, days)
+    rows = [row for row in (to_row(s, client_id) for s in raw) if row]
+    log.info("ssk shipments client=%s days=%s counts=%s", client_id, days, counts)
+    result = {"id": client_id, "rows": rows, "truncated": truncated, "skipped_statuses": rejected,
+              "environment": "test" if base_url() == TEST else "production",
+              "fetched_at": datetime.now(timezone.utc).isoformat()}
+    with _lock:
+        _shipment_cache[cache_key] = (time.monotonic(), result)
+    return result
+
+
+def read_shipment_stores(client_ids, days):
+    """Each store with its own key; one failure never hides another store. Missing keys are not logged."""
+    with ThreadPoolExecutor(max_workers=max(1, min(6, len(client_ids)))) as pool:
+        futures = {cid: pool.submit(read_shipments, cid, days) for cid in client_ids}
+        out = []
+        for cid in client_ids:
+            try:
+                out.append(futures[cid].result())
+            except SourceError as error:
+                if error.code == "not_configured":
+                    out.append({"id": cid, "error_code": "not_configured", "error": ERRORS["not_configured"]})
+                else:
+                    out.append(failure(cid, error.code, error.status))
+            except Exception as error:
+                log.warning("ssk shipments failed client=%s type=%s", cid, type(error).__name__)
+                out.append({"id": cid, "error_code": "read_failed", "error": ERRORS["read_failed"]})
+        return out
 
 
 def read_store(client_id):
