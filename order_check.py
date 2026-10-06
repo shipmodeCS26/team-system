@@ -76,7 +76,10 @@ def check(client_id, shipment, orders, shipments_for_order=1, unlinked=False, co
         # A split shipment carries only part of the order, so a whole-order comparison would be wrong.
         # Partly fulfilled: the rest of the order hasn't shipped yet, so this parcel is only part of it.
         partial = str(order.get("fulfillment") or "").upper() == "PARTIALLY_FULFILLED"
+        # Refunded or edited lines: the order's current quantities no longer show what was shipped.
+        changed = any(item.get("changed") for item in order.get("items", []))
         if unmapped_a or unmapped_b or not shipped or order.get("items_truncated") or split or split_unknown or partial \
+                or changed \
                 or shipment.get("items_truncated"):
             flags.append("items_unverified")
         elif shopify != shipped:

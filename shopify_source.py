@@ -68,7 +68,7 @@ ORDER_ADDRESS_QUERY = """query ShipModeOrderAddress($id: ID!) {
   order(id: $id) { shippingAddress { name address1 address2 city provinceCode zip countryCodeV2 } }
 }"""
 ORDER_FULFILLMENTS_QUERY = """query ShipModeOrderFulfillments($id: ID!) {
-  order(id: $id) { fulfillments(first: 20) { status trackingInfo(first: 10) { number } } }
+  order(id: $id) { fulfillments { status trackingInfo(first: 10) { number } } }
 }"""
 READ_QUERIES = frozenset({SCOPES_QUERY, VARIANTS_QUERY, ORDER_QUERY, ORDER_ADDRESS_QUERY, ORDER_FULFILLMENTS_QUERY})
 # Merchants can customise order prefixes/suffixes, so any printable name is allowed; it is escaped
@@ -342,8 +342,11 @@ def read_order(client_id, order_name):
             "id": node.get("id"),
             "name": node.get("name"), "created_at": node.get("createdAt"), "cancelled_at": node.get("cancelledAt"),
             "financial": node.get("displayFinancialStatus") or "", "fulfillment": node.get("displayFulfillmentStatus") or "",
+            # currentQuantity drops refunded/removed units; a line where it differs from the original
+            # quantity can't tell us what physically shipped, so it is marked "changed" (comparison unverified).
             "items": [{"name": (line.get("name") or "").strip(), "sku": (line.get("sku") or "").strip(),
-                       "qty": line.get("currentQuantity") if isinstance(line.get("currentQuantity"), int) else line.get("quantity")}
+                       "qty": line.get("currentQuantity") if isinstance(line.get("currentQuantity"), int) else line.get("quantity"),
+                       "changed": isinstance(line.get("currentQuantity"), int) and line.get("currentQuantity") != line.get("quantity")}
                       # Gift cards, digital goods and tips never ship, so they can't be in a parcel.
                       for line in (lines.get("nodes") or []) if isinstance(line, dict) and line.get("requiresShipping") is not False],
             "items_truncated": bool((lines.get("pageInfo") or {}).get("hasNextPage")),
@@ -363,7 +366,7 @@ def read_order(client_id, order_name):
             order["tracking_numbers"] = sorted(numbers)
             # Fulfillments without tracking still mean separate parcels; a full page (20) means maybe more.
             order["fulfillment_count"] = len(fulfillments)
-            order["fulfillments_truncated"] = len(listed) >= 20  # more may exist: count unknown, not "several"
+            # Order.fulfillments takes no page argument in this API version, so the list is complete.
         if complete:
             # Address access is approved per field by Shopify (protected customer data), so ask;
             # a refusal simply leaves the address unavailable.

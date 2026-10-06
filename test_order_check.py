@@ -165,10 +165,18 @@ class UnknownSplitTests(unittest.TestCase):
             flags = order_check.check("muravai", self.SHIPMENT, [dict(self.ORDER, **extra)])["flags"]
             self.assertEqual(flags, ["items_unverified"], extra)
 
-    def test_full_page_of_mostly_cancelled_is_one_parcel(self):
-        orders, _ = read(["read_orders", "read_all_orders", "read_products"], [order_node()],
-                         tracking=tuple((f"C{i}", "CANCELLED") for i in range(19)) + (("OK", "SUCCESS"),))
-        self.assertEqual((orders[0]["fulfillment_count"], orders[0]["fulfillments_truncated"]), (1, True))
+    def test_many_cancelled_attempts_are_one_parcel(self):
+        orders, fake = read(["read_orders", "read_all_orders", "read_products"], [order_node()],
+                            tracking=tuple((f"C{i}", "CANCELLED") for i in range(19)) + (("OK", "SUCCESS"),))
+        self.assertEqual(orders[0]["fulfillment_count"], 1)
+        self.assertNotIn("first:", shopify_source.ORDER_FULFILLMENTS_QUERY.split("trackingInfo")[0])
+
+    def test_refunded_after_shipping_is_unverified_not_differ(self):
+        order = dict(self.ORDER, fulfillment_count=1,
+                     items=[{"name": "Filtered Showerhead", "sku": "", "qty": 0, "changed": True}])
+        flags = order_check.check("muravai", self.SHIPMENT, [order])["flags"]
+        self.assertIn("items_unverified", flags)
+        self.assertNotIn("items_differ", flags)
 
     def test_non_shipping_lines_are_ignored(self):
         node = order_node(items=(("Filtered Showerhead", "", 1),))
