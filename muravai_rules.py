@@ -85,7 +85,8 @@ def shopify_match(variant: dict) -> dict | None:
     # Sets/kits/bundles in ShipSidekick or Shopify (e.g. "Shower Hose & Connector Set", BOM items) contain
     # several products; matching them to one SKU by name would count a kit as a hose. Never compared.
     lowered = f" {text.lower()} "
-    if kind != "kit" and any(word in lowered for word in (" set ", " kit ", " bundle ", " + ", " & ")):
+    markers = (" set ", " bundle ", " + ", " & ") if kind == "kit" else (" set ", " kit ", " bundle ", " + ", " & ")
+    if any(word in lowered for word in markers):
         return {"sku": None, "how": "Set/kit of several products: not matched to one SKU"}
     if kind == "filter":
         # MUR001 is one retail box of three filters; other pack sizes are not the same unit.

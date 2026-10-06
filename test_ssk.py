@@ -300,6 +300,26 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(row["status"], "REVIEW")
         self.assertIn("Negative ShipSidekick quantity (damaged)", row["notes"])
 
+    def test_alias_with_pack_size_is_used_after_inconclusive_sku(self):
+        items = levels(("FILTERS", "Replacement Filters", 10, 0))
+        items[0]["aliases"] = ["3 filters"]
+        result = ssk_check.compare("muravai", items, sheet(("Replacement Filters, 3-Pack", "10")))
+        self.assertEqual(self.by_sku(result)["MUR001"]["ssk_skus"], ["FILTERS"])
+        no_alias = ssk_check.compare("muravai", levels(("FILTERS", "Replacement Filters", 10, 0)), None)
+        self.assertIn("3-pack", {c["sku"]: c["note"] for c in no_alias["components"]}["FILTERS"])
+
+    def test_compound_connector_kit_is_not_mur003(self):
+        result = ssk_check.compare("muravai", levels(("CK", "Connector Kit Box", 5, 0),
+                                                      ("CKS", "Connector Kit + Showerhead", 9, 0)), None)
+        self.assertEqual(self.by_sku(result)["MUR003"]["ssk_skus"], ["CK"])
+        self.assertIn("CKS", {c["sku"] for c in result["components"]})
+
+    def test_sheet_without_as_of_is_not_reconciled(self):
+        undated = sheet(("Shower Hose", "20"), as_of="")
+        row = self.by_sku(ssk_check.compare("muravai", levels(("H", "Shower Hose", 20, 0)), undated))["MUR004"]
+        self.assertEqual(row["status"], "REVIEW")
+        self.assertIn("Sheet has no as-of date; not reconciled", row["notes"])
+
     def test_duplicate_skus_listed_once(self):
         items = levels(("A1", "Thing", 1, 0), ("a1", "Other", 1, 0), ("B", "Third", 1, 0))
         self.assertEqual(ssk_check.compare("onset", items, None)["duplicate_skus"], ["A1", "a1"])
@@ -375,6 +395,25 @@ class SskApiTests(unittest.TestCase):
             self.assertEqual([c["client_id"] for c in body["clients"]], ["muravai"])
             self.assertIn("Sheet not loaded", {r["sku"]: r for r in body["clients"][0]["skus"]}["MUR002"]["notes"])
             self.assertEqual(self.client.get("/api/ssk/inventory?client_id=nope", headers=self.auth).status_code, 400)
+
+    def test_sheet_and_ssk_are_read_together(self):
+        import threading
+        both = threading.Barrier(2, timeout=5)
+
+        def slow_sheets(ids):
+            both.wait()   # only returns if ShipSidekick is being read at the same time
+            return [{"id": "muravai", "as_of": "05 Oct 2026", "rows": [{"product": "Shower Hose", "remaining": "20"}]}]
+
+        def stores(ids):
+            both.wait()
+            return [{"id": "muravai", "levels": levels(("H", "Shower Hose", 20, 0)), "truncated": False,
+                     "environment": "production", "fetched_at": "x"}]
+        env = dict(self.env, INVENTORY_SHEETS_ENABLED="true", INVENTORY_SHEETS_JSON="{}",
+                   INVENTORY_SERVICE_ACCOUNT_JSON="{}")
+        with patch.dict("os.environ", env, clear=True), patch("app.read_dashboards", slow_sheets), \
+                patch("app.ssk_source.read_stores", stores):
+            body = self.client.get("/api/ssk/inventory?client_id=muravai", headers=self.auth).get_json()
+        self.assertEqual({r["sku"]: r for r in body["clients"][0]["skus"]}["MUR004"]["status"], "MATCH")
 
     def test_failed_store_returns_error_only(self):
         with patch.dict("os.environ", self.env, clear=True), \

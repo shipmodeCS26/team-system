@@ -1,4 +1,5 @@
 import csv
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import hmac
 import io
@@ -212,14 +213,18 @@ def ssk_inventory():
     if selected != "all" and selected not in client_ids:
         return jsonify(error="Unknown client."), 400
     ids = client_ids if selected == "all" else [selected]
-    sheets = {}
-    if inventory_enabled():
-        try:
-            sheets = {source["id"]: source for source in read_dashboards(ids)}
-        except (ValueError, KeyError, json.JSONDecodeError):
-            sheets = {}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        # The two sources are independent; a slow Sheet must not delay ShipSidekick stock.
+        sheet_future = pool.submit(read_dashboards, ids) if inventory_enabled() else None
+        stores = pool.submit(ssk_source.read_stores, ids).result()
+        sheets = {}
+        if sheet_future:
+            try:
+                sheets = {source["id"]: source for source in sheet_future.result()}
+            except (ValueError, KeyError, json.JSONDecodeError):
+                sheets = {}
     clients = []
-    for store in ssk_source.read_stores(ids):
+    for store in stores:
         if "error_code" in store:
             clients.append({"client_id": store["id"], "error_code": store["error_code"], "error": store["error"]})
             continue

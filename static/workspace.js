@@ -83,13 +83,13 @@ function renderShopify(){
   const review=clients.filter(c=>!c.error).reduce((n,c)=>n+c.summary.needs_review,0);
   const complete=clients.length&&clients.every(c=>!c.error&&!c.truncated);
   $("shopify-status").textContent=state.shopify===null?"Not loaded":!clients.some(c=>!c.error)?"Not connected":review?`${review} to review`:complete?"All mapped":"Incomplete · not all stores loaded";
-  $("shopify-export").disabled=!rows.length;
+  $("shopify-export").disabled=!rows.length&&!clients.some(c=>c.error);
   $("shopify-more").hidden=rows.length<=state.shopifyShown;
   $("shopify-more").textContent=`Show more (${Math.min(state.shopifyShown,rows.length).toLocaleString()} of ${rows.length.toLocaleString()} shown · CSV export has all)`;
 }
 const loadShopify=makePanelLoader(state,(...a)=>api(...a),"shopify","/api/shopify/sku-check",()=>renderShopify());
 function exportShopify(){
-  const rows=shopifyRows();if(!rows.length)return;
+  const rows=shopifyRows();if(!rows.length&&!(state.shopify||[]).some(c=>c.error))return;
   const cell=v=>'"'+String(v??"").replace(/^[=+@\-\t\r]/,"'$&").replace(/"/g,'""')+'"';
   const clients=state.shopify||[], done={};
   for(const c of clients)done[c.client_id]=c.error?"NOT LOADED: "+c.error:c.truncated?"INCOMPLETE: catalog cut off; later variants not checked":"complete";
@@ -112,14 +112,17 @@ function renderSsk(){
   const counts=rows.reduce((m,r)=>(m[r.status]=(m[r.status]||0)+1,m),{});
   const loaded=clients.filter(c=>!c.error);
   $("ssk-status").textContent=state.ssk===null?"Not loaded":rows.length?Object.entries(counts).map(([k,v])=>`${v} ${k.toLowerCase()}`).join(" · "):loaded.length?"Connected · no rules yet":"Not connected";
-  $("ssk-export").disabled=!rows.length;
+  $("ssk-export").disabled=!rows.length&&!sskReviewRows().length;
 }
 const loadSsk=makePanelLoader(state,(...a)=>api(...a),"ssk","/api/ssk/inventory",()=>renderSsk());
+function sskReviewRows(){return (state.ssk||[]).filter(c=>!c.error).flatMap(c=>[
+  ...c.unmatched_ssk.map(v=>[clientName(c.client_id),"",v.title,v.sku,"",v.available,v.committed,"","","","","NOT IN RULES","ShipSidekick SKU not in this client's rules"]),
+  ...c.components.map(v=>[clientName(c.client_id),"",v.title,v.sku,"",v.available,"","","","","","NOT MATCHED",v.note])])}
 function exportSsk(){
-  const rows=sskRows();if(!rows.length)return;
+  const rows=sskRows(), review=sskReviewRows();if(!rows.length&&!review.length)return;
   const cell=v=>'"'+String(v??"").replace(/^[=+@\-\t\r]/,"'$&").replace(/"/g,'""')+'"';
   const q=(r,k)=>r.ssk?r.ssk[k]:"";
-  const data=[["client","sku","label","shipsidekick_skus","sheet_remaining","ssk_available","ssk_committed","ssk_incoming","ssk_damaged","diff_vs_available","diff_vs_available_committed","status","notes"],...rows.map(r=>[clientName(r.client),r.sku,r.label,r.ssk_skus.join(" "),r.sheet_remaining,q(r,"available"),q(r,"committed"),q(r,"incoming"),q(r,"damaged"),r.vs_available,r.vs_available_committed,r.status,r.notes.join("; ")])];
+  const data=[["client","sku","label","shipsidekick_skus","sheet_remaining","ssk_available","ssk_committed","ssk_incoming","ssk_damaged","diff_vs_available","diff_vs_available_committed","status","notes"],...rows.map(r=>[clientName(r.client),r.sku,r.label,r.ssk_skus.join(" "),r.sheet_remaining,q(r,"available"),q(r,"committed"),q(r,"incoming"),q(r,"damaged"),r.vs_available,r.vs_available_committed,r.status,r.notes.join("; ")]),...review];
   const url=URL.createObjectURL(new Blob([data.map(row=>row.map(cell).join(",")).join("\r\n")],{type:"text/csv;charset=utf-8"}));
   const a=document.createElement("a");a.href=url;a.download="shipmode-shipsidekick-vs-sheet.csv";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }

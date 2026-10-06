@@ -37,12 +37,18 @@ def match_level(rules, level):
     """Internal SKU for one ShipSidekick variant: its SKU, then its aliases, then its name."""
     if level.get("bundle"):
         return {"sku": None, "how": "Bundle in ShipSidekick (isBundle): not matched to one SKU"}
+    inconclusive = None
     for code in [level["sku"], *level["aliases"]]:
         if code:
-            found = _match(rules, level["product"], level["title"] if level["product"] else "", code)
-            if found:
+            found = _match(rules, level["product"] or level["title"], level["title"] if level["product"] else "", code)
+            if found and (found.get("sku") or found.get("covers")):
                 return found
-    return _match(rules, level["product"] or level["title"], level["title"] if level["product"] else "", "")
+            inconclusive = inconclusive or found
+    by_name = _match(rules, level["product"] or level["title"], level["title"] if level["product"] else "", "")
+    if by_name and (by_name.get("sku") or by_name.get("covers")):
+        return by_name
+    # A "needs review" answer from the rules is kept rather than dropping to "not in rules".
+    return inconclusive or by_name
 
 
 def match_sheet_row(rules, product):
@@ -87,6 +93,8 @@ def compare(client_id, levels, sheet, truncated=False):
         notes, basis = [], ""
         if truncated:
             notes.append("ShipSidekick inventory list was cut off; not reconciled")
+        if sheet_ok and not str(sheet.get("as_of") or "").strip():
+            notes.append("Sheet has no as-of date; not reconciled")
         if sheet_ok and sheet.get("may_continue"):
             notes.append("Sheet may list more products past its last read row; not reconciled")
         sheet_value = None
