@@ -123,7 +123,7 @@ def secure(response):
 def compress(response):
     """Gzip large JSON responses (the ShipSidekick queue can be megabytes); the browser unpacks them."""
     if (response.mimetype != "application/json" or response.direct_passthrough
-            or "gzip" not in request.headers.get("Accept-Encoding", "").lower()
+            or request.accept_encodings["gzip"] <= 0  # honours q-values, e.g. "gzip;q=0" means no
             or "Content-Encoding" in response.headers):
         return response
     body = response.get_data()

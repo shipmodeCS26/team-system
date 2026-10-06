@@ -611,6 +611,8 @@ class ResponseSizeTests(unittest.TestCase):
                 patch("app.ssk_source.read_shipment_stores", return_value=[store]):
             zipped = client.get("/api/workspace", headers={**auth, "Accept-Encoding": "gzip"})
             plain = client.get("/api/workspace", headers=auth)
+            refused = client.get("/api/workspace", headers={**auth, "Accept-Encoding": "gzip;q=0, identity"})
+        self.assertIsNone(refused.headers.get("Content-Encoding"))
         self.assertEqual(zipped.headers.get("Content-Encoding"), "gzip")
         self.assertEqual(json.loads(gz.decompress(zipped.get_data()))["mode"], "ssk")
         self.assertIsNone(plain.headers.get("Content-Encoding"))
