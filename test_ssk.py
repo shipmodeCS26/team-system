@@ -595,3 +595,38 @@ class ShipmentReaderTests(unittest.TestCase):
         self.assertEqual([r["tracking_number"] for r in muravai], ["TRK1"])
         self.assertNotIn("Jane", json.dumps(body))
         self.assertNotIn("DEMO-", json.dumps(body))
+
+
+class ResponseSizeTests(unittest.TestCase):
+    def test_large_json_is_gzipped_only_when_accepted(self):
+        import gzip as gz
+        client = app.test_client()
+        auth = {"Authorization": "Basic " + base64.b64encode(b"owner:pw").decode()}
+        env = {"SSK_API_ENABLED": "true", "WORKSPACE_USER": "owner", "SECRET_KEY": "s",
+               "WORKSPACE_PASSWORD_HASH": generate_password_hash("pw", method="pbkdf2:sha256")}
+        rows = [dict(ssk_shipments_row(i)) for i in range(300)]
+        store = {"id": "muravai", "rows": rows, "truncated": False, "skipped_statuses": [],
+                 "environment": "production", "fetched_at": "2026-10-06T00:00:00+00:00"}
+        with patch.dict("os.environ", env, clear=True), \
+                patch("app.ssk_source.read_shipment_stores", return_value=[store]):
+            zipped = client.get("/api/workspace", headers={**auth, "Accept-Encoding": "gzip"})
+            plain = client.get("/api/workspace", headers=auth)
+        self.assertEqual(zipped.headers.get("Content-Encoding"), "gzip")
+        self.assertEqual(json.loads(gz.decompress(zipped.get_data()))["mode"], "ssk")
+        self.assertIsNone(plain.headers.get("Content-Encoding"))
+        self.assertEqual(plain.get_json()["mode"], "ssk")
+
+    def test_only_recent_scans_are_kept(self):
+        import ssk_shipments
+        details = [("in-transit", f"2026-09-{d:02d}T10:00:00Z", "Arrived at facility") for d in range(1, 29)]
+        row = ssk_shipments.to_row(shipment("9", "in-transit", details), "muravai",
+                                   ssk_source.datetime(2026, 10, 6, tzinfo=ssk_source.timezone.utc))
+        self.assertEqual(len(row["events"]), ssk_shipments.EVENTS_KEPT)
+        self.assertEqual(row["last_movement_at"], "2026-09-28T10:00:00+00:00")  # computed from all scans
+
+
+def ssk_shipments_row(i):
+    import ssk_shipments
+    return ssk_shipments.to_row(shipment(str(i), "in-transit", [("in-transit", "2026-10-01T10:00:00Z",
+                                                                  "Arrived at carrier facility " * 3)]),
+                                "muravai", ssk_source.datetime(2026, 10, 6, tzinfo=ssk_source.timezone.utc))

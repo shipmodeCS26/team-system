@@ -1,4 +1,5 @@
 import csv
+import gzip
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import hmac
@@ -116,6 +117,21 @@ def secure(response):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Cache-Control"] = "no-store"
     response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    return compress(response)
+
+
+def compress(response):
+    """Gzip large JSON responses (the ShipSidekick queue can be megabytes); the browser unpacks them."""
+    if (response.mimetype != "application/json" or response.direct_passthrough
+            or "gzip" not in request.headers.get("Accept-Encoding", "").lower()
+            or "Content-Encoding" in response.headers):
+        return response
+    body = response.get_data()
+    if len(body) < 20_000:
+        return response
+    response.set_data(gzip.compress(body, compresslevel=5))
+    response.headers["Content-Encoding"] = "gzip"
+    response.headers["Vary"] = "Accept-Encoding"
     return response
 
 

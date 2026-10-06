@@ -12,6 +12,9 @@ from datetime import timedelta
 from tracking import STATUS, is_physical, parse_date, utcnow
 
 
+EVENTS_KEPT = 15  # the detail view's scan history; older scans never change the movement clock
+
+
 def status(value):
     """ShipSidekick writes "pre-transit"; the queue uses "pre_transit". Anything unrecognised is unknown."""
     text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
@@ -70,5 +73,5 @@ def to_row(shipment, client_id, now=None):
         "source": "ShipSidekick API",
         "case_status": "open",
         "notes": "",
-        "events": events[-100:],
+        "events": events[-EVENTS_KEPT:],
     }
