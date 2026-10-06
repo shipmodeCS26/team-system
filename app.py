@@ -1,19 +1,28 @@
 import csv
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import hmac
 import io
 import json
 import os
 import secrets
+from datetime import datetime
 from functools import wraps
+from zoneinfo import ZoneInfo
 
 from flask import Flask, Response, jsonify, render_template, request, session
 from werkzeug.security import check_password_hash
 
 from tracking import CLIENTS, classify, parse_csv, parse_date, sample_shipments, tracker_update, utcnow
+from daily_update import build_update
+from incoming import read_incoming
 from inventory import read_dashboards
 from movement import read_movement
 from ledger_sources import calculate_clients
+import shopify_source
+import sku_check
+import ssk_check
+import ssk_source
 
 app = Flask(__name__)
 app.config.update(SECRET_KEY=os.getenv("SECRET_KEY", secrets.token_hex(32)),
@@ -57,6 +66,14 @@ SCHEMA = ("""CREATE TABLE IF NOT EXISTS shipments (
 _schema_ready = False
 
 
+def shopify_ready():
+    return all(os.getenv(k) for k in ("SHOPIFY_STORES_JSON", "WORKSPACE_USER", "WORKSPACE_PASSWORD_HASH", "SECRET_KEY"))
+
+
+def ssk_ready():
+    return all(os.getenv(k) for k in ("WORKSPACE_USER", "WORKSPACE_PASSWORD_HASH", "SECRET_KEY"))
+
+
 def db():
     """Connect to PostgreSQL, creating the tables on first use (Render's free plan has no shell for init-db)."""
     global _schema_ready
@@ -81,11 +98,15 @@ def init_db():
 def protected(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if live() or inventory_enabled():
+        if live() or inventory_enabled() or shopify_source.enabled() or ssk_source.enabled():
             if live() and not ready():
                 return jsonify(error="Live workspace is not configured. No shipment data is exposed."), 503
             if inventory_enabled() and not inventory_ready():
                 return jsonify(error="Inventory access is not configured."), 503
+            if shopify_source.enabled() and not shopify_ready():
+                return jsonify(error="Shopify access is not configured."), 503
+            if ssk_source.enabled() and not ssk_ready():
+                return jsonify(error="ShipSidekick access is not configured."), 503
             auth = request.authorization
             if not auth or auth.username != os.getenv("WORKSPACE_USER") or not check_password_hash(os.getenv("WORKSPACE_PASSWORD_HASH", ""), auth.password or ""):
                 return Response("Sign in to your Shipmode workspace.", 401, {"WWW-Authenticate": 'Basic realm="Shipmode workspace", charset="UTF-8"'})
@@ -148,6 +169,23 @@ def workspace():
     if live():
         with db() as conn:
             records = [dict(record, id=identity) for identity, record in conn.execute("SELECT id,record FROM shipments ORDER BY id").fetchall()]
+    elif ssk_source.enabled():
+        # Issue #17: real shipments pulled read-only from each store's ShipSidekick account; no database.
+        days = ssk_source.lookback_days()
+        stores = ssk_source.read_shipment_stores([client["id"] for client in CLIENTS], days)
+        records, sources = [], []
+        for store in stores:
+            if "error_code" in store:
+                sources.append({"client_id": store["id"], "error_code": store["error_code"], "error": store["error"]})
+                continue
+            records.extend(store["rows"])
+            sources.append({"client_id": store["id"], "shipments": len(store["rows"]),
+                            "truncated": store["truncated"], "skipped_statuses": store["skipped_statuses"],
+                            "environment": store["environment"], "fetched_at": store["fetched_at"]})
+        return {"mode": "ssk", "clients": CLIENTS, "sources": sources, "lookback_days": days,
+                "shipments": [classify(dict(row, id=index + 1)) for index, row in enumerate(records)],
+                "as_of": utcnow().isoformat(), "writes": "disabled",
+                "integration": "ShipSidekick API (read-only)"}
     else:
         records = sample_shipments()
     return {"mode": "live" if live() else "demo", "clients": CLIENTS,
@@ -171,6 +209,45 @@ def inventory():
         return jsonify(error="Inventory configuration is invalid or incomplete."), 503
 
 
+@app.get("/api/incoming")
+@protected
+def incoming():
+    """Read-only incoming shipments for one client. Incoming units are never added to on-hand."""
+    if not inventory_enabled():
+        return jsonify(error="Google Sheets inventory is not connected."), 503
+    selected = request.args.get("client_id", "")
+    if selected not in {client["id"] for client in CLIENTS}:
+        return jsonify(error="Choose one client."), 400
+    try:
+        source = read_incoming([selected], datetime.now(ZoneInfo("America/New_York")).date())[0]
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return jsonify(error="Inventory configuration is invalid or incomplete."), 503
+    return {"source": source, "as_of": utcnow().isoformat()}
+
+
+@app.get("/api/daily-update")
+@protected
+def daily_update():
+    """Draft text for one client's Slack update. Nothing is sent; staff review and copy it."""
+    if not inventory_enabled():
+        return jsonify(error="Google Sheets inventory is not connected."), 503
+    selected = request.args.get("client_id", "")
+    names = {client["id"]: client["name"] for client in CLIENTS}
+    if selected not in names:
+        return jsonify(error="Choose one client."), 400
+    try:
+        source = read_dashboards([selected])[0]
+        if source.get("error"):
+            return jsonify(error=f"{names[selected]} inventory did not load: {source['error']}"), 409
+        extra = read_incoming([selected], datetime.now(ZoneInfo("America/New_York")).date())[0]
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return jsonify(error="Inventory configuration is invalid or incomplete."), 503
+    return {**build_update(names[selected], source, None if extra.get("error") else extra),
+            "incoming_error": extra.get("error") or (None if extra.get("available") else
+                                                      "This client's workbook has no Incoming Stocks tab."),
+            "sheet_read_at": source.get("fetched_at")}
+
+
 @app.get("/api/inventory/calculated")
 @protected
 def calculated_inventory():
@@ -186,6 +263,92 @@ def calculated_inventory():
                 "as_of": utcnow().isoformat(), "writes": "disabled"}
     except (ValueError, KeyError, json.JSONDecodeError):
         return jsonify(error="Inventory configuration is invalid or incomplete."), 503
+
+
+@app.get("/api/shopify/sku-check")
+@protected
+def shopify_sku_check():
+    """Read-only Shopify catalog vs. each client's own SKU rules. Never writes to Shopify."""
+    if not shopify_source.enabled():
+        return jsonify(error="Shopify is not connected."), 503
+    selected = request.args.get("client_id", "all")
+    client_ids = [client["id"] for client in CLIENTS]
+    if selected != "all" and selected not in client_ids:
+        return jsonify(error="Unknown client."), 400
+    try:
+        catalogs = shopify_source.read_catalogs(client_ids if selected == "all" else [selected])
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return jsonify(error="Shopify configuration is invalid or incomplete."), 503
+    clients = []
+    for catalog in catalogs:
+        if "error_code" in catalog:
+            clients.append({"client_id": catalog["id"], "error_code": catalog["error_code"], "error": catalog["error"]})
+            continue
+        result = sku_check.check(catalog["id"], catalog["variants"])
+        warnings = []
+        if catalog["truncated"]:
+            warnings.append(f"Store has more than {shopify_source.PAGE_SIZE * shopify_source.MAX_PAGES:,} variants; the rest were not checked.")
+        if catalog["missing_scopes"]:
+            warnings.append("Not granted yet (needed for later order checks): " + ", ".join(catalog["missing_scopes"]))
+        clients.append(dict(result, warnings=warnings, truncated=catalog["truncated"], fetched_at=catalog["fetched_at"]))
+    return {"clients": clients, "as_of": utcnow().isoformat(), "writes": "disabled"}
+
+
+@app.get("/api/ssk/shipment-fields")
+@protected
+def ssk_shipment_fields():
+    """Issue #17 discovery: which fields ShipSidekick shipments carry. Names and status words only."""
+    if not ssk_source.enabled():
+        return jsonify(error="ShipSidekick API is not connected."), 503
+    client_id = request.args.get("client_id", "")
+    if client_id not in [client["id"] for client in CLIENTS]:
+        return jsonify(error="Choose one client."), 400
+    key = ssk_source.api_key(client_id)
+    if not key:
+        return jsonify(error=ssk_source.ERRORS["not_configured"]), 503
+    try:
+        result = ssk_source.shipment_fields(key)
+    except ssk_source.SourceError as error:
+        ssk_source.failure(client_id, error.code, error.status)
+        return jsonify(error=ssk_source.ERRORS[error.code]), 502
+    app.logger.warning("ssk shipment fields client=%s %s", client_id, json.dumps(result, separators=(",", ":")))
+    return dict(result, client_id=client_id, writes="disabled")
+
+
+@app.get("/api/ssk/inventory")
+@protected
+def ssk_inventory():
+    """Read-only ShipSidekick stock next to the client Sheet. Never writes to ShipSidekick."""
+    if not ssk_source.enabled():
+        return jsonify(error="ShipSidekick API is not connected."), 503
+    selected = request.args.get("client_id", "all")
+    client_ids = [client["id"] for client in CLIENTS]
+    if selected != "all" and selected not in client_ids:
+        return jsonify(error="Unknown client."), 400
+    ids = client_ids if selected == "all" else [selected]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        # The two sources are independent; a slow Sheet must not delay ShipSidekick stock.
+        sheet_future = pool.submit(read_dashboards, ids) if inventory_enabled() else None
+        stores = pool.submit(ssk_source.read_stores, ids).result()
+        sheets = {}
+        if sheet_future:
+            try:
+                sheets = {source["id"]: source for source in sheet_future.result()}
+            except (ValueError, KeyError, json.JSONDecodeError):
+                sheets = {}
+    clients = []
+    for store in stores:
+        if "error_code" in store:
+            clients.append({"client_id": store["id"], "error_code": store["error_code"], "error": store["error"]})
+            continue
+        result = ssk_check.compare(store["id"], store["levels"], sheets.get(store["id"]), store["truncated"])
+        warnings = []
+        if store["truncated"]:
+            warnings.append(f"More than {ssk_source.PAGE_SIZE * ssk_source.MAX_PAGES:,} inventory rows; the rest were not read.")
+        if store["environment"] == "test":
+            warnings.append("Reading ShipSidekick's TEST environment, not production.")
+        clients.append(dict(result, warnings=warnings, environment=store["environment"], fetched_at=store["fetched_at"]))
+    return {"clients": clients, "as_of": utcnow().isoformat(), "writes": "disabled"}
 
 
 @app.get("/api/template.csv")

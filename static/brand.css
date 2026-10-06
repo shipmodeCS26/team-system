@@ -110,3 +110,6 @@ td,.metric strong,.inventory-cards strong{font-variant-numeric:tabular-nums}
 #calculated-error{margin:0 22px 16px}
 .calculated-card td.inventory-source{min-width:280px}
 .tracking-link{color:var(--sm-navy);text-decoration:underline;text-decoration-color:var(--sm-sky);text-decoration-thickness:2px;text-underline-offset:3px}.tracking-link:hover{background:var(--sm-sky-soft)}
+#shopify-error{margin:0 22px 16px}
+.heading-actions .badge{white-space:nowrap}
+#ssk-error{margin:0 22px 16px}

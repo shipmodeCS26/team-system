@@ -1,6 +1,6 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null, inventorySources:null, inventoryAsOf:null, inventoryRequest:0, calculated:null, calculatedError:null};
+const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null, inventorySources:null, inventoryAsOf:null, inventoryRequest:0, calculated:null, calculatedError:null, shopify:null, shopifyError:null, ssk:null, sskError:null, panelRequests:{}, shopifyShown:200, incoming:null, incomingError:null, incomingRequest:0, incomingHistory:false};
 const PAGE_SIZE = 10;
 const tierNames = {critical:"Critical",urgent:"Urgent",watch:"Watch",monitoring:"Monitoring",delivered:"Delivered",cancelled:"Cancelled",data_gap:"Missing data"};
 const statusNames = {pre_transit:"Label created",in_transit:"In transit",out_for_delivery:"Out for delivery",available_for_pickup:"Ready for pickup",delivered:"Delivered",unknown:"Unknown",failure:"Carrier exception",return_to_sender:"Returning",cancelled:"Cancelled",error:"Carrier error"};
@@ -62,23 +62,138 @@ function renderInventory(){
   const problems=sources.map(s=>({s,text:s.error||[s.report_status==="REVIEW"?"Report marked REVIEW":"",...(s.warnings||[])].filter(Boolean).join(" · ")})).filter(p=>p.text);
   $("inventory-error").innerHTML=problems.map(({s,text})=>`<div class="source-problem${s.error?" failed":""}"><strong>${esc(clientName(s.id))}${s.error?" — not loaded":""}</strong> ${esc(text)}</div>`).join("");
   $("inventory-error").hidden=!problems.length;
+  updateDailyButton();
   $("inventory-sync").textContent=state.inventoryAsOf?`Checked ${date(state.inventoryAsOf,true)} · updates about every minute while this tab is open.`:"Google Sheets access is not connected yet.";
 }
 function renderCalculated(){
   const clients=state.calculated||[], fmt=n=>n==null?"—":Number(n).toLocaleString();
   const badge={VERIFIED:"delivered",REVIEW:"watch",INCOMPLETE:"data_gap"};
   const rows=clients.filter(c=>!c.error).flatMap(c=>c.skus.map(r=>({...r,client:c.client_id})));
-  $("calculated-rows").innerHTML=rows.length?rows.map(r=>`<tr><td><strong>${esc(r.sku)} · ${esc(r.label)}</strong><small>${esc(clientName(r.client))}</small></td><td>${r.baseline?`${fmt(r.baseline.quantity)}<small>${esc(r.baseline.date)} · ${esc(r.baseline.timing.replace("_"," "))} · ${esc(r.baseline.approved_by)}</small>`:"—"}</td><td>${fmt(r.baseline?r.usage:null)}</td><td>${fmt(r.baseline?r.receipts:null)}</td><td>${fmt(r.baseline?r.adjustments:null)}</td><td><strong>${fmt(r.calculated)}</strong></td><td class="inventory-source"><span class="badge ${badge[r.status]||""}">${esc(r.status)}</span>${(r.reasons||[]).map(t=>`<small>${esc(t)}</small>`).join("")}</td></tr>`).join(""):'<tr><td colspan="7" class="empty-cell"><strong>No calculated inventory</strong>'+esc(state.calculatedError||"No client has rules and a readable export yet.")+'</td></tr>';
+  $("calculated-rows").innerHTML=rows.length?rows.map(r=>`<tr><td><strong>${esc(r.sku)} · ${esc(r.label)}</strong><small>${esc(clientName(r.client))}</small></td><td>${r.baseline?`${fmt(r.baseline.quantity)}<small>${esc(r.baseline.date)} · ${esc(r.baseline.timing.replace("_"," "))} · ${esc(r.baseline.approved_by)}</small>`:"—"}</td><td>${fmt(r.baseline?r.usage:null)}</td><td>${fmt(r.baseline?r.receipts:null)}</td><td>${fmt(r.baseline?r.adjustments:null)}</td><td><strong>${fmt(r.calculated)}</strong></td><td class="inventory-source"><span class="badge ${badge[r.status]||""}">${esc(r.status)}</span>${(r.reasons||[]).map(t=>`<small>${esc(t)}</small>`).join("")}</td></tr>`).join(""):(state.calculated===null?'<tr><td colspan="7" class="empty-cell"><strong>Loading…</strong>Calculating.</td></tr>':'<tr><td colspan="7" class="empty-cell"><strong>No calculated inventory</strong>'+esc(state.calculatedError||"No client has rules and a readable export yet.")+'</td></tr>');
   const problems=clients.filter(c=>c.error).map(c=>`<div class="source-problem failed"><strong>${esc(clientName(c.client_id))}</strong> ${esc(c.error)}</div>`);
   $("calculated-error").innerHTML=problems.join("");$("calculated-error").hidden=!problems.length;
   $("calculated-eod").innerHTML=clients.filter(c=>c.latest_eod).map(c=>{const e=c.latest_eod;return `<div class="eod-card"><strong>${esc(clientName(c.client_id))} — latest EOD ${esc(e.date)}</strong><span>${fmt(e.orders)} orders · ${fmt(e.missions)} missions · ${fmt(e.total_units)} units${e.needs_review?" · needs review":""}</span><small>${esc(e.audit)}</small>${(e.findings||[]).slice(0,5).map(f=>`<small class="finding">${esc(f)}</small>`).join("")}</div>`}).join("");
   const counts=rows.reduce((m,r)=>(m[r.status]=(m[r.status]||0)+1,m),{});
   $("calculated-status").textContent=rows.length?Object.entries(counts).map(([k,v])=>`${v} ${k.toLowerCase()}`).join(" · "):"Read-only";
 }
-async function loadCalculated(){
-  try{const result=await api(`/api/inventory/calculated?client_id=${encodeURIComponent(state.client)}`);state.calculated=result.clients;state.calculatedError=null}
-  catch(error){state.calculated=[];state.calculatedError=error.message}
-  renderCalculated();
+const incomingFlagNames={missing_boxes:"Missing boxes",receipt_not_recorded:"Receipt not recorded",needs_transfer:"Needs transfer",sku_unverified:"SKU not verified",past_expected:"Past expected date"};
+function incomingCard(group){
+  const flags=group.flags.map(f=>`<span class="badge watch">${esc(incomingFlagNames[f]||f)}</span>`).join(" ");
+  const lines=group.lines.map(l=>`<tr><td><strong>${esc(l.product||"Product not named")}</strong><small>${esc(l.sku||"SKU not set")}</small></td><td>${esc(l.units||"—")}</td><td>${esc(l.boxes_expected||"—")} / ${esc(l.boxes_received||"—")}</td><td>${esc(l.units_received||"—")}</td><td>${esc(l.status||"—")}${l.flags.length?`<small>${l.flags.map(f=>esc(incomingFlagNames[f]||f)).join(" · ")}</small>`:""}</td></tr>`).join("");
+  const first=group.lines[0]||{};
+  return `<article class="incoming-shipment"><header><div><strong>${esc(group.po)}</strong><span class="tracking">${esc(group.tracking||"No tracking number")}</span></div><div>${flags}</div></header><p class="incoming-where">${esc(first.where||"Location not recorded")}${first.expected_date?` · Expected in Miami: ${esc(first.expected_date)}`:""}</p><div class="table-scroll"><table><thead><tr><th>Product / SKU</th><th>Units expected</th><th>Boxes expected / received</th><th>Units received</th><th>Status</th></tr></thead><tbody>${lines}</tbody></table></div></article>`;
+}
+function renderIncoming(){
+  const source=state.incoming, fmt=n=>Number(n).toLocaleString();
+  $("incoming-error").hidden=!state.incomingError&&!source?.error;
+  $("incoming-error").textContent=state.incomingError||source?.error||"";
+  $("incoming-history-toggle").hidden=true;$("incoming-history").hidden=true;$("incoming-totals").innerHTML="";
+  if(state.client==="all"){$("incoming-status").textContent="Read-only";$("incoming-shipments").innerHTML='<p class="empty-cell"><strong>Select one client</strong>Incoming shipments are shown one client at a time.</p>';return}
+  if(!source||source.error){$("incoming-status").textContent="Read-only";$("incoming-shipments").innerHTML=source?"":'<p class="empty-cell"><strong>Loading incoming shipments…</strong></p>';return}
+  if(!source.available){$("incoming-status").textContent="Not available";$("incoming-shipments").innerHTML='<p class="empty-cell"><strong>No Incoming Stocks tab</strong>This client\'s workbook does not track incoming shipments yet.</p>';return}
+  $("incoming-status").textContent=`${source.shipments.length} open`+(source.truncated?" · INCOMPLETE":"");
+  if(source.truncated){$("incoming-error").hidden=false;$("incoming-error").textContent="The Incoming Stocks tab is longer than ShipMode reads; later rows are not shown."}
+  $("incoming-totals").innerHTML=source.incoming_by_sku.map(t=>`<div><span>${esc(t.sku)} · ${esc(t.product)}</span><strong>${fmt(t.units)}</strong><small>incoming, not in on-hand</small></div>`).join("")+(source.unverified_lines?`<p class="incoming-note">${source.unverified_lines} line(s) have no verified SKU or no whole-number quantity and are not included in these totals.</p>`:"");
+  $("incoming-shipments").innerHTML=source.shipments.length?source.shipments.map(incomingCard).join(""):'<p class="empty-cell"><strong>No open incoming shipments</strong>Everything listed in the tab is already included in the latest count.</p>';
+  $("incoming-history-toggle").hidden=!source.history.length;
+  $("incoming-history-toggle").textContent=state.incomingHistory?"Hide received history":`Show received history (${source.history.length})`;
+  $("incoming-history-toggle").setAttribute("aria-expanded",String(state.incomingHistory));
+  $("incoming-history").hidden=!state.incomingHistory;
+  $("incoming-history").innerHTML=state.incomingHistory?source.history.map(incomingCard).join(""):"";
+}
+async function loadIncoming(){
+  const request=++state.incomingRequest,client=state.client;
+  state.incoming=null;state.incomingError=null;
+  if(client==="all"){renderIncoming();return}
+  renderIncoming();
+  try{const result=await api(`/api/incoming?client_id=${encodeURIComponent(client)}`);if(request!==state.incomingRequest)return;state.incoming=result.source}
+  catch(error){if(request!==state.incomingRequest)return;state.incomingError=error.message}
+  renderIncoming();
+}
+async function openDailyUpdate(){
+  const button=$("daily-update-button"),client=state.client;button.disabled=true;
+  try{
+    const result=await api(`/api/daily-update?client_id=${encodeURIComponent(client)}`);
+    if(client!==state.client)return;  // the client changed while loading: never show another client's text
+    $("update-text").value=result.text;
+    const notes=[result.draft?"The source is under review: the text starts with a DRAFT line. Check the Sheet before posting.":"",result.incoming_error?`Incoming shipments were left out: ${result.incoming_error}`:"",result.held_back?.length?`Not included (fully or partly) because no verified SKU or quantity: ${result.held_back.join(", ")}. Check them in the Incoming panel.`:"",result.incoming_truncated?"The Incoming Stocks tab is longer than ShipMode reads; later shipments may be missing from this text.":""].filter(Boolean);
+    $("update-warning").textContent=notes.join(" ");$("update-warning").hidden=!notes.length;
+    $("update-read-at").textContent=`Built from the Sheet as read ${result.sheet_read_at?date(result.sheet_read_at,true):"just now"}.`;
+    $("update-dialog").showModal();
+    loadInventory();  // the panel behind the dialog shows the same snapshot the text was built from
+  }catch(error){toast(error.message)}
+  finally{updateDailyButton()}
+}
+async function copyDailyUpdate(){
+  const text=$("update-text").value;
+  try{await navigator.clipboard.writeText(text);toast("Update copied. Paste it into the client's channel.")}
+  catch{$("update-text").select();toast("Select-all is ready; press Ctrl+C (⌘C) to copy.")}
+}
+function updateDailyButton(){
+  const source=(state.inventorySources||[])[0];
+  $("daily-update-button").disabled=state.client==="all"||!source||!!source.error;
+}
+const loadCalculated=makePanelLoader(state,(...a)=>api(...a),"calculated","/api/inventory/calculated",()=>renderCalculated());
+function shopifyRows(){return (state.shopify||[]).filter(c=>!c.error).flatMap(c=>c.variants.map(r=>({...r,client:c.client_id})))}
+function renderShopify(){
+  const clients=state.shopify||[], rows=shopifyRows();
+  const badge={mapped:"delivered",component:"in_transit",unmapped:"critical",no_rules:"data_gap"};
+  const shown=rows.slice(0,state.shopifyShown);
+  $("shopify-rows").innerHTML=rows.length?shown.map(r=>`<tr><td><strong>${esc(r.product)}${r.variant&&r.variant!=="Default Title"?" · "+esc(r.variant):""}</strong><small>${esc(clientName(r.client))} · ${esc(r.product_status.toLowerCase())}</small></td><td>${r.sku?esc(r.sku):'<span class="muted">blank</span>'}</td><td>${r.internal_sku?`<strong>${esc(r.internal_sku)}</strong><small>${esc(r.label)}</small>`:"—"}</td><td class="inventory-source"><span class="badge ${badge[r.status]||""}">${esc(r.status_text)}</span><small>${esc(r.how)}</small></td><td class="inventory-source">${r.flag_text.length?r.flag_text.map(t=>`<small class="finding">${esc(t)}</small>`).join(""):'<small>OK</small>'}</td></tr>`).join(""):(state.shopify===null?'<tr><td colspan="5" class="empty-cell"><strong>Loading…</strong>Reading Shopify.</td></tr>':'<tr><td colspan="5" class="empty-cell"><strong>No Shopify products</strong>'+esc(state.shopifyError||"No connected store returned products.")+'</td></tr>');
+  const problems=clients.filter(c=>c.error).map(c=>`<div class="source-problem failed"><strong>${esc(clientName(c.client_id))} — not loaded</strong> ${esc(c.error)}</div>`)
+    .concat(clients.filter(c=>!c.error).flatMap(c=>(c.warnings||[]).map(w=>`<div class="source-problem"><strong>${esc(clientName(c.client_id))}</strong> ${esc(w)}</div>`)));
+  $("shopify-error").innerHTML=problems.join("");$("shopify-error").hidden=!problems.length;
+  const stateText={found:"In Shopify",inactive:"Only on draft/archived products",missing:"Not found in Shopify"};
+  $("shopify-rules").innerHTML=clients.filter(c=>!c.error).map(c=>`<div class="eod-card"><strong>${esc(clientName(c.client_id))} — rules ${esc(c.rule_status.toLowerCase())}</strong><span>${c.summary.mapped} mapped · ${c.summary.unmapped} not mapped · ${c.summary.flagged} with checks · ${c.summary.variants} variants</span>${c.rules.length?c.rules.map(r=>`<small class="${r.state==="found"?"":"finding"}">${esc(r.internal_sku)} ${esc(r.label)}: ${esc(stateText[r.state])}</small>`).join(""):"<small>No rule package for this client yet; nothing can be mapped.</small>"}</div>`).join("");
+  const review=clients.filter(c=>!c.error).reduce((n,c)=>n+c.summary.needs_review,0);
+  const complete=clients.length&&clients.every(c=>!c.error&&!c.truncated);
+  $("shopify-status").textContent=state.shopify===null?"Not loaded":!clients.some(c=>!c.error)?"Not connected":review?`${review} to review`:complete?"All mapped":"Incomplete · not all stores loaded";
+  $("shopify-export").disabled=!rows.length&&!clients.some(c=>c.error);
+  $("shopify-more").hidden=rows.length<=state.shopifyShown;
+  $("shopify-more").textContent=`Show more (${Math.min(state.shopifyShown,rows.length).toLocaleString()} of ${rows.length.toLocaleString()} shown · CSV export has all)`;
+}
+const loadShopify=makePanelLoader(state,(...a)=>api(...a),"shopify","/api/shopify/sku-check",()=>renderShopify());
+function exportShopify(){
+  const rows=shopifyRows();if(!rows.length&&!(state.shopify||[]).some(c=>c.error))return;
+  const cell=v=>'"'+String(v??"").replace(/^[=+@\-\t\r]/,"'$&").replace(/"/g,'""')+'"';
+  const clients=state.shopify||[], done={};
+  for(const c of clients)done[c.client_id]=c.error?"NOT LOADED: "+c.error:c.truncated?"INCOMPLETE: catalog cut off; later variants not checked":"complete";
+  const data=[["client","catalog","shopify_product","shopify_variant","product_status","shopify_sku","internal_sku","mapping","how","checks"],
+    ...clients.filter(c=>c.error).map(c=>[clientName(c.client_id),done[c.client_id],"","","","","","","",""]),
+    ...rows.map(r=>[clientName(r.client),done[r.client],r.product,r.variant,r.product_status,r.sku,r.internal_sku,r.status_text,r.how,r.flag_text.join("; ")]),
+    ...clients.filter(c=>!c.error).flatMap(c=>c.rules.filter(r=>r.state!=="found").map(r=>[clientName(c.client_id),done[c.client_id],"","","","",r.internal_sku,r.state==="missing"?"RULE SKU NOT IN SHOPIFY":"RULE SKU ONLY ON DRAFT/ARCHIVED",r.label,""]))];
+  const url=URL.createObjectURL(new Blob([data.map(row=>row.map(cell).join(",")).join("\r\n")],{type:"text/csv;charset=utf-8"}));
+  const a=document.createElement("a");a.href=url;a.download="shipmode-shopify-sku-mapping.csv";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+function sskRows(){return (state.ssk||[]).filter(c=>!c.error).flatMap(c=>c.skus.map(r=>({...r,client:c.client_id})))}
+function renderSsk(){
+  const clients=state.ssk||[], rows=sskRows(), fmt=n=>n==null?"—":Number(n).toLocaleString();
+  const diff=n=>n==null?"—":(n>0?"+":"")+Number(n).toLocaleString();
+  const badge={MATCH:"delivered",DIFFERENT:"critical",REVIEW:"watch"};
+  $("ssk-rows").innerHTML=rows.length?rows.map(r=>`<tr><td><strong>${esc(r.sku)} · ${esc(r.label)}</strong><small>${esc(clientName(r.client))}${r.ssk_skus.length?" · SSK "+esc(r.ssk_skus.join(", ")):""}</small>${r.basis?`<small>${esc(r.basis)}</small>`:""}</td><td>${fmt(r.sheet_remaining)}</td><td><strong>${fmt(r.ssk&&r.ssk.available)}</strong></td><td>${fmt(r.ssk&&r.ssk.committed)}</td><td>${fmt(r.ssk&&r.ssk.incoming)}</td><td>${fmt(r.ssk&&r.ssk.damaged)}</td><td>${diff(r.vs_available)}</td><td>${diff(r.vs_available_committed)}</td><td class="inventory-source"><span class="badge ${badge[r.status]||""}">${esc(r.status)}</span>${r.notes.map(t=>`<small>${esc(t)}</small>`).join("")}</td></tr>`).join(""):(state.ssk===null?'<tr><td colspan="9" class="empty-cell"><strong>Loading…</strong>Reading ShipSidekick.</td></tr>':'<tr><td colspan="9" class="empty-cell"><strong>No ShipSidekick stock</strong>'+esc(state.sskError||"No store with rules returned stock yet.")+'</td></tr>');
+  const problems=clients.filter(c=>c.error).map(c=>`<div class="source-problem failed"><strong>${esc(clientName(c.client_id))} — not loaded</strong> ${esc(c.error)}</div>`)
+    .concat(clients.filter(c=>!c.error).flatMap(c=>(c.warnings||[]).concat(c.sheet_error?["Sheet: "+c.sheet_error]:[]).map(w=>`<div class="source-problem"><strong>${esc(clientName(c.client_id))}</strong> ${esc(w)}</div>`)));
+  $("ssk-error").innerHTML=problems.join("");$("ssk-error").hidden=!problems.length;
+  $("ssk-extra").innerHTML=clients.filter(c=>!c.error&&(c.unmatched_ssk.length||c.unmatched_sheet.length||c.components.length||c.blank_skus||c.duplicate_skus.length)).map(c=>`<div class="eod-card"><strong>${esc(clientName(c.client_id))} — needs mapping review</strong>${c.unmatched_ssk.slice(0,50).map(v=>`<small class="finding">ShipSidekick SKU not in rules: ${esc(v.sku||"(blank)")} · ${esc(v.title)} · ${fmt(v.available)} available</small>`).join("")}${c.components.slice(0,50).map(v=>`<small>${esc(v.sku)} · ${esc(v.title)}: ${esc(v.note)}</small>`).join("")}${c.components.length>50?`<small>…and ${(c.components.length-50).toLocaleString()} more not matched to one SKU</small>`:""}${c.unmatched_ssk.length>50?`<small class="finding">…and ${(c.unmatched_ssk.length-50).toLocaleString()} more ShipSidekick SKUs not in rules</small>`:""}${c.unmatched_sheet.map(p=>`<small class="finding">Sheet row not matched to a SKU: ${esc(p)}</small>`).join("")}${c.blank_skus?`<small class="finding">${c.blank_skus} ShipSidekick item(s) with a blank SKU</small>`:""}${c.duplicate_skus.slice(0,50).map(s=>`<small class="finding">SKU used by more than one ShipSidekick product: ${esc(s)}</small>`).join("")}${c.duplicate_skus.length>50?`<small class="finding">…and ${(c.duplicate_skus.length-50).toLocaleString()} more duplicated SKUs</small>`:""}</div>`).join("");
+  const counts=rows.reduce((m,r)=>(m[r.status]=(m[r.status]||0)+1,m),{});
+  const loaded=clients.filter(c=>!c.error);
+  $("ssk-status").textContent=state.ssk===null?"Not loaded":rows.length?Object.entries(counts).map(([k,v])=>`${v} ${k.toLowerCase()}`).join(" · "):loaded.length?"Connected · no rules yet":"Not connected";
+  const read=loaded.filter(c=>c.fetched_at).map(c=>`${clientName(c.client_id)} read ${new Date(c.fetched_at).toLocaleTimeString([], {hour:"numeric",minute:"2-digit"})}`);
+  if(read.length)$("ssk-status").textContent+=" · "+read.join(", ");
+  $("ssk-export").disabled=!rows.length&&!sskReviewRows().length;
+}
+const loadSsk=makePanelLoader(state,(...a)=>api(...a),"ssk","/api/ssk/inventory",()=>renderSsk());
+function sskReviewRows(){return (state.ssk||[]).filter(c=>!c.error).flatMap(c=>[
+  ...c.unmatched_ssk.map(v=>[clientName(c.client_id),"",v.title,v.sku,"",v.available,v.committed,"","","","","NOT IN RULES","ShipSidekick SKU not in this client's rules"]),
+  ...c.components.map(v=>[clientName(c.client_id),"",v.title,v.sku,"",v.available,"","","","","","NOT MATCHED",v.note])])}
+function exportSsk(){
+  const rows=sskRows(), review=sskReviewRows();if(!rows.length&&!review.length)return;
+  const cell=v=>'"'+String(v??"").replace(/^[=+@\-\t\r]/,"'$&").replace(/"/g,'""')+'"';
+  const q=(r,k)=>r.ssk?r.ssk[k]:"";
+  const src={};for(const c of state.ssk||[])src[clientName(c.client_id)]=[c.environment==="test"?"TEST (not production)":"production",c.fetched_at||""];
+  const data=[["client","ssk_environment","ssk_read_at","sku","label","shipsidekick_skus","sheet_remaining","ssk_available","ssk_committed","ssk_incoming","ssk_damaged","diff_vs_available","diff_vs_available_committed","status","notes"],...[...rows.map(r=>[clientName(r.client),r.sku,r.label,r.ssk_skus.join(" "),r.sheet_remaining,q(r,"available"),q(r,"committed"),q(r,"incoming"),q(r,"damaged"),r.vs_available,r.vs_available_committed,r.status,r.notes.join("; ")]),...review].map(r=>[r[0],...(src[r[0]]||["",""]),...r.slice(1)])];
+  const url=URL.createObjectURL(new Blob([data.map(row=>row.map(cell).join(",")).join("\r\n")],{type:"text/csv;charset=utf-8"}));
+  const a=document.createElement("a");a.href=url;a.download="shipmode-shipsidekick-vs-sheet.csv";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 async function loadInventory(){
   if(!state.data)return;
@@ -86,13 +201,15 @@ async function loadInventory(){
   state.inventorySources=null;state.inventoryAsOf=null;renderInventory();
   $("inventory-refresh").disabled=true;
   $("inventory-sync").textContent="Reading Google Sheets…";
+  // Independent panels start now, so a slow Sheet never delays ShipSidekick or Shopify.
+  loadCalculated();loadShopify();loadSsk();loadIncoming();
   try{
     const result=await api(`/api/inventory?client_id=${encodeURIComponent(client)}`);
     if(request!==state.inventoryRequest)return;
-    state.inventorySources=result.sources;state.inventoryAsOf=result.as_of;renderInventory();loadCalculated();
+    state.inventorySources=result.sources;state.inventoryAsOf=result.as_of;renderInventory();
   }catch(error){
     if(request!==state.inventoryRequest)return;
-    state.inventorySources=[];state.inventoryAsOf=null;renderInventory();loadCalculated();
+    state.inventorySources=[];state.inventoryAsOf=null;renderInventory();
     $("inventory-error").textContent=error.message;$("inventory-error").hidden=false;
   }finally{if(request===state.inventoryRequest)$("inventory-refresh").disabled=false}
 }
@@ -112,6 +229,7 @@ function section(name){
 function trackingUrl(row){
   // Sample DEMO-* numbers are not real, so they never link out.
   if(state.data.mode==="demo"||!row.tracking_number||/^DEMO-/.test(row.tracking_number))return null;
+  if(row.tracking_url&&/^https:\/\//.test(row.tracking_url))return row.tracking_url;
   const code=encodeURIComponent(row.tracking_number);
   const links={usps:`https://tools.usps.com/go/TrackConfirmAction?tLabels=${code}`,
     ups:`https://www.ups.com/track?tracknum=${code}`,
@@ -124,8 +242,8 @@ function trackingUrl(row){
 }
 function details(id){
   const r=state.data.shipments.find(r=>r.id===id);if(!r)return;state.selected=id;
-  const link=trackingUrl(r), demo=state.data.mode!=="live", sheet=state.data.mode==="sheet";
-  $("detail-content").innerHTML=`<div class="detail-title"><h2>${esc(r.order_number||"Unlinked order")}</h2>${late(r)?'<span class="badge late">Past carrier estimate</span>':`<span class="badge ${r.tier}">${tierNames[r.tier]}</span>`}</div><div class="detail-client">${esc(clientName(r.client_id))} · ${esc(carrierName(r.carrier))}</div><div class="tracking">${esc(r.tracking_number)}</div><div class="detail-summary"><span class="eyebrow">${r.tier==="delivered"?"CARRIER CONFIRMED":"SHIPMENT EVIDENCE"}</span><strong>${r.tier==="delivered"?"Delivered":r.days===null?(sheet?(late(r)?r.days_past_estimate+" days past the carrier's estimate at export":"No scan time in the export"):"Date needed"):r.days+(sheet?" days without a carrier scan at export":" days without movement")}</strong><p>${esc(r.reason)}</p>${r.anchor_at&&r.days!==null?`<span class="muted">Clock starts from: ${esc(r.anchor_source)} · ${r.label_date?esc(day(r.label_date))+" (date only, counted from end of day)":esc(date(r.anchor_at,true))}</span>`:""}</div><dl class="detail-grid"><div><dt>Order fulfillment</dt><dd>${esc(r.fulfillment_status)}</dd></div><div><dt>Carrier status</dt><dd>${esc(statusNames[r.carrier_status]||r.carrier_status)}</dd></div>${sheet?`<div><dt>Status as of export</dt><dd>${esc(day(r.export_day))}</dd></div><div><dt>Carrier estimated delivery</dt><dd>${esc(r.estimated_delivery||"Not in export")}${r.days_past_estimate>0?` · ${r.days_past_estimate} days late at export`:""}</dd></div>`:`<div><dt>Shipped</dt><dd>${esc(date(r.shipped_at,true))}</dd></div><div><dt>Latest update received</dt><dd>${esc(date(r.last_received_at,true))}</dd></div>`}</dl><div class="setup-note">${sheet?"From the ShipSidekick export in the Sheet. The export has no scan history, so open carrier tracking to see the latest scans.":demo?"Sample shipment — this tracking number is illustrative.":"Latest update received is not a fresh carrier lookup. Missing or delayed feeds require reconciliation."}</div>${link?`<a class="button secondary" href="${esc(link)}" target="_blank" rel="noopener noreferrer">Open carrier tracking ↗</a>`:""}<h3 class="detail-section-title">Carrier event history</h3><ul class="timeline">${[...(r.events||[])].reverse().map(e=>`<li>${esc(e.description)}<small>${esc(date(e.at,true))}${e.movement?" · Physical scan":" · Does not reset movement clock"}</small></li>`).join("")||"<li>No scan history available. Import the shipping date and connect tracking updates.</li>"}</ul><h3 class="detail-section-title">Follow-up</h3><label class="field-label" for="case-status">Case status</label><select id="case-status" ${demo?"disabled":""}>${Object.entries(caseNames).map(([key,value])=>`<option value="${key}" ${r.case_status===key?"selected":""}>${value}</option>`).join("")}</select><label class="field-label" for="case-notes">Notes</label><textarea id="case-notes" maxlength="4000" ${demo?"disabled":""} placeholder="Carrier case number, last contact, next action…">${esc(r.notes)}</textarea><p class="muted">${sheet?"Follow-up notes are not saved while shipments come from the Sheet.":demo?"Notes and follow-up are read-only in the sample workspace.":"Follow-up does not clear an aging exception. Carrier evidence determines priority."}</p><div class="dialog-actions"><button id="save-case" class="button primary" ${demo?"disabled":""}>Save follow-up</button></div>`;
+  const link=trackingUrl(r), demo=state.data.mode!=="live", sheet=state.data.mode==="sheet", ssk=state.data.mode==="ssk";
+  $("detail-content").innerHTML=`<div class="detail-title"><h2>${esc(r.order_number||"Unlinked order")}</h2>${late(r)?'<span class="badge late">Past carrier estimate</span>':`<span class="badge ${r.tier}">${tierNames[r.tier]}</span>`}</div><div class="detail-client">${esc(clientName(r.client_id))} · ${esc(carrierName(r.carrier))}</div><div class="tracking">${esc(r.tracking_number)}</div><div class="detail-summary"><span class="eyebrow">${r.tier==="delivered"?"CARRIER CONFIRMED":"SHIPMENT EVIDENCE"}</span><strong>${r.tier==="delivered"?"Delivered":r.days===null?(sheet?(late(r)?r.days_past_estimate+" days past the carrier's estimate at export":"No scan time in the export"):"Date needed"):r.days+(sheet?" days without a carrier scan at export":" days without movement")}</strong><p>${esc(r.reason)}</p>${r.anchor_at&&r.days!==null?`<span class="muted">Clock starts from: ${esc(r.anchor_source)} · ${r.label_date?esc(day(r.label_date))+" (date only, counted from end of day)":esc(date(r.anchor_at,true))}</span>`:""}</div><dl class="detail-grid"><div><dt>Order fulfillment</dt><dd>${esc(r.fulfillment_status)}</dd></div><div><dt>Carrier status</dt><dd>${esc(statusNames[r.carrier_status]||r.carrier_status)}</dd></div>${sheet?`<div><dt>Status as of export</dt><dd>${esc(day(r.export_day))}</dd></div><div><dt>Carrier estimated delivery</dt><dd>${esc(r.estimated_delivery||"Not in export")}${r.days_past_estimate>0?` · ${r.days_past_estimate} days late at export`:""}</dd></div>`:`<div><dt>Shipped</dt><dd>${esc(date(r.shipped_at,true))}</dd></div><div><dt>Latest update received</dt><dd>${esc(date(r.last_received_at,true))}</dd></div>`}</dl><div class="setup-note">${sheet?"From the ShipSidekick export in the Sheet. The export has no scan history, so open carrier tracking to see the latest scans.":ssk?"Read from ShipSidekick (read-only). Saving follow-up notes needs the database and is off.":demo?"Sample shipment — this tracking number is illustrative.":"Latest update received is not a fresh carrier lookup. Missing or delayed feeds require reconciliation."}</div>${link?`<a class="button secondary" href="${esc(link)}" target="_blank" rel="noopener noreferrer">Open carrier tracking ↗</a>`:""}<h3 class="detail-section-title">Carrier event history</h3><ul class="timeline">${[...(r.events||[])].reverse().map(e=>`<li>${esc(e.description)}<small>${esc(date(e.at,true))}${e.movement?" · Physical scan":" · Does not reset movement clock"}</small></li>`).join("")||"<li>No scan history available. Import the shipping date and connect tracking updates.</li>"}</ul><h3 class="detail-section-title">Follow-up</h3><label class="field-label" for="case-status">Case status</label><select id="case-status" ${demo?"disabled":""}>${Object.entries(caseNames).map(([key,value])=>`<option value="${key}" ${r.case_status===key?"selected":""}>${value}</option>`).join("")}</select><label class="field-label" for="case-notes">Notes</label><textarea id="case-notes" maxlength="4000" ${demo?"disabled":""} placeholder="Carrier case number, last contact, next action…">${esc(r.notes)}</textarea><p class="muted">${sheet?"Follow-up notes are not saved while shipments come from the Sheet.":ssk?"Follow-up notes are not saved yet in ShipSidekick mode.":demo?"Notes and follow-up are read-only in the sample workspace.":"Follow-up does not clear an aging exception. Carrier evidence determines priority."}</p><div class="dialog-actions"><button id="save-case" class="button primary" ${demo?"disabled":""}>Save follow-up</button></div>`;
   if(!demo)$("save-case").addEventListener("click",saveCase);
   if(!$("detail-dialog").open)$("detail-dialog").showModal();
 }
@@ -158,12 +276,21 @@ async function load(){
       const problems=sources.map(s=>s.error?`${clientName(s.id)}: ${s.error}`:s.available===false?`${clientName(s.id)}: no export tab yet`:(s.warnings||[]).length?`${clientName(s.id)}: ${s.warnings.join(" · ")}`:"").filter(Boolean);
       $("source-status").textContent=problems.join(" | ");$("source-status").hidden=!problems.length;
     }
-    if(state.data.mode==="live"){
+    if(state.data.mode==="ssk"){
+      const sources=state.data.sources||[], ok=sources.filter(s=>!s.error_code);
+      const bad=sources.filter(s=>s.error_code&&s.error_code!=="not_configured"), nokey=sources.filter(s=>s.error_code==="not_configured");
+      const partial=s=>s.truncated?" (INCOMPLETE: list cut off)":s.skipped_statuses&&s.skipped_statuses.length?` (INCOMPLETE: ${s.skipped_statuses.join(", ")} not read)`:"";
+      const test=ok.some(s=>s.environment==="test");
+      $("mode-notice").querySelector("strong").textContent=test?"ShipSidekick TEST environment — not production shipments":"ShipSidekick shipments (read-only)";
+      $("mode-notice").querySelector("div span").textContent=(ok.length?`Not delivered, created in the last ${state.data.lookback_days} days: ${ok.map(s=>`${clientName(s.client_id)} ${s.shipments.toLocaleString()}${partial(s)}`).join(", ")}.`:"No store loaded.")+(bad.length?" Not loaded: "+bad.map(s=>`${clientName(s.client_id)} — ${s.error}`).join("; ")+".":"")+(nokey.length?" No ShipSidekick key yet, so no shipments shown: "+nokey.map(s=>clientName(s.client_id)).join(", ")+".":"");
+      $("side-connection").textContent=ok.length?`Connected · ${ok.map(s=>clientName(s.client_id)).join(", ")}`:"Not connected";
+      $("setup-button").hidden=true;
+    }else if(state.data.mode==="live"){
       $("mode-notice").querySelector("strong").textContent="Live workspace";
       $("mode-notice").querySelector(":scope > div > span").textContent="Check each client’s tracking feed before relying on coverage.";
       $("side-connection").textContent="Verify client feeds";
     }
-    $("as-of").textContent=(state.data.mode==="demo"?"Sample data · ":state.data.mode==="sheet"?"Sheet read · ":"Queue calculated · ")+date(state.data.as_of,true);
+    $("as-of").textContent=(state.data.mode==="demo"?"Sample data · ":state.data.mode==="sheet"?"Sheet read · ":state.data.mode==="ssk"?"ShipSidekick read · ":"Queue calculated · ")+date(state.data.as_of,true);
     render();
     if(first&&state.section==="inventory")loadInventory();
   }catch(e){$("load-error").textContent=e.message;$("load-error").hidden=false;$("as-of").textContent="Update failed — data may be stale";if(!state.data)$("shipment-rows").innerHTML='<tr><td colspan="7" class="empty-cell">Unable to load shipments. Refresh to retry.</td></tr>'}
@@ -178,7 +305,7 @@ function exportQueue(){
 }
 document.querySelectorAll("[data-section]").forEach(el=>el.addEventListener("click",()=>section(el.dataset.section)));
 document.querySelectorAll("[data-tier],[data-filter]").forEach(el=>el.addEventListener("click",()=>{state.filter=el.dataset.tier||el.dataset.filter;state.page=1;render()}));
-$("client-select").addEventListener("change",e=>{state.client=e.target.value;state.page=1;try{localStorage.setItem("shipmode-client",state.client)}catch{}render();if(state.section==="inventory")loadInventory()});
+$("client-select").addEventListener("change",e=>{state.client=e.target.value;state.page=1;resetPanels(state,["calculated","shopify","ssk"]);state.shopifyShown=200;renderCalculated();renderShopify();renderSsk();try{localStorage.setItem("shipmode-client",state.client)}catch{}render();if(state.section==="inventory")loadInventory()});
 $("search").addEventListener("input",e=>{state.search=e.target.value;state.page=1;render()});
 $("carrier-filter").addEventListener("change",e=>{state.carrier=e.target.value;state.page=1;render()});
 $("previous").addEventListener("click",()=>{state.page--;render()});$("next").addEventListener("click",()=>{state.page++;render()});
@@ -187,11 +314,17 @@ for(const id of ["setup-button","connection-details"])$(id).addEventListener("cl
 document.querySelectorAll(".close-dialog").forEach(el=>el.addEventListener("click",()=>el.closest("dialog").close()));
 $("export-button").addEventListener("click",exportQueue);
 $("inventory-refresh").addEventListener("click",loadInventory);
-  $("import-button").addEventListener("click",()=>{if(!state.data||state.data.mode==="demo"){$("setup-dialog").showModal();return}if(state.client!=="all")$("import-client").value=state.client;$("import-result").textContent="";$("import-dialog").showModal()});
+$("daily-update-button").addEventListener("click",openDailyUpdate);
+$("update-copy").addEventListener("click",copyDailyUpdate);
+$("incoming-history-toggle").addEventListener("click",()=>{state.incomingHistory=!state.incomingHistory;renderIncoming()});
+$("shopify-export").addEventListener("click",exportShopify);
+$("shopify-more").addEventListener("click",()=>{state.shopifyShown+=200;renderShopify()});
+$("ssk-export").addEventListener("click",exportSsk);
+  $("import-button").addEventListener("click",()=>{if(!state.data||state.data.mode!=="live"){$("setup-dialog").showModal();return}if(state.client!=="all")$("import-client").value=state.client;$("import-result").textContent="";$("import-dialog").showModal()});
 $("confirm-import").addEventListener("click",async()=>{
   const file=$("import-file").files[0];if(!file){$("import-result").textContent="Choose a CSV file.";return}
   if(file.size>5*1024*1024){$("import-result").textContent="File exceeds 5 MB.";return}
   $("confirm-import").disabled=true;
   try{const result=await api("/api/import",{method:"POST",body:JSON.stringify({client_id:$("import-client").value,csv:await file.text()})});$("import-result").textContent=`${result.inserted} added, ${result.updated} updated.`;await load()}catch(e){$("import-result").textContent=e.message}finally{$("confirm-import").disabled=false}
 });
-load();setInterval(()=>{if(!document.hidden && !$("detail-dialog").open && !$("import-dialog").open){load();if(state.section==="inventory")loadInventory()}},60000);
+load();setInterval(()=>{if(!document.hidden && !$("detail-dialog").open && !$("import-dialog").open && !$("update-dialog").open){load();if(state.section==="inventory")loadInventory()}},60000);
