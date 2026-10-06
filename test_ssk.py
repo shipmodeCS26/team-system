@@ -285,6 +285,21 @@ class CompareTests(unittest.TestCase):
             self.assertEqual(row["status"], "REVIEW")
             self.assertIn("ShipSidekick inventory list was cut off; not reconciled", row["notes"])
 
+    def test_sheet_that_may_continue_is_never_reconciled(self):
+        partial = dict(sheet(("Shower Hose", "20")), may_continue=True)
+        result = ssk_check.compare("muravai", levels(("H", "Shower Hose", 20, 0)), partial)
+        row = {r["sku"]: r for r in result["skus"]}["MUR004"]
+        self.assertEqual(row["status"], "REVIEW")
+        self.assertIn("Sheet may list more products past its last read row; not reconciled", row["notes"])
+
+    def test_negative_unsplit_quantity_is_reviewed(self):
+        items = levels(("FASCSUPP-1", "Support", 110, 0))
+        items[0]["damaged"] = -3
+        result = ssk_check.compare("fascial-labs", items, sheet(("TrueForm Fascial Release Support", "110")))
+        row = self.by_sku(result)["FAS001"]
+        self.assertEqual(row["status"], "REVIEW")
+        self.assertIn("Negative ShipSidekick quantity (damaged)", row["notes"])
+
     def test_duplicate_skus_listed_once(self):
         items = levels(("A1", "Thing", 1, 0), ("a1", "Other", 1, 0), ("B", "Third", 1, 0))
         self.assertEqual(ssk_check.compare("onset", items, None)["duplicate_skus"], ["A1", "a1"])

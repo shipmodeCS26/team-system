@@ -101,7 +101,8 @@ def parse_dashboard(values):
     if not rows:
         warnings.append("No product rows found on the Dashboard")
     last = cell(LAST_ROW - 1, positions["product"])
-    if last and last.upper() != "TOTAL" and "SUBTOTAL" not in last.upper() and not last.startswith("*"):
+    may_continue = bool(last and last.upper() != "TOTAL" and "SUBTOTAL" not in last.upper() and not last.startswith("*"))
+    if may_continue:
         warnings.append(f"Products may continue past row {LAST_ROW}; rows beyond it are not shown")
     if issues:
         warnings.append(f"{issues} row(s) contain pending or formula-error values")
@@ -122,6 +123,7 @@ def parse_dashboard(values):
                     "out": cell(6, 4), "on_hand": cell(6, 6)},
         "rows": rows,
         "issue_rows": issues,
+        "may_continue": may_continue,
         "warnings": warnings,
     }
 

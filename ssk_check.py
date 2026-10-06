@@ -87,6 +87,8 @@ def compare(client_id, levels, sheet, truncated=False):
         notes, basis = [], ""
         if truncated:
             notes.append("ShipSidekick inventory list was cut off; not reconciled")
+        if sheet_ok and sheet.get("may_continue"):
+            notes.append("Sheet may list more products past its last read row; not reconciled")
         sheet_value = None
         if not sheet_ok:
             notes.append("Sheet not loaded")
@@ -110,6 +112,9 @@ def compare(client_id, levels, sheet, truncated=False):
         elif len(ssk) == 1:
             quantities = {k: ssk[0][k] for k in ("available", "committed", "incoming", "damaged",
                                                   "reserved", "quality_control")}
+            if any(value < 0 for value in quantities.values()):
+                negative = ", ".join(k.replace("_", " ") for k, value in quantities.items() if value < 0)
+                notes.append(f"Negative ShipSidekick quantity ({negative})")
         elif len(ssk) > 1:
             notes.append("Several ShipSidekick SKUs match (" + ", ".join(v["sku"] or v["title"] for v in ssk)
                          + "); not added together")

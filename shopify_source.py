@@ -154,10 +154,11 @@ def _graphql(store, document, variables=None, retry=True):
         # A client-credentials token can be revoked before it expires (e.g. after the client fixes
         # scopes and reinstalls). Drop the cached token and exchange again, once.
         if retry and error.code in ("access_denied", "missing_scope") and not store.get("token"):
+            # Retry even if a concurrent request already evicted it: the next call exchanges or
+            # reuses the fresh token.
             with _lock:
-                dropped = _tokens.pop((store["shop"], store["client_id"]), None)
-            if dropped:
-                return _graphql(store, document, variables, retry=False)
+                _tokens.pop((store["shop"], store["client_id"]), None)
+            return _graphql(store, document, variables, retry=False)
         raise
 
 

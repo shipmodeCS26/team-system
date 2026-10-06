@@ -224,6 +224,22 @@ class SourceTests(ShopifyTestCase):
         token_calls = [c for c in fake.calls if c["url"].endswith("/admin/oauth/access_token")]
         self.assertEqual(len(token_calls), 2)
 
+    def test_retry_even_if_another_request_already_evicted_the_token(self):
+        stores = {"muravai": {"shop": SHOPS["muravai"], "client_id": "app-client-id", "client_secret": "app-secret-value"}}
+        fake = FakeShopify({SHOPS["muravai"]: {"scopes": READ_SCOPES, "pages": [[node("Showerhead", "MUR-SH")]]}})
+        self.read(fake, ["muravai"], stores)
+        shopify_source._cache.clear()
+        real_post, calls = fake.post, {"n": 0}
+
+        def post(url, **kw):
+            if url.endswith("graphql.json") and calls["n"] == 0:
+                calls["n"] += 1
+                shopify_source._tokens.clear()      # a concurrent request evicted it first
+                return FakeResponse(401)
+            return real_post(url, **kw)
+        fake.post = post
+        self.assertEqual(self.read(fake, ["muravai"], stores)["muravai"]["variants"][0]["sku"], "MUR-SH")
+
     def test_fixed_token_is_not_retried(self):
         fake = FakeShopify({SHOPS["muravai"]: 401})
         self.assertEqual(self.read(fake, ["muravai"])["muravai"]["error_code"], "access_denied")
