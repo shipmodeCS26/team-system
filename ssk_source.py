@@ -194,6 +194,7 @@ def shipment_fields(key, sample=25):
 QUEUE_STATUSES = ("pre-transit", "in-transit", "out-for-delivery", "available-for-pickup",
                   "return-to-sender", "failure", "unknown", "error")
 _shipment_cache = {}
+_last_counts = {}
 
 
 def lookback_days():
@@ -245,7 +246,10 @@ def read_shipments(client_id, days):
             return cached[1]
     raw, truncated, counts, rejected = open_shipments(key, days)
     rows = [row for row in (to_row(s, client_id) for s in raw) if row]
-    log.info("ssk shipments client=%s days=%s counts=%s", client_id, days, counts)
+    # Counts only (no shipment data), logged when they change so staging shows what each status filter returned.
+    if _last_counts.get(client_id) != counts:
+        _last_counts[client_id] = counts
+        log.warning("ssk shipments client=%s days=%s counts=%s", client_id, days, counts)
     result = {"id": client_id, "rows": rows, "truncated": truncated, "skipped_statuses": rejected,
               "environment": "test" if base_url() == TEST else "production",
               "fetched_at": datetime.now(timezone.utc).isoformat()}
