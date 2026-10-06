@@ -53,6 +53,19 @@ RECEIVED_WORD = re.compile(r"\b(arrived|delivered|received)\b")
 NEGATED = re.compile(r"\b(not|never|un)\s*(yet\s+)?(arrived|delivered|received)\b|\bundelivered\b")
 
 
+def whole_units(value) -> int | None:
+    """A whole-number quantity, or None. '10.9' is rejected, never truncated to 10."""
+    number = parse_int(value)
+    text = str(value or "").replace(",", "").strip().strip("()")
+    try:
+        return number if number is not None and float(text) == number else None
+    except ValueError:
+        return None
+
+
+TRANSFER_DONE = re.compile(r"\btransferred\b|\btransfer\s+(complete|completed|done|finished)\b")
+
+
 def _says_received(status: str) -> bool:
     """'Arrived in warehouse' counts; 'Not received' or 'Undelivered' does not."""
     return bool(RECEIVED_WORD.search(status)) and not NEGATED.search(status)
@@ -69,7 +82,7 @@ def line_flags(line: dict, today: date) -> list[str]:
         flags.append("missing_boxes")
     if _says_received(status) and _none(line["boxes_received"]):
         flags.append("receipt_not_recorded")
-    if "transfer" in status:
+    if "transfer" in status and not TRANSFER_DONE.search(status):
         flags.append("needs_transfer")
     if line["treatment"].upper().startswith("REVIEW") or line["sku"].upper() in ("", "REVIEW"):
         flags.append("sku_unverified")
@@ -106,13 +119,13 @@ def parse_incoming(values_by_key: dict[str, list], today: date) -> dict:
                                "flags": sorted({flag for line in lines for flag in line["flags"]})})
     for group in shipments:
         for line in group["lines"]:
-            units = parse_int(line["units"])
+            units = whole_units(line["units"])
             if "sku_unverified" in line["flags"] or units is None:
                 continue
             total = incoming.setdefault(line["sku"], {"sku": line["sku"], "product": line["product"], "units": 0})
             total["units"] += units
     # Lines left out of the totals: no verified SKU, or no whole-number quantity.
-    unverified = sum("sku_unverified" in line["flags"] or parse_int(line["units"]) is None
+    unverified = sum("sku_unverified" in line["flags"] or whole_units(line["units"]) is None
                      for group in shipments for line in group["lines"])
     # Columns are read up to LAST_ROW; a filled final row means the tab may continue past it.
     truncated = length >= LAST_ROW - 1

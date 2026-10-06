@@ -211,7 +211,9 @@ def daily_update():
     except (ValueError, KeyError, json.JSONDecodeError):
         return jsonify(error="Inventory configuration is invalid or incomplete."), 503
     return {**build_update(names[selected], source, None if extra.get("error") else extra),
-            "incoming_error": extra.get("error"), "sheet_read_at": source.get("fetched_at")}
+            "incoming_error": extra.get("error") or (None if extra.get("available") else
+                                                      "This client's workbook has no Incoming Stocks tab."),
+            "sheet_read_at": source.get("fetched_at")}
 
 
 @app.get("/api/inventory/calculated")

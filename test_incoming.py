@@ -110,6 +110,20 @@ class ParseIncomingTests(unittest.TestCase):
         result = parse_incoming(columns(rows), TODAY)
         self.assertEqual((result["incoming_by_sku"], result["unverified_lines"]), ([], 2))
 
+    def test_completed_transfer_is_not_flagged(self):
+        for status, flagged in (("Transferred to Miami", False), ("Transfer complete", False),
+                                ("Needs transfer to Miami", True)):
+            row = line("PO9", "T", "Filtered Showerhead", "MUR002", "10", status, "NOT ARRIVED", "1")
+            self.assertEqual("needs_transfer" in parse_incoming(columns([row]), TODAY)["shipments"][0]["flags"],
+                             flagged, status)
+
+    def test_fractional_quantity_is_left_out_not_truncated(self):
+        row = line("PO9", "T", "Filtered Showerhead", "MUR002", "10.9", "In Transit", "NOT ARRIVED")
+        result = parse_incoming(columns([row]), TODAY)
+        self.assertEqual((result["incoming_by_sku"], result["unverified_lines"]), ([], 1))
+        self.assertEqual(incoming.whole_units("1,200"), 1200)
+        self.assertEqual(incoming.whole_units("12.0"), 12)
+
     def test_values_are_not_rewritten(self):
         self.assertEqual(self.by_po["PO23"]["lines"][0]["units"], "2,880")
 
