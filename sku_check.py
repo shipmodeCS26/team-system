@@ -10,7 +10,8 @@ from collections import Counter
 
 import client_rules
 
-ACTIVE = "ACTIVE"
+# UNLISTED products are active in Shopify (sold by direct link), so they are not flagged.
+ACTIVE = frozenset({"ACTIVE", "UNLISTED"})
 STATUS_TEXT = {
     "mapped": "Mapped",
     "component": "Kit component",
@@ -31,7 +32,7 @@ def check(client_id: str, variants: list[dict]) -> dict:
     rows, covered_active, covered_any = [], set(), set()
 
     for variant in variants:
-        active = variant["product_status"] == ACTIVE
+        active = variant["product_status"] in ACTIVE
         flags = []
         if not variant["sku"]:
             flags.append("blank_sku")

@@ -235,6 +235,11 @@ class SkuCheckTests(unittest.TestCase):
         archived = self.by_product(result)[("Magnesium old", "Default Title")]
         self.assertEqual(archived["flags"], ["duplicate_sku", "inactive_product", "untracked"])
 
+    def test_unlisted_products_count_as_active(self):
+        result = sku_check.check("nuerosmile", [variant("Nerve Support", "NEURO-120", status="UNLISTED")])
+        self.assertEqual(result["variants"][0]["flags"], [])
+        self.assertEqual(result["rules"][0]["state"], "found")
+
     def test_rule_only_on_archived_product_or_missing(self):
         archived = sku_check.check("nuerosmile", [variant("Nerve Support", "NEURO-120", status="ARCHIVED")])
         self.assertEqual(archived["rules"][0]["state"], "inactive")
