@@ -71,7 +71,7 @@ Install `requirements.txt`, then run `flask --app app run` for development.
 Render build: `pip install -r requirements.txt`.
 Render start: `gunicorn app:app --bind 0.0.0.0:$PORT`.
 Health check: `/api/health`. Auto-deploy: On Commit.
-Tests: `python -B -m unittest -v test_tracking test_inventory test_ledger test_muravai_rules test_shopify`.
+Tests: `python -B -m unittest -v test_tracking test_inventory test_ledger test_muravai_rules test_shopify test_ssk`.
 
 ## Live mode prerequisites (not activated)
 
@@ -157,6 +157,23 @@ SKU, with blank, duplicate, draft/archived and unmapped SKUs flagged. ShipMode
 never writes to Shopify: only allowlisted read queries can be sent, and a token
 with any write scope is refused. Enabling Shopify makes the whole workspace
 require sign-in.
+
+## ShipSidekick API stock (read-only, off by default)
+
+`ssk_source.py` reads each store's `GET /inventory/levels` with that store's own
+API key and shows ShipSidekick available / committed / incoming / damaged next to
+the Sheet's Remaining (Inventory tab, "ShipSidekick stock vs. Sheet"). ShipMode
+never writes to ShipSidekick: only GET requests to an allowlist of read paths on
+ShipSidekick's own hosts can be sent. Private Render settings:
+
+- `SSK_API_ENABLED=true` (also makes the whole workspace require sign-in)
+- `SSK_API_KEY_CLARITYMD`, `SSK_API_KEY_FASCIAL_LABS`, `SSK_API_KEY_MURAVAI`,
+  `SSK_API_KEY_NUEROSMILE`, `SSK_API_KEY_PURAVITA`, `SSK_API_KEY_ONSET`
+- optional `SSK_API_BASE=https://test.shipsidekick.com/api/v1` to read the test environment
+
+A store without a key shows "not configured"; the others still load. Which
+ShipSidekick number should equal the Sheet's Remaining is undecided (#16), so
+both differences are shown.
 
 ## Calculated inventory (shadow check)
 

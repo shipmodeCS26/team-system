@@ -15,6 +15,8 @@ from inventory import read_dashboards
 from ledger_sources import calculate_clients
 import shopify_source
 import sku_check
+import ssk_check
+import ssk_source
 
 app = Flask(__name__)
 app.config.update(SECRET_KEY=os.getenv("SECRET_KEY", secrets.token_hex(32)),
@@ -46,6 +48,10 @@ def shopify_ready():
     return all(os.getenv(k) for k in ("SHOPIFY_STORES_JSON", "WORKSPACE_USER", "WORKSPACE_PASSWORD_HASH", "SECRET_KEY"))
 
 
+def ssk_ready():
+    return all(os.getenv(k) for k in ("WORKSPACE_USER", "WORKSPACE_PASSWORD_HASH", "SECRET_KEY"))
+
+
 def db():
     import psycopg
     return psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=10)
@@ -69,13 +75,15 @@ def init_db():
 def protected(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if live() or inventory_enabled() or shopify_source.enabled():
+        if live() or inventory_enabled() or shopify_source.enabled() or ssk_source.enabled():
             if live() and not ready():
                 return jsonify(error="Live workspace is not configured. No shipment data is exposed."), 503
             if inventory_enabled() and not inventory_ready():
                 return jsonify(error="Inventory access is not configured."), 503
             if shopify_source.enabled() and not shopify_ready():
                 return jsonify(error="Shopify access is not configured."), 503
+            if ssk_source.enabled() and not ssk_ready():
+                return jsonify(error="ShipSidekick access is not configured."), 503
             auth = request.authorization
             if not auth or auth.username != os.getenv("WORKSPACE_USER") or not check_password_hash(os.getenv("WORKSPACE_PASSWORD_HASH", ""), auth.password or ""):
                 return Response("Sign in to your Shipmode workspace.", 401, {"WWW-Authenticate": 'Basic realm="Shipmode workspace", charset="UTF-8"'})
@@ -190,6 +198,38 @@ def shopify_sku_check():
         if catalog["missing_scopes"]:
             warnings.append("Not granted yet (needed for later order checks): " + ", ".join(catalog["missing_scopes"]))
         clients.append(dict(result, warnings=warnings, fetched_at=catalog["fetched_at"]))
+    return {"clients": clients, "as_of": utcnow().isoformat(), "writes": "disabled"}
+
+
+@app.get("/api/ssk/inventory")
+@protected
+def ssk_inventory():
+    """Read-only ShipSidekick stock next to the client Sheet. Never writes to ShipSidekick."""
+    if not ssk_source.enabled():
+        return jsonify(error="ShipSidekick API is not connected."), 503
+    selected = request.args.get("client_id", "all")
+    client_ids = [client["id"] for client in CLIENTS]
+    if selected != "all" and selected not in client_ids:
+        return jsonify(error="Unknown client."), 400
+    ids = client_ids if selected == "all" else [selected]
+    sheets = {}
+    if inventory_enabled():
+        try:
+            sheets = {source["id"]: source for source in read_dashboards(ids)}
+        except (ValueError, KeyError, json.JSONDecodeError):
+            sheets = {}
+    clients = []
+    for store in ssk_source.read_stores(ids):
+        if "error_code" in store:
+            clients.append({"client_id": store["id"], "error_code": store["error_code"], "error": store["error"]})
+            continue
+        result = ssk_check.compare(store["id"], store["levels"], sheets.get(store["id"]))
+        warnings = []
+        if store["truncated"]:
+            warnings.append(f"More than {ssk_source.PAGE_SIZE * ssk_source.MAX_PAGES:,} inventory rows; the rest were not read.")
+        if store["environment"] == "test":
+            warnings.append("Reading ShipSidekick's TEST environment, not production.")
+        clients.append(dict(result, warnings=warnings, fetched_at=store["fetched_at"]))
     return {"clients": clients, "as_of": utcnow().isoformat(), "writes": "disabled"}
 
 

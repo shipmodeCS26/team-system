@@ -21,12 +21,14 @@ shows, until the two match every day for two weeks (shadow mode).
 | Sources (s.44, 48) | Reads only 9 required export columns (no customer names/addresses) and approved rows; Sheets stay read-only | `ledger_sources.py` |
 | Shadow validation (s.81) | Calculated panel under the Sheet values on the Inventory tab | `templates/workspace.html`, `static/workspace.js` |
 | Shopify SKU mapping (#12) | Read-only store catalog vs. each client's rules; write-scope tokens refused; queries allowlisted | `shopify_source.py`, `sku_check.py`, `docs/SHOPIFY_SETUP.md` |
+| ShipSidekick API stock (#16) | Per-store GET-only reader; SSK available/committed vs. Sheet Remaining per SKU | `ssk_source.py`, `ssk_check.py` |
 | Safety (Factory s.8) | Endpoint off unless `INVENTORY_LEDGER_ENABLED=true`; sign-in required; reports `writes: disabled` | `app.py` |
 
 ## Settings (Render environment, never Git)
 
 - `INVENTORY_LEDGER_ENABLED=true` — turns on the calculated panel (also needs the Sheets settings).
 - `SHOPIFY_ENABLED=true` + `SHOPIFY_STORES_JSON` — read-only Shopify connection (see `docs/SHOPIFY_SETUP.md`).
+- `SSK_API_ENABLED=true` + `SSK_API_KEY_<CLIENT>` per store — read-only ShipSidekick stock (see README).
 - `INVENTORY_BASELINES_JSON` — approved counts for clients without a Manual Counts tab:
   `{"fascial-labs": {"FAS001": {"quantity": 10990, "date": "2026-09-03", "timing": "after_processing", "approved_by": "Carlos"}}}`
 

@@ -1,6 +1,6 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null, inventorySources:null, inventoryAsOf:null, inventoryRequest:0, calculated:null, calculatedError:null, shopify:null, shopifyError:null};
+const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null, inventorySources:null, inventoryAsOf:null, inventoryRequest:0, calculated:null, calculatedError:null, shopify:null, shopifyError:null, ssk:null, sskError:null};
 const PAGE_SIZE = 10;
 const tierNames = {critical:"Critical",urgent:"Urgent",watch:"Watch",monitoring:"Monitoring",delivered:"Delivered",cancelled:"Cancelled",data_gap:"Missing data"};
 const statusNames = {pre_transit:"Label created",in_transit:"In transit",out_for_delivery:"Out for delivery",available_for_pickup:"Ready for pickup",delivered:"Delivered",unknown:"Unknown",failure:"Carrier exception",return_to_sender:"Returning",cancelled:"Cancelled"};
@@ -99,6 +99,33 @@ function exportShopify(){
   const url=URL.createObjectURL(new Blob([data.map(row=>row.map(cell).join(",")).join("\r\n")],{type:"text/csv;charset=utf-8"}));
   const a=document.createElement("a");a.href=url;a.download="shipmode-shopify-sku-mapping.csv";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
+function sskRows(){return (state.ssk||[]).filter(c=>!c.error).flatMap(c=>c.skus.map(r=>({...r,client:c.client_id})))}
+function renderSsk(){
+  const clients=state.ssk||[], rows=sskRows(), fmt=n=>n==null?"—":Number(n).toLocaleString();
+  const diff=n=>n==null?"—":(n>0?"+":"")+Number(n).toLocaleString();
+  const badge={MATCH:"delivered",DIFFERENT:"critical",REVIEW:"watch"};
+  $("ssk-rows").innerHTML=rows.length?rows.map(r=>`<tr><td><strong>${esc(r.sku)} · ${esc(r.label)}</strong><small>${esc(clientName(r.client))}${r.ssk_skus.length?" · SSK "+esc(r.ssk_skus.join(", ")):""}</small></td><td>${fmt(r.sheet_remaining)}</td><td><strong>${fmt(r.ssk&&r.ssk.available)}</strong></td><td>${fmt(r.ssk&&r.ssk.committed)}</td><td>${fmt(r.ssk&&r.ssk.incoming)}</td><td>${fmt(r.ssk&&r.ssk.damaged)}</td><td>${diff(r.vs_available)}</td><td>${diff(r.vs_available_committed)}</td><td class="inventory-source"><span class="badge ${badge[r.status]||""}">${esc(r.status)}</span>${r.notes.map(t=>`<small>${esc(t)}</small>`).join("")}</td></tr>`).join(""):'<tr><td colspan="9" class="empty-cell"><strong>No ShipSidekick stock</strong>'+esc(state.sskError||"No store with rules returned stock yet.")+'</td></tr>';
+  const problems=clients.filter(c=>c.error).map(c=>`<div class="source-problem failed"><strong>${esc(clientName(c.client_id))} — not loaded</strong> ${esc(c.error)}</div>`)
+    .concat(clients.filter(c=>!c.error).flatMap(c=>(c.warnings||[]).concat(c.sheet_error?["Sheet: "+c.sheet_error]:[]).map(w=>`<div class="source-problem"><strong>${esc(clientName(c.client_id))}</strong> ${esc(w)}</div>`)));
+  $("ssk-error").innerHTML=problems.join("");$("ssk-error").hidden=!problems.length;
+  $("ssk-extra").innerHTML=clients.filter(c=>!c.error&&(c.unmatched_ssk.length||c.unmatched_sheet.length||c.components.length||c.blank_skus||c.duplicate_skus.length)).map(c=>`<div class="eod-card"><strong>${esc(clientName(c.client_id))} — needs mapping review</strong>${c.unmatched_ssk.map(v=>`<small class="finding">ShipSidekick SKU not in rules: ${esc(v.sku||"(blank)")} · ${esc(v.title)} · ${fmt(v.available)} available</small>`).join("")}${c.components.map(v=>`<small>${esc(v.sku)} · ${esc(v.title)}: ${esc(v.note)}</small>`).join("")}${c.unmatched_sheet.map(p=>`<small class="finding">Sheet row not matched to a SKU: ${esc(p)}</small>`).join("")}${c.blank_skus?`<small class="finding">${c.blank_skus} ShipSidekick item(s) with a blank SKU</small>`:""}${c.duplicate_skus.map(s=>`<small class="finding">SKU used by more than one ShipSidekick product: ${esc(s)}</small>`).join("")}</div>`).join("");
+  const counts=rows.reduce((m,r)=>(m[r.status]=(m[r.status]||0)+1,m),{});
+  $("ssk-status").textContent=state.ssk===null?"Not loaded":rows.length?Object.entries(counts).map(([k,v])=>`${v} ${k.toLowerCase()}`).join(" · "):"Not connected";
+  $("ssk-export").disabled=!rows.length;
+}
+async function loadSsk(){
+  try{const result=await api(`/api/ssk/inventory?client_id=${encodeURIComponent(state.client)}`);state.ssk=result.clients;state.sskError=null}
+  catch(error){state.ssk=[];state.sskError=error.message}
+  renderSsk();
+}
+function exportSsk(){
+  const rows=sskRows();if(!rows.length)return;
+  const cell=v=>'"'+String(v??"").replace(/^[=+@\-\t\r]/,"'$&").replace(/"/g,'""')+'"';
+  const q=(r,k)=>r.ssk?r.ssk[k]:"";
+  const data=[["client","sku","label","shipsidekick_skus","sheet_remaining","ssk_available","ssk_committed","ssk_incoming","ssk_damaged","diff_vs_available","diff_vs_available_committed","status","notes"],...rows.map(r=>[clientName(r.client),r.sku,r.label,r.ssk_skus.join(" "),r.sheet_remaining,q(r,"available"),q(r,"committed"),q(r,"incoming"),q(r,"damaged"),r.vs_available,r.vs_available_committed,r.status,r.notes.join("; ")])];
+  const url=URL.createObjectURL(new Blob([data.map(row=>row.map(cell).join(",")).join("\r\n")],{type:"text/csv;charset=utf-8"}));
+  const a=document.createElement("a");a.href=url;a.download="shipmode-shipsidekick-vs-sheet.csv";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
 async function loadInventory(){
   if(!state.data)return;
   const request=++state.inventoryRequest,client=state.client;
@@ -108,10 +135,10 @@ async function loadInventory(){
   try{
     const result=await api(`/api/inventory?client_id=${encodeURIComponent(client)}`);
     if(request!==state.inventoryRequest)return;
-    state.inventorySources=result.sources;state.inventoryAsOf=result.as_of;renderInventory();loadCalculated();loadShopify();
+    state.inventorySources=result.sources;state.inventoryAsOf=result.as_of;renderInventory();loadCalculated();loadShopify();loadSsk();
   }catch(error){
     if(request!==state.inventoryRequest)return;
-    state.inventorySources=[];state.inventoryAsOf=null;renderInventory();loadCalculated();loadShopify();
+    state.inventorySources=[];state.inventoryAsOf=null;renderInventory();loadCalculated();loadShopify();loadSsk();
     $("inventory-error").textContent=error.message;$("inventory-error").hidden=false;
   }finally{if(request===state.inventoryRequest)$("inventory-refresh").disabled=false}
 }
@@ -188,6 +215,7 @@ document.querySelectorAll(".close-dialog").forEach(el=>el.addEventListener("clic
 $("export-button").addEventListener("click",exportQueue);
 $("inventory-refresh").addEventListener("click",loadInventory);
 $("shopify-export").addEventListener("click",exportShopify);
+$("ssk-export").addEventListener("click",exportSsk);
   $("import-button").addEventListener("click",()=>{if(!state.data||state.data.mode==="demo"){$("setup-dialog").showModal();return}if(state.client!=="all")$("import-client").value=state.client;$("import-result").textContent="";$("import-dialog").showModal()});
 $("confirm-import").addEventListener("click",async()=>{
   const file=$("import-file").files[0];if(!file){$("import-result").textContent="Choose a CSV file.";return}
