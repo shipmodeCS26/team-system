@@ -12,18 +12,22 @@ Every screen in the ShipMode app uses this logo, palette and type. Do not introd
 
 ## Color palette
 
-| Token | Hex | Where it comes from in the logo | Use in the app |
-|---|---|---|---|
-| `--sm-black` | `#07080A` | Badge background | Header bar, logo backdrop |
-| `--sm-white` | `#FFFFFF` | Letterforms | Page background, text on dark |
-| `--sm-blue` | `#2563D6` | Bright blue extrusion | Primary buttons, links, active tab, focus ring |
-| `--sm-blue-light` | `#4775BB` | Blue highlights | Hover states, chart series 1 |
-| `--sm-blue-deep` | `#294785` | Deep blue shadow | Pressed states, chart series 2 |
-| `--sm-navy` | `#1B263C` | Dark blue inner shadow | Headings, table headers, sidebar |
-| `--sm-silver` | `#D4D7D9` | Outer ring | Borders, dividers, disabled states |
-| `--sm-surface` | `#F5F6F7` | (derived from silver) | Table stripes, panels |
+Updated 2026-09-29 to match the shipmode-v4 website (Gly's reference): cream page, navy
+ink and rules, sky-blue highlight. Hex values were sampled from that design.
 
-Blue means "you can act here" (buttons, links, the selected tab). It never means a status.
+| Token | Hex | Use in the app |
+|---|---|---|
+| `--sm-cream` | `#FAF6EA` | Page background |
+| `--sm-cream-deep` | `#F2ECDC` | Table headers, panels |
+| `--sm-grid` | `#ECE5D3` | Faint background grid |
+| `--sm-navy` | `#031656` | Headings, text, sidebar, rules, primary buttons (pill shaped) |
+| `--sm-navy-soft` | `#1E2F6B` | Hover on navy buttons |
+| `--sm-sky` | `#9BD0F7` | Highlight behind a key word, active tab in the sidebar, focus ring |
+| `--sm-sky-soft` | `#D8ECFB` | Notices and info banners |
+| `--sm-white` | `#FFFFFF` | Text on navy, inputs |
+
+Navy means "you can act here" (buttons, links, the selected filter). Sky blue highlights.
+Neither ever means a status.
 
 ### Status colors (separate from the brand)
 
@@ -51,8 +55,9 @@ The italic display style is the brand accent. Use it for titles and headline num
 
 ## Layout format
 
-- Black sidebar with the logo at the top and the tabs (No Movement, Inventory, Invoices, and later others) below it.
-- White page, navy headings, silver borders.
+- Navy sidebar with the logo at the top and the tabs (No Movement, Inventory, Invoices, and later others) below it.
+- Cream page with a faint grid, uppercase condensed italic navy headings, navy rules and card borders.
+- Buttons and filters are rounded pills: filled navy for the main action, navy outline otherwise.
 - Data tables are the main content. Keep them dense and readable; no decorative cards around every figure.
 - Responsive down to mobile; tables scroll horizontally inside their own container.
 

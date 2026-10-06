@@ -3,20 +3,25 @@ const $ = (id) => document.getElementById(id);
 const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null, inventorySources:null, inventoryAsOf:null, inventoryRequest:0, calculated:null, calculatedError:null, shopify:null, shopifyError:null, ssk:null, sskError:null, panelRequests:{}, shopifyShown:200, incoming:null, incomingError:null, incomingRequest:0, incomingHistory:false};
 const PAGE_SIZE = 10;
 const tierNames = {critical:"Critical",urgent:"Urgent",watch:"Watch",monitoring:"Monitoring",delivered:"Delivered",cancelled:"Cancelled",data_gap:"Missing data"};
-const statusNames = {pre_transit:"Label created",in_transit:"In transit",out_for_delivery:"Out for delivery",available_for_pickup:"Ready for pickup",delivered:"Delivered",unknown:"Unknown",failure:"Carrier exception",return_to_sender:"Returning",cancelled:"Cancelled"};
+const statusNames = {pre_transit:"Label created",in_transit:"In transit",out_for_delivery:"Out for delivery",available_for_pickup:"Ready for pickup",delivered:"Delivered",unknown:"Unknown",failure:"Carrier exception",return_to_sender:"Returning",cancelled:"Cancelled",error:"Carrier error"};
 const caseNames = {open:"Not started",investigating:"Investigating",carrier_contacted:"Carrier contacted"};
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const date = (v, full=false) => v ? new Date(v).toLocaleString(undefined, full ? {month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"} : {month:"short",day:"numeric"}) : "Not available";
-const carrierName = c => c === "fedex" ? "FedEx" : c.toUpperCase();
+const day = v => v ? date(v+"T12:00:00") : "Not available"; // calendar dates, never shifted by time zone
+const carrierKey = c => String(c||"").toLowerCase().replace(/[^a-z0-9]/g,"");
+const carrierLabels = {usps:"USPS",ups:"UPS",fedex:"FedEx",dhlecommerce:"DHL eCommerce",dhl:"DHL",dhlexpress:"DHL Express",cirroecommerce:"Cirro eCommerce",cirro:"Cirro"};
+const carrierName = c => carrierLabels[carrierKey(c)] || String(c||"Unknown carrier");
 const clientName = id => state.data?.clients.find(c=>c.id===id)?.name || id;
-const exception = r => ["watch","urgent","critical"].includes(r.tier);
+// Sheet mode: still in transit at export after the carrier's own estimated delivery date
+const late = r => r.tier==="data_gap" && r.days_past_estimate>0;
+const exception = r => ["watch","urgent","critical"].includes(r.tier) || late(r);
 function toast(message){$("toast").textContent=message;$("toast").hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>$("toast").hidden=true,5000)}
 function clientRows(){return state.data.shipments.filter(r=>state.client==="all" || r.client_id===state.client)}
 function filtered(){
   const q=state.search.toLowerCase();
-  return clientRows().filter(r=>(state.carrier==="all" || r.carrier===state.carrier) && (!q || `${r.order_number} ${r.tracking_number} ${clientName(r.client_id)}`.toLowerCase().includes(q)))
-  .filter(r=>state.filter==="all" || state.filter==="exceptions" && exception(r) || state.filter==="never" && r.never_scanned && !["delivered","cancelled"].includes(r.tier) || state.filter===r.tier)
-  .sort((a,b)=> (a.tier==="delivered" || a.tier==="cancelled")-(b.tier==="delivered" || b.tier==="cancelled") || (b.days??-1)-(a.days??-1) || a.id-b.id);
+  return clientRows().filter(r=>(state.carrier==="all" || carrierKey(r.carrier)===state.carrier) && (!q || `${r.order_number} ${r.tracking_number} ${clientName(r.client_id)}`.toLowerCase().includes(q)))
+  .filter(r=>state.filter==="all" || state.filter==="exceptions" && exception(r) || state.filter==="never" && r.never_scanned && !["delivered","cancelled"].includes(r.tier) || state.filter==="late" && r.days_past_estimate>0 || state.filter===r.tier && !(r.tier==="data_gap" && late(r)))
+  .sort((a,b)=> (a.tier==="delivered" || a.tier==="cancelled")-(b.tier==="delivered" || b.tier==="cancelled") || (b.days??b.days_past_estimate??-1)-(a.days??a.days_past_estimate??-1) || a.id-b.id);
 }
 function render(){
   if(!state.data)return;
@@ -24,7 +29,8 @@ function render(){
   $("count-exceptions").textContent=rows.filter(exception).length;
   for(const tier of ["watch","urgent","critical"])$("count-"+tier).textContent=rows.filter(r=>r.tier===tier).length;
   $("nav-count").textContent=rows.filter(exception).length;
-  document.querySelector('[data-filter="data_gap"]').textContent="Missing data ("+rows.filter(r=>r.tier==="data_gap").length+")";
+  document.querySelector('[data-filter="data_gap"]').textContent="Missing data ("+rows.filter(r=>r.tier==="data_gap"&&!late(r)).length+")";
+  document.querySelector('[data-filter="late"]').textContent="Past estimated delivery ("+rows.filter(r=>r.days_past_estimate>0).length+")";
   document.querySelectorAll("[data-tier]").forEach(el=>{el.classList.toggle("selected",state.filter===el.dataset.tier);el.setAttribute("aria-pressed",state.filter===el.dataset.tier)});
   document.querySelectorAll("[data-filter]").forEach(el=>{el.classList.toggle("active",state.filter===el.dataset.filter);el.setAttribute("aria-pressed",state.filter===el.dataset.filter)});
   const found=filtered(), pages=Math.max(1,Math.ceil(found.length/PAGE_SIZE));
@@ -32,10 +38,11 @@ function render(){
   const start=(state.page-1)*PAGE_SIZE, page=found.slice(start,start+PAGE_SIZE);
   $("queue-total").textContent=found.length;
   $("queue-description").textContent=`${state.filter==="all"?"All shipments, oldest open cases first":"Oldest matching shipments first"} · ${state.client==="all"?"All 6 clients":clientName(state.client)}`;
-  $("shipment-rows").innerHTML=page.length?page.map(r=>`<tr><td><strong>${esc(r.order_number||"Order not linked")}</strong><small>${esc(clientName(r.client_id))}</small></td><td><span class="tracking">${esc(r.tracking_number)}</span><small>${esc(carrierName(r.carrier))} · ${esc(r.fulfillment_status)}</small></td><td><span class="badge ${esc(r.carrier_status)}">${esc(statusNames[r.carrier_status]||r.carrier_status)}</span></td><td>${r.last_movement_at?esc(date(r.last_movement_at)):"<span class=\"muted\">No scan recorded</span>"}<small>${r.last_movement_at?"Last physical scan":r.shipped_at?"Shipped "+esc(date(r.shipped_at)):r.label_created_at?"Label "+esc(date(r.label_created_at)):"Date needed"}</small></td><td>${["delivered","cancelled","data_gap"].includes(r.tier)?"":`<span class="age">${r.days}d</span>`}<span class="badge ${r.tier}">${tierNames[r.tier]}</span></td><td><span class="badge">${esc(caseNames[r.case_status]||"Not started")}</span></td><td><button class="row-open" data-detail="${r.id}" aria-label="View shipment ${esc(r.order_number||r.tracking_number)}">↗</button></td></tr>`).join(""):`<tr><td colspan="7" class="empty-cell"><strong>No shipments match this view</strong>${rows.length?"Try another filter, search, or client store.":"Import this client's shipments after live tracking is configured."}</td></tr>`;
+  $("shipment-rows").innerHTML=page.length?page.map(r=>`<tr><td><strong>${esc(r.order_number||"Order not linked")}</strong><small>${esc(clientName(r.client_id))}</small></td><td>${trackingUrl(r)?`<a class="tracking tracking-link" href="${esc(trackingUrl(r))}" target="_blank" rel="noopener noreferrer" title="Open ${esc(carrierName(r.carrier))} tracking in a new tab">${esc(r.tracking_number)} ↗</a>`:`<span class="tracking">${esc(r.tracking_number)}</span>`}<small>${esc(carrierName(r.carrier))} · ${esc(r.fulfillment_status)}</small></td><td><span class="badge ${esc(r.carrier_status)}">${esc(statusNames[r.carrier_status]||r.carrier_status)}</span></td><td>${r.last_movement_at?esc(date(r.last_movement_at)):"<span class=\"muted\">No scan recorded</span>"}<small>${r.last_movement_at?"Last physical scan":r.shipped_at?"Shipped "+esc(date(r.shipped_at)):r.label_created_at?"Label "+esc(r.label_date?day(r.label_date):date(r.label_created_at))+(r.date_precision==="report_date"?" · date only, counted from end of day":""):"Date needed"}</small></td><td>${late(r)?`<span class="age">${r.days_past_estimate}d</span><span class="badge late">Past carrier estimate</span>`:`${["delivered","cancelled","data_gap"].includes(r.tier)?"":`<span class="age">${r.days}d</span>`}<span class="badge ${r.tier}">${tierNames[r.tier]}</span>`}${r.export_day&&r.days!==null?`<small>as of export ${esc(day(r.export_day))}</small>`:""}${late(r)?`<small>late as of export ${esc(day(r.export_day))}</small>`:r.days_past_estimate>0?`<small class="late-note">Past carrier estimate by ${r.days_past_estimate}d</small>`:""}</td><td><span class="badge">${esc(caseNames[r.case_status]||"Not started")}</span></td><td><button class="row-open" data-detail="${r.id}" aria-label="View shipment ${esc(r.order_number||r.tracking_number)}">↗</button></td></tr>`).join(""):`<tr><td colspan="7" class="empty-cell"><strong>No shipments match this view</strong>${rows.length?"Try another filter, search, or client store.":"Import this client's shipments after live tracking is configured."}</td></tr>`;
   $("showing").textContent=found.length?`Showing ${start+1}–${Math.min(start+PAGE_SIZE,found.length)} of ${found.length} shipments`:"0 shipments";
   $("page-number").textContent=`${state.page} / ${pages}`;$("previous").disabled=state.page===1;$("next").disabled=state.page===pages;
-  $("monitoring-count").textContent=`${rows.filter(r=>r.tier==="monitoring").length} under 5 days · ${rows.filter(r=>r.tier==="delivered").length} delivered`;
+  const deliveredCount=state.data.mode==="sheet"?(state.data.sources||[]).filter(s=>state.client==="all"||s.id===state.client).reduce((n,s)=>n+(s.delivered||0),0):rows.filter(r=>r.tier==="delivered").length;
+  $("monitoring-count").textContent=`${rows.filter(r=>r.tier==="monitoring").length} under 5 days · ${deliveredCount} delivered${state.data.mode==="sheet"?" in the export":""}`;
   document.querySelectorAll(".selected-client-name").forEach(el=>el.textContent=state.client==="all"?"all clients":clientName(state.client));
   if(state.section==="inventory")renderInventory();
 }
@@ -220,15 +227,23 @@ function section(name){
   if(name==="inventory")loadInventory();
 }
 function trackingUrl(row){
-  if(state.data.mode==="demo")return null;
+  // Sample DEMO-* numbers are not real, so they never link out.
+  if(state.data.mode==="demo"||!row.tracking_number||/^DEMO-/.test(row.tracking_number))return null;
   if(row.tracking_url&&/^https:\/\//.test(row.tracking_url))return row.tracking_url;
   const code=encodeURIComponent(row.tracking_number);
-  return {usps:`https://tools.usps.com/go/TrackConfirmAction?tLabels=${code}`,ups:`https://www.ups.com/track?tracknum=${code}`,fedex:`https://www.fedex.com/fedextrack/?trknbr=${code}`}[row.carrier]||null;
+  const links={usps:`https://tools.usps.com/go/TrackConfirmAction?tLabels=${code}`,
+    ups:`https://www.ups.com/track?tracknum=${code}`,
+    fedex:`https://www.fedex.com/fedextrack/?trknbr=${code}`,
+    dhlecommerce:`https://webtrack.dhlecs.com/orders?trackingNumber=${code}`,
+    dhl:`https://www.dhl.com/us-en/home/tracking/tracking-express.html?submit=1&tracking-id=${code}`,
+    dhlexpress:`https://www.dhl.com/us-en/home/tracking/tracking-express.html?submit=1&tracking-id=${code}`};
+  // Cirro has no documented direct link; 17TRACK shows Cirro's own scans. Also the fallback for other carriers.
+  return links[carrierKey(row.carrier)]||`https://t.17track.net/en#nums=${code}`;
 }
 function details(id){
   const r=state.data.shipments.find(r=>r.id===id);if(!r)return;state.selected=id;
-  const link=trackingUrl(r), demo=state.data.mode!=="live", ssk=state.data.mode==="ssk";
-  $("detail-content").innerHTML=`<div class="detail-title"><h2>${esc(r.order_number||"Unlinked order")}</h2><span class="badge ${r.tier}">${tierNames[r.tier]}</span></div><div class="detail-client">${esc(clientName(r.client_id))} · ${esc(carrierName(r.carrier))}</div><div class="tracking">${esc(r.tracking_number)}</div><div class="detail-summary"><span class="eyebrow">${r.tier==="delivered"?"CARRIER CONFIRMED":"SHIPMENT EVIDENCE"}</span><strong>${r.tier==="delivered"?"Delivered":r.days===null?"Date needed":r.days+" days without movement"}</strong><p>${esc(r.reason)}</p>${r.anchor_at?`<span class="muted">Clock starts from: ${esc(r.anchor_source)} · ${esc(date(r.anchor_at,true))}</span>`:""}</div><dl class="detail-grid"><div><dt>Order fulfillment</dt><dd>${esc(r.fulfillment_status)}</dd></div><div><dt>Carrier status</dt><dd>${esc(statusNames[r.carrier_status]||r.carrier_status)}</dd></div><div><dt>Shipped</dt><dd>${esc(date(r.shipped_at,true))}</dd></div><div><dt>Latest update received</dt><dd>${esc(date(r.last_received_at,true))}</dd></div></dl><div class="setup-note">${ssk?"Read from ShipSidekick (read-only). Saving follow-up notes needs the database and is off.":demo?"Sample shipment — this tracking number is illustrative.":"Latest update received is not a fresh carrier lookup. Missing or delayed feeds require reconciliation."}</div>${link?`<a class="button secondary" href="${esc(link)}" target="_blank" rel="noopener noreferrer">Open carrier tracking ↗</a>`:""}<h3 class="detail-section-title">Carrier event history</h3><ul class="timeline">${[...(r.events||[])].reverse().map(e=>`<li>${esc(e.description)}<small>${esc(date(e.at,true))}${e.movement?" · Physical scan":" · Does not reset movement clock"}</small></li>`).join("")||"<li>No scan history available. Import the shipping date and connect tracking updates.</li>"}</ul><h3 class="detail-section-title">Follow-up</h3><label class="field-label" for="case-status">Case status</label><select id="case-status" ${demo?"disabled":""}>${Object.entries(caseNames).map(([key,value])=>`<option value="${key}" ${r.case_status===key?"selected":""}>${value}</option>`).join("")}</select><label class="field-label" for="case-notes">Notes</label><textarea id="case-notes" maxlength="4000" ${demo?"disabled":""} placeholder="Carrier case number, last contact, next action…">${esc(r.notes)}</textarea><p class="muted">${ssk?"Follow-up notes are not saved yet in ShipSidekick mode.":demo?"Notes and follow-up are read-only in the sample workspace.":"Follow-up does not clear an aging exception. Carrier evidence determines priority."}</p><div class="dialog-actions"><button id="save-case" class="button primary" ${demo?"disabled":""}>Save follow-up</button></div>`;
+  const link=trackingUrl(r), demo=state.data.mode!=="live", sheet=state.data.mode==="sheet", ssk=state.data.mode==="ssk";
+  $("detail-content").innerHTML=`<div class="detail-title"><h2>${esc(r.order_number||"Unlinked order")}</h2>${late(r)?'<span class="badge late">Past carrier estimate</span>':`<span class="badge ${r.tier}">${tierNames[r.tier]}</span>`}</div><div class="detail-client">${esc(clientName(r.client_id))} · ${esc(carrierName(r.carrier))}</div><div class="tracking">${esc(r.tracking_number)}</div><div class="detail-summary"><span class="eyebrow">${r.tier==="delivered"?"CARRIER CONFIRMED":"SHIPMENT EVIDENCE"}</span><strong>${r.tier==="delivered"?"Delivered":r.days===null?(sheet?(late(r)?r.days_past_estimate+" days past the carrier's estimate at export":"No scan time in the export"):"Date needed"):r.days+(sheet?" days without a carrier scan at export":" days without movement")}</strong><p>${esc(r.reason)}</p>${r.anchor_at&&r.days!==null?`<span class="muted">Clock starts from: ${esc(r.anchor_source)} · ${r.label_date?esc(day(r.label_date))+" (date only, counted from end of day)":esc(date(r.anchor_at,true))}</span>`:""}</div><dl class="detail-grid"><div><dt>Order fulfillment</dt><dd>${esc(r.fulfillment_status)}</dd></div><div><dt>Carrier status</dt><dd>${esc(statusNames[r.carrier_status]||r.carrier_status)}</dd></div>${sheet?`<div><dt>Status as of export</dt><dd>${esc(day(r.export_day))}</dd></div><div><dt>Carrier estimated delivery</dt><dd>${esc(r.estimated_delivery||"Not in export")}${r.days_past_estimate>0?` · ${r.days_past_estimate} days late at export`:""}</dd></div>`:`<div><dt>Shipped</dt><dd>${esc(date(r.shipped_at,true))}</dd></div><div><dt>Latest update received</dt><dd>${esc(date(r.last_received_at,true))}</dd></div>`}</dl><div class="setup-note">${sheet?"From the ShipSidekick export in the Sheet. The export has no scan history, so open carrier tracking to see the latest scans.":ssk?"Read from ShipSidekick (read-only). Saving follow-up notes needs the database and is off.":demo?"Sample shipment — this tracking number is illustrative.":"Latest update received is not a fresh carrier lookup. Missing or delayed feeds require reconciliation."}</div>${link?`<a class="button secondary" href="${esc(link)}" target="_blank" rel="noopener noreferrer">Open carrier tracking ↗</a>`:""}<h3 class="detail-section-title">Carrier event history</h3><ul class="timeline">${[...(r.events||[])].reverse().map(e=>`<li>${esc(e.description)}<small>${esc(date(e.at,true))}${e.movement?" · Physical scan":" · Does not reset movement clock"}</small></li>`).join("")||"<li>No scan history available. Import the shipping date and connect tracking updates.</li>"}</ul><h3 class="detail-section-title">Follow-up</h3><label class="field-label" for="case-status">Case status</label><select id="case-status" ${demo?"disabled":""}>${Object.entries(caseNames).map(([key,value])=>`<option value="${key}" ${r.case_status===key?"selected":""}>${value}</option>`).join("")}</select><label class="field-label" for="case-notes">Notes</label><textarea id="case-notes" maxlength="4000" ${demo?"disabled":""} placeholder="Carrier case number, last contact, next action…">${esc(r.notes)}</textarea><p class="muted">${sheet?"Follow-up notes are not saved while shipments come from the Sheet.":ssk?"Follow-up notes are not saved yet in ShipSidekick mode.":demo?"Notes and follow-up are read-only in the sample workspace.":"Follow-up does not clear an aging exception. Carrier evidence determines priority."}</p><div class="dialog-actions"><button id="save-case" class="button primary" ${demo?"disabled":""}>Save follow-up</button></div>`;
   if(!demo)$("save-case").addEventListener("click",saveCase);
   if(!$("detail-dialog").open)$("detail-dialog").showModal();
 }
@@ -249,6 +264,17 @@ async function load(){
       const known=new Set(state.data.clients.map(c=>c.id));
       try{const saved=localStorage.getItem("shipmode-client");if(known.has(saved)||saved==="all")state.client=saved}catch{}
       $("client-select").value=state.client;
+      const carriers=[...new Set(state.data.shipments.map(r=>carrierKey(r.carrier)).filter(Boolean))].sort();
+      $("carrier-filter").innerHTML='<option value="all">All carriers</option>'+carriers.map(k=>`<option value="${esc(k)}">${esc(carrierLabels[k]||k)}</option>`).join("");
+    }
+    if(state.data.mode==="sheet"){
+      const sources=state.data.sources||[], days=[...new Set(sources.filter(s=>s.export_day).map(s=>s.export_day))];
+      $("mode-notice").querySelector("strong").textContent="ShipSidekick export";
+      $("mode-notice").querySelector(":scope > div > span").textContent=`Read from the ShipSidekick export in the Sheet. Ages are measured as of the export${days.length?" ("+days.map(d=>date(d+"T12:00:00")).join(", ")+")":""}; refresh the tab with a full export to update.`;
+      $("setup-button").hidden=true;$("import-button").hidden=true;
+      $("side-connection").textContent="Sheet export";
+      const problems=sources.map(s=>s.error?`${clientName(s.id)}: ${s.error}`:s.available===false?`${clientName(s.id)}: no export tab yet`:(s.warnings||[]).length?`${clientName(s.id)}: ${s.warnings.join(" · ")}`:"").filter(Boolean);
+      $("source-status").textContent=problems.join(" | ");$("source-status").hidden=!problems.length;
     }
     if(state.data.mode==="ssk"){
       const sources=state.data.sources||[], ok=sources.filter(s=>!s.error_code);
@@ -261,19 +287,19 @@ async function load(){
       $("setup-button").hidden=true;
     }else if(state.data.mode==="live"){
       $("mode-notice").querySelector("strong").textContent="Live workspace";
-      $("mode-notice").querySelector("div span").textContent="Check each client’s tracking feed before relying on coverage.";
+      $("mode-notice").querySelector(":scope > div > span").textContent="Check each client’s tracking feed before relying on coverage.";
       $("side-connection").textContent="Verify client feeds";
     }
-    $("as-of").textContent=(state.data.mode==="demo"?"Sample data · ":state.data.mode==="ssk"?"ShipSidekick read · ":"Queue calculated · ")+date(state.data.as_of,true);
+    $("as-of").textContent=(state.data.mode==="demo"?"Sample data · ":state.data.mode==="sheet"?"Sheet read · ":state.data.mode==="ssk"?"ShipSidekick read · ":"Queue calculated · ")+date(state.data.as_of,true);
     render();
     if(first&&state.section==="inventory")loadInventory();
   }catch(e){$("load-error").textContent=e.message;$("load-error").hidden=false;$("as-of").textContent="Update failed — data may be stale";if(!state.data)$("shipment-rows").innerHTML='<tr><td colspan="7" class="empty-cell">Unable to load shipments. Refresh to retry.</td></tr>'}
 }
 function exportQueue(){
   if(!state.data)return;
-  const columns=["client","order_number","tracking_number","carrier","carrier_status","fulfillment_status","shipped_at","last_movement_at","days_without_movement","priority","case_status"];
+  const columns=["client","order_number","tracking_number","carrier","carrier_status","fulfillment_status","label_or_ship_date","last_movement_at","days_without_movement","priority","status_as_of_export","days_past_estimate","case_status"];
   const cell=v=>'"'+String(v??"").replace(/^[=+@\-\t\r]/,"'$&").replace(/"/g,'""')+'"';
-  const data=[columns,...filtered().map(r=>[clientName(r.client_id),r.order_number,r.tracking_number,r.carrier,r.carrier_status,r.fulfillment_status,r.shipped_at,r.last_movement_at,r.days,r.tier,r.case_status])];
+  const data=[columns,...filtered().map(r=>[clientName(r.client_id),r.order_number,r.tracking_number,r.carrier,r.carrier_status,r.fulfillment_status,r.shipped_at||r.label_created_at,r.last_movement_at,r.days,r.tier,r.export_day||"",r.days_past_estimate,r.case_status])];
   const url=URL.createObjectURL(new Blob([data.map(row=>row.map(cell).join(",")).join("\r\n")],{type:"text/csv;charset=utf-8"}));
   const a=document.createElement("a");a.href=url;a.download=(state.data.mode==="demo"?"SAMPLE-":"")+"shipmode-no-movement.csv";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }

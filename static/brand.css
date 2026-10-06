@@ -1,6 +1,7 @@
 /* ShipMode brand layer. See BRAND.md. Loaded after workspace.css and only
-   restyles; it does not change layout or behavior. Status colors
-   (watch / urgent / critical) are intentionally left as they are. */
+   restyles; it does not change layout or behavior. Palette follows the
+   shipmode-v4 site: cream page, navy ink and rules, sky-blue highlight.
+   Status colors (watch / urgent / critical) stay separate from the brand. */
 
 @font-face{font-family:"Barlow";src:url("/static/fonts/barlow-latin-400-normal.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
 @font-face{font-family:"Barlow";src:url("/static/fonts/barlow-latin-600-normal.woff2") format("woff2");font-weight:600;font-style:normal;font-display:swap}
@@ -8,68 +9,107 @@
 @font-face{font-family:"Barlow Condensed";src:url("/static/fonts/barlow-condensed-latin-800-italic.woff2") format("woff2");font-weight:800;font-style:italic;font-display:swap}
 
 :root{
-  --sm-black:#07080A;
+  --sm-cream:#FAF6EA;
+  --sm-cream-deep:#F2ECDC;
+  --sm-navy:#031656;
+  --sm-navy-soft:#1E2F6B;
+  --sm-sky:#9BD0F7;
+  --sm-sky-soft:#D8ECFB;
+  --sm-rule:#031656;
+  --sm-grid:#ECE5D3;
   --sm-white:#FFFFFF;
-  --sm-blue:#2563D6;
-  --sm-blue-light:#4775BB;
-  --sm-blue-deep:#294785;
-  --sm-navy:#1B263C;
-  --sm-silver:#D4D7D9;
-  --sm-surface:#F5F6F7;
   --sm-font-display:"Barlow Condensed","Arial Narrow",Arial,sans-serif;
   --sm-font-body:"Barlow",Arial,sans-serif;
 
   /* Map the existing workspace tokens onto the brand */
-  --nav:var(--sm-black);
-  --nav-muted:#9AA3AE;
-  --page:var(--sm-surface);
+  --nav:var(--sm-navy);
+  --nav-muted:#B9C4E4;
+  --page:var(--sm-cream);
+  --surface:#FFFDF7;
   --ink:var(--sm-navy);
-  --line:#E3E5E7;
-  --blue:var(--sm-blue);
+  --muted:#4B5A86;
+  --line:#E4DCC6;
+  --blue:var(--sm-navy);
   font-family:var(--sm-font-body);
 }
+body{background:var(--sm-cream);color:var(--sm-navy)}
 
-/* Sidebar: black like the logo badge */
-.sidebar{background:var(--sm-black)}
-.owner{border-color:#23262B}
-.avatar{background:var(--sm-blue-deep);color:var(--sm-white)}
-.nav-item:hover{background:#15181D}
-.nav-item.active{background:var(--sm-blue-deep);box-shadow:inset 3px 0 var(--sm-blue)}
-.nav-count{background:#23262B}
-.sidebar-bottom{border-bottom-color:#23262B}
-.version{border-color:#34383E}
+/* Faint grid, like the site background */
+main{background-image:linear-gradient(var(--sm-grid) 1px,transparent 1px),linear-gradient(90deg,var(--sm-grid) 1px,transparent 1px);background-size:110px 110px}
+
+/* Sidebar: navy with cream text */
+.sidebar{background:var(--sm-navy)}
+.owner{border-color:#22357A}
+.avatar{background:var(--sm-sky);color:var(--sm-navy)}
+.nav-item{color:#C9D3F0}
+.nav-item:hover{background:#0C2270;color:var(--sm-white)}
+.nav-item.active{background:var(--sm-sky);color:var(--sm-navy);box-shadow:none}
+.nav-item.active .nav-count{background:var(--sm-navy);color:var(--sm-white)}
+.nav-count{background:#22357A}
+.sidebar-bottom{border-bottom-color:#22357A}
+.version{border-color:#3A4C8C}
+
+/* Top bar: cream with a navy rule */
+.topbar{background:var(--sm-cream);border-bottom:2px solid var(--sm-rule)}
+.footer{border-top:2px solid var(--sm-rule)}
 
 /* Logo and wordmark */
 .brand{padding:0 6px}
 .brand-logo{width:76px;height:76px}
-/* The badge already carries the wordmark, so the text is kept for screen readers only */
 .brand span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
 @media(max-width:850px){.brand-logo{width:44px;height:44px}}
 
-/* Display type: page titles and headline numbers only */
-h1,.metric strong,.inventory-cards strong{font-family:var(--sm-font-display);font-weight:800;font-style:italic;letter-spacing:0}
-.title-dot{background:var(--sm-blue)}
+/* Display type: heavy condensed italic, uppercase, navy */
+h1,h2,.metric strong,.inventory-cards strong{font-family:var(--sm-font-display);font-weight:800;font-style:italic;letter-spacing:0;color:var(--sm-navy)}
+h1{text-transform:uppercase;font-size:44px;line-height:1}
+h1 span:not(.title-dot){background:var(--sm-sky);padding:0 6px}
+h2{text-transform:uppercase;font-size:24px}
+.eyebrow,.workspace-label,.nav-label{letter-spacing:2px;font-weight:700;color:var(--sm-navy)}
+.sidebar .workspace-label,.sidebar .nav-label{color:#B9C4E4}
+.title-dot{background:var(--sm-sky)}
 
-/* Actions in brand blue */
-.primary{background:var(--sm-blue)}
-.primary:hover{background:var(--sm-blue-deep)}
-.tabs button.active{color:var(--sm-blue-deep)}
-button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline-color:var(--sm-blue-light)}
+/* Cards and tables on cream */
+.metric,.queue-card,.inventory-cards>div,.module-empty{background:var(--surface);border:1.5px solid var(--sm-navy);border-radius:14px;box-shadow:none}
+.metric.selected{box-shadow:0 0 0 3px var(--sm-sky)}
+th{background:var(--sm-cream-deep);color:var(--sm-navy);border-color:var(--sm-navy)}
+tbody tr:hover{background:#F4F9FE}
+
+/* Actions: navy pills, like "Book a call" */
+.button{border-radius:999px}
+.primary{background:var(--sm-navy);color:var(--sm-white)}
+.primary:hover{background:var(--sm-navy-soft)}
+.secondary{background:transparent;border:1.5px solid var(--sm-navy);color:var(--sm-navy)}
+.secondary:hover{background:var(--sm-sky-soft)}
+.tabs{background:transparent;gap:8px;padding:0}
+.tabs button{border:1.5px solid var(--sm-navy);border-radius:999px;color:var(--sm-navy);background:transparent}
+.tabs button.active{background:var(--sm-navy);color:var(--sm-white);box-shadow:none}
+select,.search{border-color:var(--sm-navy);background:var(--sm-white)}
+.notice{background:var(--sm-sky-soft);border-color:var(--sm-sky);color:var(--sm-navy)}
+.notice button{color:var(--sm-navy)}
+.inventory-preview-bar{background:var(--sm-sky-soft);border-color:var(--sm-sky)}
+a{color:var(--sm-navy)}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline-color:var(--sm-sky)}
 
 /* Numbers line up in tables */
 td,.metric strong,.inventory-cards strong{font-variant-numeric:tabular-nums}
+
+/* No Movement from the Sheet export */
+.source-status{border:1.5px solid var(--sm-navy);background:var(--sm-sky-soft);border-radius:10px;padding:12px 15px;margin:15px 0;font-size:14px;line-height:1.5}
+.late-note{color:var(--urgent);font-weight:600}
+.badge.late{background:#fff1e7;color:var(--urgent)}
 
 /* Calculated inventory (shadow check) */
 .calculated-card{margin-top:24px}
 .calculated-eod{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;padding:16px 22px;border-top:1px solid var(--line)}
 .calculated-eod:empty{display:none}
-.eod-card{border:1px solid var(--line);border-radius:10px;padding:14px;background:var(--sm-surface)}
+.eod-card{border:1px solid var(--line);border-radius:10px;padding:14px;background:var(--sm-cream)}
 .eod-card strong,.eod-card span,.eod-card small{display:block}
 .eod-card span{font-size:13px;margin:6px 0;color:var(--sm-navy)}
 .eod-card small{font-size:12px;color:var(--muted);line-height:1.5}
 .eod-card .finding{color:var(--watch)}
 #calculated-error{margin:0 22px 16px}
 .calculated-card td.inventory-source{min-width:280px}
+.tracking-link{color:var(--sm-navy);text-decoration:underline;text-decoration-color:var(--sm-sky);text-decoration-thickness:2px;text-underline-offset:3px}.tracking-link:hover{background:var(--sm-sky-soft)}
 #shopify-error{margin:0 22px 16px}
 .heading-actions .badge{white-space:nowrap}
 #ssk-error{margin:0 22px 16px}
