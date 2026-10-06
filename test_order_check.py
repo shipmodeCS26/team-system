@@ -66,7 +66,7 @@ def read(scopes, nodes, name="#1001", **kw):
 
 class ReadOrderTests(unittest.TestCase):
     def test_exact_name_only_and_address_returned(self):
-        orders, fake = read(["read_orders", "read_customers", "read_products"],
+        orders, fake = read(["read_orders", "read_all_orders", "read_customers", "read_products"],
                             [order_node("#1001"), order_node("#10011")])
         self.assertEqual([o["name"] for o in orders], ["#1001"])
         self.assertEqual(orders[0]["address"]["city"], "Miami")
@@ -75,13 +75,14 @@ class ReadOrderTests(unittest.TestCase):
         self.assertEqual(orders[0]["tracking_numbers"], ["T1"])
 
     def test_refused_address_keeps_the_order(self):
-        orders, _ = read(["read_orders", "read_customers", "read_products"], [order_node()],
+        orders, _ = read(["read_orders", "read_all_orders", "read_products"], [order_node()],
                          refuse=(shopify_source.ORDER_ADDRESS_QUERY, shopify_source.ORDER_FULFILLMENTS_QUERY))
         self.assertEqual((orders[0]["name"], orders[0]["address"], orders[0]["address_visible"]), ("#1001", None, False))
         self.assertIsNone(orders[0]["tracking_numbers"])
 
     def test_custom_order_names_are_escaped_not_refused(self):
-        orders, fake = read(["read_orders", "read_products"], [order_node('SM/10+1 "A"')], name='SM/10+1 "A"')
+        orders, fake = read(["read_orders", "read_all_orders", "read_products"], [order_node('SM/10+1 "A"')],
+                            name='SM/10+1 "A"')
         self.assertEqual(len(orders), 1)
         self.assertEqual(fake.calls[1]["variables"]["q"], 'name:"SM/10+1 \\"A\\""')
         self.assertEqual(orders[0]["address"]["city"], "Miami")  # field access is Shopify's call, not read_customers
@@ -120,6 +121,20 @@ class SearchCompletenessTests(unittest.TestCase):
         flags = order_check.check("muravai", {"items": []}, found["orders"], search_complete=False)["flags"]
         self.assertEqual(flags, ["search_incomplete"])
         self.assertEqual(order_check.check("muravai", {}, [], complete=False)["flags"], ["not_found_recent"])
+
+
+class EnrichmentTests(unittest.TestCase):
+    def test_address_withheld_without_full_search_and_no_fanout_on_duplicates(self):
+        orders, fake = read(["read_orders", "read_products"], [order_node()])
+        self.assertTrue(orders[0]["address_withheld"])
+        self.assertIsNone(orders[0]["address"])
+        self.assertNotIn(shopify_source.ORDER_ADDRESS_QUERY, [c["query"] for c in fake.calls])
+        self.assertIn("recent_match_only", order_check.check("muravai", {"items": []}, orders, complete=False)["flags"])
+        orders, fake = read(["read_orders", "read_all_orders", "read_products"], [order_node(), order_node()])
+        self.assertEqual(len(orders), 2)
+        queries = [c["query"] for c in fake.calls]
+        self.assertNotIn(shopify_source.ORDER_ADDRESS_QUERY, queries)
+        self.assertNotIn(shopify_source.ORDER_FULFILLMENTS_QUERY, queries)
 
 
 class FlagTests(unittest.TestCase):
@@ -172,7 +187,7 @@ class OrderEndpointTests(unittest.TestCase):
 
     def test_requires_sign_in_reads_only_that_client_and_never_logs_address(self):
         client = app.test_client()
-        fake = FakeShopify(["read_orders", "read_customers", "read_products"], [order_node()])
+        fake = FakeShopify(["read_orders", "read_all_orders", "read_products"], [order_node()])
         with patch.dict("os.environ", self.ENV, clear=True), \
                 patch("app.ssk_source.read_shipments", return_value=self.STORE) as shipments, \
                 patch("shopify_source.requests.post", fake.post):

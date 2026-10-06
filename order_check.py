@@ -14,6 +14,7 @@ FLAG_TEXT = {
     "unlinked": "ShipSidekick has no order number for this shipment, so Shopify was not searched",
     "not_found": "Order not found in Shopify",
     "not_found_recent": "Not found in Shopify's last 60 days of orders (older orders need read_all_orders access)",
+    "recent_match_only": "Matched in Shopify's last 60 days only; an older order could have the same name",
     "search_incomplete": "Shopify returned too many similar order names to confirm a unique match",
     "several_orders": "More than one Shopify order has this name",
     "cancelled": "Cancelled in Shopify, but a label exists",
@@ -58,6 +59,8 @@ def check(client_id, shipment, orders, shipments_for_order=1, unlinked=False, co
     numbers = (order or {}).get("tracking_numbers") or []
     split = max(shipments_for_order, len(numbers), (order or {}).get("fulfillment_count") or 0) > 1
     if order:
+        if not complete:
+            flags.append("recent_match_only")
         if order.get("cancelled_at"):
             flags.append("cancelled")
         financial = str(order.get("financial") or "").upper()

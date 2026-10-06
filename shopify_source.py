@@ -331,29 +331,28 @@ def read_order(client_id, order_name):
         after = info.get("endCursor")
         if page == ORDER_SEARCH_PAGES - 1:
             search_complete = False
+    matches = [node for node in nodes if str(node.get("name") or "").strip().lower() == order_name.lower()]
+    # Without read_all_orders Shopify only searches the last 60 days: an older order with the same
+    # (customised) name could be the real one, so the address is shown only after a full search.
+    complete = search_complete and "read_all_orders" in scopes
     orders = []
-    for node in nodes:
-        if str(node.get("name") or "").strip().lower() != order_name.lower():
-            continue  # Shopify search is fuzzy; only the exact order counts
+    for node in matches:
         lines = node.get("lineItems") or {}
-        order = {
+        orders.append({
+            "id": node.get("id"),
             "name": node.get("name"), "created_at": node.get("createdAt"), "cancelled_at": node.get("cancelledAt"),
             "financial": node.get("displayFinancialStatus") or "", "fulfillment": node.get("displayFulfillmentStatus") or "",
             "items": [{"name": (line.get("name") or "").strip(), "sku": (line.get("sku") or "").strip(),
                        "qty": line.get("currentQuantity") if isinstance(line.get("currentQuantity"), int) else line.get("quantity")}
                       for line in (lines.get("nodes") or []) if isinstance(line, dict)],
             "items_truncated": bool((lines.get("pageInfo") or {}).get("hasNextPage")),
-            "address": None, "address_visible": False, "tracking_numbers": None,
-        }
-        # Address access is approved per field by Shopify (protected customer data), not only by
-        # read_customers, so always ask; a refusal simply leaves the address unavailable.
-        found, _ = _optional(store, ORDER_ADDRESS_QUERY, {"id": node.get("id")})
-        address = ((found or {}).get("order") or {}).get("shippingAddress")
-        if isinstance(address, dict):
-            order["address"] = {key: address.get(key) for key in
-                                ("name", "address1", "address2", "city", "provinceCode", "zip", "countryCodeV2")}
-        order["address_visible"] = found is not None
-        found, _ = _optional(store, ORDER_FULFILLMENTS_QUERY, {"id": node.get("id")})
+            "address": None, "address_visible": False, "address_withheld": False,
+            "tracking_numbers": None, "fulfillment_count": None,
+        })
+    # Extra reads only for a single confirmed match: never fan out over duplicate names.
+    if len(orders) == 1 and search_complete:
+        order = orders[0]
+        found, _ = _optional(store, ORDER_FULFILLMENTS_QUERY, {"id": order["id"]})
         if found is not None:
             fulfillments = [f for f in (((found.get("order") or {}).get("fulfillments")) or []) if isinstance(f, dict)]
             numbers = {str(info.get("number")).strip() for f in fulfillments
@@ -361,7 +360,17 @@ def read_order(client_id, order_name):
             order["tracking_numbers"] = sorted(numbers)
             # Fulfillments without tracking still mean separate parcels; a full page (20) means maybe more.
             order["fulfillment_count"] = len(fulfillments) if len(fulfillments) < 20 else 21
-        orders.append(order)
-    # Without read_all_orders Shopify only searches the last 60 days, so "no match" is not definitive.
-    complete = search_complete and "read_all_orders" in scopes
+        if complete:
+            # Address access is approved per field by Shopify (protected customer data), so ask;
+            # a refusal simply leaves the address unavailable.
+            found, _ = _optional(store, ORDER_ADDRESS_QUERY, {"id": order["id"]})
+            address = ((found or {}).get("order") or {}).get("shippingAddress")
+            if isinstance(address, dict):
+                order["address"] = {key: address.get(key) for key in
+                                    ("name", "address1", "address2", "city", "provinceCode", "zip", "countryCodeV2")}
+            order["address_visible"] = found is not None
+        else:
+            order["address_withheld"] = True
+    for order in orders:
+        order.pop("id", None)
     return {"orders": orders, "complete": complete, "search_complete": search_complete}
