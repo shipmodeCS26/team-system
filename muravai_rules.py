@@ -67,13 +67,23 @@ def order_usage(items: str) -> OrderResult:
         raw=dict(raw), flags=flags, unknown_items=unknown)
 
 
+# Product names exactly as they appear on the Muravai Dashboard tab ("*" footnote marks ignored).
+SHEET_NAMES = {"replacement filters, 3-pack": "MUR001", "filtered showerhead": "MUR002",
+               "connector kit box": "MUR003", "shower hose": "MUR004", "bracket / connector": "MUR005"}
+
 KIND_SKUS = {"filter": "MUR001", "showerhead": "MUR002", "kit": "MUR003", "hose": "MUR004", "connector": "MUR005"}
 
 
 def shopify_match(variant: dict) -> dict | None:
     """Muravai's rules read product names, not codes, so Shopify listings are matched by name
     exactly as a ShipSidekick line would be. Teflon tape is a kit component, not a SKU."""
-    kind = classify(f"{variant.get('product', '')} {variant.get('variant', '')}")
+    text = f"{variant.get('product', '')} {variant.get('variant', '')}"
+    kind = classify(text)
+    # Sets/kits/bundles in ShipSidekick or Shopify (e.g. "Shower Hose & Connector Set", BOM items) contain
+    # several products; matching them to one SKU by name would count a kit as a hose. Never compared.
+    lowered = f" {text.lower()} "
+    if kind != "kit" and any(word in lowered for word in (" set ", " kit ", " bundle ", " + ", " & ")):
+        return {"sku": None, "how": "Set/kit of several products: not matched to one SKU"}
     if kind == "teflon":
         return {"sku": None, "covers": "MUR003",
                 "how": "Kit component: counted as MUR003 only with a hose and connector (RULES.md)"}
@@ -89,6 +99,7 @@ class _Rules:
     source = "docs/clients/muravai/RULES.md"
     order_usage = staticmethod(lambda items: order_usage(items))
     shopify_match = staticmethod(lambda variant: shopify_match(variant))
+    sheet_names = SHEET_NAMES
 
 
 RULES = _Rules()

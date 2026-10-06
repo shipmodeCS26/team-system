@@ -256,6 +256,7 @@ class SkuCheckTests(unittest.TestCase):
             variant("Shower Connector Bracket", "MV-CON"),
             variant("Teflon Tape", "MV-TEF"),
             variant("Mystery Bundle", "MV-X"),
+            variant("Shower Hose & Connector Set", "MV-SET"),
         ])
         rows = self.by_product(result)
         self.assertEqual(rows[("Filtered Showerhead", "Default Title")]["internal_sku"], "MUR002")
@@ -264,7 +265,10 @@ class SkuCheckTests(unittest.TestCase):
         self.assertEqual(rows[("Shower Connector Bracket", "Default Title")]["internal_sku"], "MUR005")
         teflon = rows[("Teflon Tape", "Default Title")]
         self.assertEqual((teflon["status"], teflon["internal_sku"]), ("component", "MUR003"))
-        self.assertEqual(rows[("Mystery Bundle", "Default Title")]["status"], "unmapped")
+        bundle = rows[("Mystery Bundle", "Default Title")]
+        self.assertEqual((bundle["status"], bundle["internal_sku"]), ("component", None))
+        self.assertIn("not matched to one SKU", bundle["how"])
+        self.assertEqual(rows[("Shower Hose & Connector Set", "Default Title")]["internal_sku"], None)
         self.assertEqual({r["internal_sku"]: r["state"] for r in result["rules"]},
                          {"MUR001": "found", "MUR002": "found", "MUR003": "found", "MUR004": "found", "MUR005": "found"})
         self.assertEqual(result["rule_status"], "APPROVED")

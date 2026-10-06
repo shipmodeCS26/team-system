@@ -41,9 +41,14 @@ def match_level(rules, level):
 def match_sheet_row(rules, product):
     if rules is None:
         return None
+    named = getattr(rules, "sheet_names", {}).get(product.replace("*", "").strip().lower())
+    if named:
+        return named
     found = _match(rules, product, "", "")
     if found and found.get("sku"):
         return found["sku"]
+    if found:
+        return None
     wanted = product.strip().lower()
     return next((sku for sku, label in rules.labels.items() if label.strip().lower() == wanted), None)
 

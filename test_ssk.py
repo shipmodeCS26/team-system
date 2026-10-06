@@ -170,6 +170,33 @@ class CompareTests(unittest.TestCase):
         self.assertIn("Not found in ShipSidekick", rows["MUR002"]["notes"])
         self.assertIn("No Sheet row matches this SKU", rows["MUR002"]["notes"])
 
+    def test_muravai_real_catalog_kits_are_never_counted_as_single_items(self):
+        # ShipSidekick Muravai inventory as seen on 2026-10-06 (Doral warehouse).
+        result = ssk_check.compare("muravai", levels(
+            ("3 filters", "Replacement Filters (3 Pack)", 7843, 300),
+            ("showerhead", "THE FILTERED SHOWERHEAD\u2122", 3543, 121),
+            ("shower connector", "Shower connector", 1003, 78),
+            ("shower hose", "Shower Hose", 993, 77),
+            ("Teflon Tape-360-USA", "1x Teflon Tape", 975, 77),
+            ("1x hose and connector", "SHOWER ENHANCEMENT KIT", 2586, 0),
+            ("hose and connector set", "Shower Hose & Connector Set", 976, 0),
+            ("showerhead + hose and connector", "Complete Shower Set", 976, 0)),
+            sheet(("Replacement Filters, 3-Pack", "384"), ("Filtered Showerhead", "1,745"),
+                  ("Connector Kit Box", "1,291"), ("Shower Hose*", "0"), ("Bracket / Connector*", "561")))
+        rows = self.by_sku(result)
+        self.assertEqual(rows["MUR001"]["ssk_skus"], ["3 filters"])
+        self.assertEqual(rows["MUR002"]["ssk_skus"], ["showerhead"])
+        self.assertEqual(rows["MUR004"]["ssk_skus"], ["shower hose"])
+        self.assertEqual(rows["MUR005"]["ssk_skus"], ["shower connector"])
+        self.assertEqual(rows["MUR001"]["vs_available_committed"], 8143 - 384)
+        not_compared = {c["sku"] for c in result["components"]} | {v["sku"] for v in result["unmatched_ssk"]}
+        self.assertEqual(not_compared, {"Teflon Tape-360-USA", "1x hose and connector",
+                                        "hose and connector set", "showerhead + hose and connector"})
+        self.assertEqual(rows["MUR003"]["ssk_skus"], [])
+        self.assertEqual(rows["MUR003"]["sheet_remaining"], 1291)
+        self.assertEqual((rows["MUR004"]["sheet_remaining"], rows["MUR005"]["sheet_remaining"]), (0, 561))
+        self.assertEqual(result["unmatched_sheet"], [])
+
     def test_several_ssk_variants_for_one_sku_are_not_added(self):
         result = ssk_check.compare("muravai", levels(("MV-SH1", "Filtered Showerhead", 5, 0),
                                                       ("MV-SH2", "Filtered Showerhead Chrome", 7, 0)),
