@@ -543,6 +543,27 @@ MUR003 Connector kits | 70 kits per case
 
 Verify the packing list when possible because future case packs can change.
 
+ShipSidekick component counting (Carlos, Oct 9, 2026)
+
+The kit as one unit is only how ShipMode and Muravai talk about it. In ShipSidekick the kit is not stocked as a unit; it is stored as three separate components: 1x Teflon Tape (Teflon Tape-360-USA), Shower connector, and Shower Hose. Orders deduct the components.
+
+Every kit received adds one of each component in ShipSidekick. Standalone hoses and brackets add only to their own component.
+
+Example: 2,000 hose/connector kits + 50 standalone hoses received =
+Teflon +2,000
+Shower connector +2,000
+Shower hose +2,050
+
+Never enter kit receipts in ShipSidekick as kit units (the SHOWER ENHANCEMENT KIT or Shower Hose & Connector Set BOM items). The components then run short and go negative while the kit line still shows stock.
+
+The sheet keeps the MUR003/MUR004/MUR005 view. To compare it with ShipSidekick, convert it:
+
+Teflon = MUR003
+Shower connector = MUR003 + MUR005
+Shower hose = MUR003 + MUR004
+
+Receipts in the sheet stay in kits, standalone hoses and standalone brackets. For each kit receipt, also give the component totals for the ShipSidekick entry.
+
 For a physical count involving full boxes and loose units:
 
 Total units = (Full boxes × Units per box) + Loose units
