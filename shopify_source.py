@@ -472,6 +472,11 @@ def read_day_orders(client_id, start, end, progress=None, sleep=time.sleep):
             "fetched_at": datetime.now(timezone.utc).isoformat()}
 
 
+def _name_key(name):
+    """'#1001' and '1001' are the same order name; internal spaces are kept (same as daily_orders)."""
+    return str(name or "").strip().removeprefix("#").strip().lower()
+
+
 def find_orders(client_id, names, sleep=time.sleep):
     """#14: look up shipped orders that were not in the day window, by exact name (no customer
     fields). Returns {name: {"orders": [...], "search_complete": bool}} and whether Shopify searched
@@ -498,8 +503,7 @@ def find_orders(client_id, names, sleep=time.sleep):
             after = info.get("endCursor")
             if page == ORDER_SEARCH_PAGES - 1:
                 search_complete = False
-        wanted = name.strip().lower()
         found[name] = {"orders": [_day_order(node) for node in nodes
-                                  if str(node.get("name") or "").strip().lower() == wanted],
+                                  if _name_key(node.get("name")) == _name_key(name)],
                        "search_complete": search_complete}
     return {"found": found, "all_orders": "read_all_orders" in scopes}

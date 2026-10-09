@@ -61,7 +61,7 @@ AS_OF_FORMATS = ("%d %b %Y", "%d %B %Y", "%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "
 def order_key(name) -> str:
     """Shopify '#1234' and a ShipSidekick 'Order Name' of '#1234' or '1234' are the same order.
     Only surrounding spaces and a leading '#' are dropped: 'SM 10' and 'SM10' stay different."""
-    return str(name or "").strip().removeprefix("#").strip().lower()
+    return shopify_source._name_key(name)
 
 
 def window(day: date) -> tuple[datetime, datetime]:
@@ -132,6 +132,9 @@ def _shipments(rules, rows):
 def _sheet_column(rules, sheet, day):
     if not sheet or sheet.get("error"):
         return None, ["Sheet: " + ((sheet or {}).get("error") or "not read")]
+    if sheet.get("may_continue"):
+        # Rows past the Dashboard's last read row are missing: a SKU there would read as zero.
+        return None, ["Sheet: the Dashboard may continue past the rows read, so its units sold are not compared"]
     shown = sheet_day(sheet.get("as_of"))
     if shown != day:
         return None, [f"Sheet: the Dashboard shows {sheet.get('as_of') or 'no date'}, not this day, so its units sold are not compared"]
@@ -294,15 +297,16 @@ def compare(client_id, day, shopify, sales_rows, sheet, lookups=None, today=None
             if result is None:
                 counts["not_checked"] += 1  # not looked up (too many, or not searchable)
                 continue
+            if not result["search_complete"]:
+                counts["not_checked"] += 1  # an unread page could hold another order with this name
+                continue
             matches = result["orders"]
             if not matches:
-                if result["search_complete"] and all_orders:
+                if all_orders:
                     add("not_in_shopify", name, "No Shopify order has this name", units=on_day)
-                elif result["search_complete"]:
+                else:
                     add("not_in_shopify", name, "Not in Shopify's last 60 days of orders "
                                                 "(older orders need read_all_orders)", units=on_day)
-                else:
-                    counts["not_checked"] += 1
                 continue
         created = [local_day(o.get("created_at")) for o in matches]
         if day in created:
@@ -328,6 +332,9 @@ def compare(client_id, day, shopify, sales_rows, sheet, lookups=None, today=None
             add("unmapped" if usage.unknown_items or unknown else "items_truncated", name,
                 when + (": " + ", ".join(usage.unknown_items + unknown) if usage.unknown_items or unknown else ""))
             continue  # not comparable: nothing is explained as timing
+        if any(item.get("changed") for item in match.get("items") or []):
+            add("edited", name, when)
+            continue  # edited or refunded lines: what is still owed is unknown, so never timing
         shop = Counter({k: v for k, v in usage.usage.items() if v})
         before = sum((label["usage"] for label in labels if label["day"] < day), Counter())
         outstanding = shop - before
@@ -352,7 +359,7 @@ def compare(client_id, day, shopify, sales_rows, sheet, lookups=None, today=None
         shipped = eod_units.get(sku, 0) if eod_units is not None else None
         sold = sheet_units.get(sku) if sheet_units is not None else None
         diff = None if shop is None or shipped is None else shipped - shop
-        wait = timing.get(sku, 0) if day_complete else None
+        wait = timing.get(sku, 0) if shop_known else None
         rows.append({"sku": sku, "label": rules.labels.get(sku, sku), "shopify_ordered": shop, "eod_shipped": shipped,
                      "sheet_sold": sold, "eod_minus_shopify": diff, "timing": wait,
                      "unexplained": None if diff is None or wait is None else diff - wait,

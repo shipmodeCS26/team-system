@@ -197,6 +197,24 @@ class LookupTests(unittest.TestCase):
         self.assertEqual(everywhere["exceptions"][0]["orders"][0]["detail"], "No Shopify order has this name")
         self.assertIn("last 60 days", recent["exceptions"][0]["orders"][0]["detail"])
 
+    def test_lookup_matches_with_or_without_hash(self):
+        old = order("#OLD", [item("Shower Hose", 1)], created="2026-08-20T15:00:00Z")
+        result = compare([], [row(1, "1x Shower Hose", order="OLD")], lookups=lookup(("OLD", [old])))
+        self.assertEqual(kinds(result), {"ordered_earlier": ["OLD"]})
+        self.assertEqual(shopify_source._name_key(" #OLD "), shopify_source._name_key("old"))
+
+    def test_incomplete_lookup_with_a_candidate_is_not_used(self):
+        old = order("#OLD", [item("Shower Hose", 1)], created="2026-08-20T15:00:00Z")
+        result = compare([], self.LABELS, lookups=lookup(("#OLD", [old]), complete=False))
+        self.assertEqual((kinds(result), result["counts"]["not_checked"]), ({}, 1))
+
+    def test_edited_earlier_order_is_never_timing(self):
+        old = order("#OLD", [item("Shower Hose", 2, changed=True)], created="2026-08-31T15:00:00Z")
+        result = compare([old], [row(1, "1x Shower Hose", order="#OLD", created="8/31/26"),
+                                 row(2, "1x Shower Hose", order="#OLD")])
+        self.assertEqual(kinds(result), {"edited": ["#OLD"]})
+        self.assertEqual((result["totals"]["timing"], result["totals"]["unexplained"]), (0, 1))
+
     def test_not_looked_up_or_incomplete_is_not_checked(self):
         for lookups in (None, lookup(("#OLD", []), complete=False)):
             result = compare([], self.LABELS, lookups=lookups)
@@ -270,6 +288,7 @@ class ShopifyLimitsTests(unittest.TestCase):
     def test_truncated_order_hides_shopify_totals(self):
         result = compare([order("#1", [item("Shower Hose", 1)], truncated=True)], [row(1, "1x Shower Hose", order="#1")])
         self.assertIsNone(result["totals"]["shopify_ordered"])
+        self.assertIsNone(result["totals"]["timing"])
         self.assertIn("items_truncated", kinds(result))
 
     def test_digital_only_orders_need_no_label(self):
@@ -295,6 +314,13 @@ class SheetColumnTests(unittest.TestCase):
         result = compare([], [], sheet=sheet)
         by = {r["sku"]: r["sheet_sold"] for r in result["rows"]}
         self.assertEqual((by["MUR001"], by["MUR004"], by["MUR002"]), (448, None, 0))
+
+    def test_dashboard_cut_off_is_not_compared(self):
+        sheet = dashboard(MUR001=448)
+        sheet["may_continue"] = True
+        result = compare([], [], sheet=sheet)
+        self.assertIsNone(result["totals"]["sheet_sold"])
+        self.assertTrue(any("may continue" in n for n in result["notes"]))
 
     def test_as_of_formats(self):
         for text in ("01 Sep 2026", "Tue, 01 Sep 2026", "9/1/2026", "2026-09-01", "Sep 1, 2026"):
