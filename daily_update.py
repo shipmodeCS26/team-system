@@ -36,6 +36,12 @@ def review_reasons(source: dict) -> list[str]:
     return reasons + list(source.get("warnings") or [])
 
 
+def usable_lines(group: dict) -> list[dict]:
+    """Lines that may appear in client text: a verified SKU and a whole, non-negative quantity."""
+    return [line for line in group["lines"] if "sku_unverified" not in line["flags"]
+            and whole_units(line.get("units")) is not None]
+
+
 def incoming_lines(incoming: dict | None) -> tuple[list[str], list[str]]:
     """Client-facing lines for open incoming shipments, and the POs held back for internal review.
     Shared by the daily update and the EOD report so both word incoming shipments the same way."""
@@ -43,8 +49,7 @@ def incoming_lines(incoming: dict | None) -> tuple[list[str], list[str]]:
     if not (incoming and incoming.get("available") and incoming.get("shipments")):
         return listed, held_back
     for group in incoming["shipments"]:
-        usable = [line for line in group["lines"] if "sku_unverified" not in line["flags"]
-                  and whole_units(line.get("units")) is not None]
+        usable = usable_lines(group)
         if len(usable) < len(group["lines"]) and group["po"] not in held_back:
             held_back.append(group["po"])  # internal review item, not client-facing (also when only partly left out)
         if not usable:

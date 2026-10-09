@@ -143,11 +143,16 @@ def writable(fn):
     def wrapper(*args, **kwargs):
         if not live():
             return jsonify(error="Sample workspace is read-only. Connect private storage and sign-in before adding real shipment data."), 409
-        expected = session.get("csrf", "")
-        if not expected or not hmac.compare_digest(expected, request.headers.get("X-CSRF-Token", "")):
+        if not csrf_ok():
             return jsonify(error="Refresh the workspace and try again."), 403
         return fn(*args, **kwargs)
     return wrapper
+
+
+def csrf_ok():
+    """The page's CSRF token, checked the same way for every state-changing or POST endpoint."""
+    expected = session.get("csrf", "")
+    return bool(expected) and hmac.compare_digest(expected, request.headers.get("X-CSRF-Token", ""))
 
 
 @app.after_request
@@ -283,8 +288,7 @@ def csrf_checked(fn):
     @wraps(fn)
     @protected
     def wrapper(*args, **kwargs):
-        expected = session.get("csrf", "")
-        if not expected or not hmac.compare_digest(expected, request.headers.get("X-CSRF-Token", "")):
+        if not csrf_ok():
             return jsonify(error="Refresh the workspace and try again."), 403
         return fn(*args, **kwargs)
     return wrapper
@@ -323,7 +327,9 @@ def eod_report():
         source = read_dashboards([selected])[0]
         if source.get("error"):
             return jsonify(error=f"{names[selected]} inventory did not load: {source['error']}"), 409
-        extra = read_incoming([selected], datetime.now(ZoneInfo("America/New_York")).date())[0]
+        # Incoming flags (e.g. past expected date) are judged on the report's own date, not today.
+        report_day = daily_orders.sheet_day(source.get("as_of")) or datetime.now(ZoneInfo("America/New_York")).date()
+        extra = read_incoming([selected], report_day)[0]
         if body.get("csv"):
             rows, missing, label = list(csv.DictReader(io.StringIO(body["csv"].lstrip("\ufeff")))), "", \
                 str(body.get("csv_name") or "uploaded CSV")[:120]

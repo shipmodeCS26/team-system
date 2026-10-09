@@ -18,6 +18,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 SHEET_ID = re.compile(r"[A-Za-z0-9_-]{20,}")
 ERROR_VALUE = re.compile(r"#(?:DIV/0!|VALUE!|REF!|N/A|NUM!|NAME\?|NULL!|ERROR!|SPILL!|CALC!)|PENDING", re.I)
 LAST_ROW = 39
+FORECAST_ONLY = {"run_out", "order_by", "suggested", "incoming"}
 log = logging.getLogger(__name__)
 _cache = {}
 _cache_lock = threading.Lock()
@@ -94,7 +95,9 @@ def parse_dashboard(values):
         row = {key: cell(index, pos) if pos is not None else "" for key, pos in positions.items()}
         if not row["status"] and len(values[index]) > 6 and cell(index, 6) == "OUT OF STOCK":
             row["status"] = "OUT OF STOCK"
-        errors = {key for key, value in row.items() if ERROR_VALUE.search(value)}
+        # Forecast-only columns (runs out, order by, suggested, incoming) are restated by the EOD report
+        # as "not shown" when pending; they do not flag the row or add a Dashboard warning.
+        errors = {key for key, value in row.items() if key not in FORECAST_ONLY and ERROR_VALUE.search(value)}
         issues += bool(errors)
         row["flags"] = sorted(errors | ({"remaining"} if row["remaining"].startswith("-") else set()))
         rows.append(row)

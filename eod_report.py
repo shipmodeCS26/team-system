@@ -8,7 +8,8 @@ Nothing here posts anywhere.
 from __future__ import annotations
 
 from eod_check import VERIFIED, parse_as_of
-from daily_update import _cover_text, _number, incoming_lines
+from daily_update import _cover_text, _number, incoming_lines, usable_lines
+from inventory import ERROR_VALUE
 
 SECTIONS = ("Inventory", "Forecast", "Incoming", "Alerts", "Actions needed", "Data status")
 ORDER_STATUSES = {"REORDER NOW", "OUT OF STOCK"}
@@ -17,7 +18,18 @@ ATTENTION = {"past_expected": "past its expected date", "needs_transfer": "needs
 
 
 def _value(row: dict, key: str) -> str:
-    return row.get(key) or "not shown"
+    # A pending or formula-error cell (e.g. #N/A in Order By) is never restated as if it were a value.
+    value = row.get(key) or ""
+    return "not shown" if not value or ERROR_VALUE.search(value) else value
+
+
+def _client_flags(incoming: dict | None):
+    """(PO, flags) for the shipments the client text includes. Lines held back for internal review
+    (unverified SKU or quantity) never surface in Alerts or Actions either."""
+    for group in (incoming or {}).get("shipments") or []:
+        usable = usable_lines(group)
+        if usable:
+            yield group["po"], sorted({flag for line in usable for flag in line["flags"]})
 
 
 def _inventory(rows: list[dict]) -> list[str]:
@@ -29,7 +41,7 @@ def _forecast(rows: list[dict]) -> list[str]:
     lines = []
     for row in rows:
         parts = [f"{_value(row, 'demand')}/day", _cover_text(row.get("cover", ""))]
-        if row.get("run_out"):
+        if _value(row, "run_out") != "not shown":
             parts.append(f"runs out {row['run_out']}")
         parts += [f"order by {_value(row, 'order_by')}", f"suggested order {_value(row, 'suggested')}"]
         lines.append(f"• {row['product']}: " + " | ".join(parts))
@@ -63,10 +75,10 @@ def _alerts(rows: list[dict], as_of, incoming: dict | None) -> list[str]:
             alerts.append(f"• {row['product']}: order-by date {row['order_by']} has been reached.")
         if row.get("flags"):
             alerts.append(f"• {row['product']}: the Sheet shows a pending or error value.")
-    for group in (incoming or {}).get("shipments") or []:
-        for flag in group.get("flags", []):
+    for po, flags in _client_flags(incoming):
+        for flag in flags:
             if flag in ATTENTION:
-                alerts.append(f"• {group['po']} {ATTENTION[flag]}.")
+                alerts.append(f"• {po} {ATTENTION[flag]}.")
     return alerts or ["• None."]
 
 
@@ -77,9 +89,9 @@ def _actions(rows: list[dict], as_of, incoming: dict | None) -> list[str]:
             suggested = _number(row.get("suggested", ""))
             amount = f" (suggested {row['suggested']} units)" if suggested and suggested > 0 else ""
             actions.append(f"• Confirm a purchase order for {row['product']}{amount}.")
-    for group in (incoming or {}).get("shipments") or []:
-        if "needs_transfer" in group.get("flags", []):
-            actions.append(f"• {group['po']}: please book the transfer to our Miami warehouse.")
+    for po, flags in _client_flags(incoming):
+        if "needs_transfer" in flags:
+            actions.append(f"• {po}: please book the transfer to our Miami warehouse.")
     actions.append("• Share tracking and quantities for any new shipment to our warehouse.")
     return actions
 
@@ -104,7 +116,12 @@ def build_report(client_id: str, client_name: str, source: dict, check: dict,
     as_of = parse_as_of(source.get("as_of", ""))
     listed, held_back = incoming_lines(incoming)
     if not listed:
-        listed = ["• Not included today."] if incoming_error else ["• None logged."]
+        if incoming_error:
+            listed = ["• Not included today."]
+        elif incoming is not None and not incoming.get("available"):
+            listed = ["• Not tracked in this report."]  # the workbook has no Incoming Stocks tab
+        else:
+            listed = ["• None logged."]
 
     sections = [
         {"title": "Inventory", "lines": _inventory(rows)},

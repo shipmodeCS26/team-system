@@ -183,6 +183,57 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(any("FAC3XBDL" in r and "not approved" in r for r in report["hold_reasons"]))
 
 
+class ReviewFixTests(unittest.TestCase):
+    """Fixes from the independent review of PR #22."""
+
+    def test_held_back_po_never_reaches_alerts_or_actions(self):
+        incoming = {"available": True, "shipments": [{"po": "PO-9", "flags": ["needs_transfer", "sku_unverified"], "lines": [
+            {"po": "PO-9", "product": "", "sku": "", "units": "100", "flags": ["sku_unverified", "needs_transfer"],
+             "where": "", "expected_date": ""}]}]}
+        source = parse_dashboard(SHEETS["puravita"])
+        report = build_report("puravita", "PuraVita", source, check("puravita", source, csv_for("puravita")), incoming)
+        self.assertNotIn("PO-9", "\n".join(report["sections"][3]["lines"] + report["sections"][4]["lines"]))
+        self.assertEqual(report["held_back"], ["PO-9"])
+
+    def test_no_shipments_never_hides_a_failed_read(self):
+        values = [list(r) for r in SHEETS["fascial-labs"]]
+        values[14][2] = "0"
+        result = check("fascial-labs", parse_dashboard(values), None, no_shipments_confirmed=True,
+                       missing_reason="The Daily Sales tab could not be read: denied")
+        self.assertEqual(result["status"], INCOMPLETE)
+        self.assertIn("The Daily Sales tab could not be read: denied", result["reasons"])
+
+    def test_one_bad_old_date_is_named_and_does_not_stop_the_check(self):
+        rows = csv_for("puravita") + [row("puravita", "", "1x Puravita Magnesium Performance Capsules (CAP-MAGNESIUM-360)", "T0")]
+        result = check("puravita", parse_dashboard(SHEETS["puravita"]), rows, csv_name="Daily Sales tab")
+        self.assertEqual(result["checks"][0]["csv"], 300)
+        self.assertEqual(result["status"], REVIEW)
+        self.assertTrue(any("Daily Sales tab row 3" in reason for reason in result["reasons"]))
+
+    def test_broken_channel_setting_is_no_channel_and_filename_is_safe(self):
+        report, _ = report_for("puravita")
+        with patch.dict(os.environ, {"CLIENT_CHANNELS_JSON": "{puravita: C1,}"}):
+            result = slack_draft.draft("puravita", {**report, "as_of": "Mon, 05/10/2026"})
+        self.assertIsNone(result["channel"])
+        self.assertEqual(result["attach"], "puravita-dashboard-Mon-05-10-2026.png")
+
+    def test_pending_forecast_cell_is_not_shown_and_does_not_hold(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[14][8] = "#N/A"
+        source = parse_dashboard(values)
+        self.assertEqual((source["rows"][0]["flags"], source["warnings"]), ([], []))
+        report = build_report("puravita", "PuraVita", source, check("puravita", source, csv_for("puravita")))
+        self.assertIn("order by not shown", "\n".join(report["sections"][1]["lines"]))
+        self.assertNotIn("#N/A", report["text"])
+        self.assertTrue(report["ready_to_send"])
+
+    def test_missing_incoming_tab_says_not_tracked(self):
+        source = parse_dashboard(SHEETS["puravita"])
+        report = build_report("puravita", "PuraVita", source, check("puravita", source, csv_for("puravita")),
+                              {"available": False})
+        self.assertEqual(report["sections"][2]["lines"], ["• Not tracked in this report."])
+
+
 class IsolationTests(unittest.TestCase):
     IDENTIFIERS = {
         "puravita": ["PuraVita", "Puravita", "PVT0", "Magnesium Performance", "CAP-MAGNESIUM"],
@@ -295,6 +346,8 @@ class EndpointTests(unittest.TestCase):
         with patch("app.daily_sales_rows", return_value=(csv_for("puravita"), None)) as sales:
             data = self.post({"client_id": "puravita"}).get_json()
         sales.assert_called_once_with("puravita")
+        from datetime import date
+        self.assertEqual(_incoming.call_args[0][1], date(2026, 9, 28))  # incoming judged on the report date
         self.assertEqual(data["report"]["status"], VERIFIED)
         self.assertEqual(data["report"]["check"]["csv"], "Daily Sales tab")
 
