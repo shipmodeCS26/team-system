@@ -513,5 +513,25 @@ class CodexRoundThreeTests(unittest.TestCase):
         self.assertTrue(any("excluded" in r for r in result["reasons"]))
 
 
+class CodexRoundFourTests(unittest.TestCase):
+    """Fixes from the Codex review of PR #22 (367e3f9)."""
+
+    def test_single_non_miami_origin_holds(self):
+        source = parse_dashboard(SHEETS["puravita"])
+        for origin in ("Reno, NV, 89502", ""):
+            rows = [dict(r, **{"Origin Address": origin}) for r in csv_for("puravita")]
+            result = check("puravita", source, rows)
+            self.assertNotEqual(result["status"], VERIFIED, origin)
+            self.assertTrue(any("did not originate in Miami" in r for r in result["reasons"]), origin)
+
+    def test_long_cell_text_keeps_the_image_bounded(self):
+        from io import BytesIO
+        from PIL import Image
+        source = parse_dashboard(SHEETS["puravita"])
+        source["rows"][0]["product"] = "x" * 100000
+        image = Image.open(BytesIO(render_png("PuraVita", source, VERIFIED)))
+        self.assertLess(image.width, 4000)
+
+
 if __name__ == "__main__":
     unittest.main()

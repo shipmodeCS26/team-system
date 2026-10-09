@@ -88,6 +88,9 @@ def check(client_id: str, source: dict, csv_rows: list[dict] | None, *,
         if day is not None:
             usage, orders = day.usage, day.orders
             result["reasons"] += day.flags + day.unknown_items + day.duplicate_tracking_excluded
+            other = [origin for origin in day.usage_by_origin if origin != "Miami"]
+            if other and len(day.usage_by_origin) == 1:  # more than one origin is already flagged
+                result["reasons"].append(f"Shipments did not originate in Miami: {', '.join(other)}.")
             result["voided_excluded"] = day.voided_excluded
         elif missing is None:
             missing = f"The shipments ({csv_name or 'export'}) have no rows dated {report_date:%d %b %Y}."

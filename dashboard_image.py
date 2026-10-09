@@ -25,6 +25,9 @@ COLUMNS = (("product", "Product"), ("starting", "Starting"), ("shipped", "Shippe
            ("suggested", "Suggested order"), ("incoming", "Incoming"))
 OPTIONAL = {"run_out", "incoming"}
 SCALE = 2
+MAX_CELL = {"product": 60}  # characters; a long Sheet value is cut with "…" so the canvas stays bounded
+MAX_OTHER_CELL = 28
+MAX_ROWS = 200
 
 
 def _font(name: str, size: int):
@@ -39,6 +42,12 @@ def _width(draw, text, font) -> int:
     return int(draw.textlength(text, font=font))
 
 
+def _cell(row: dict, key: str) -> str:
+    text = " ".join(str(row.get(key, "")).split())
+    limit = MAX_CELL.get(key, MAX_OTHER_CELL)
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
 def render_png(client_name: str, source: dict, status: str) -> bytes:
     body = _font("barlow-latin-400-normal.woff2", 15)
     bold = _font("barlow-latin-600-normal.woff2", 15)
@@ -46,13 +55,13 @@ def render_png(client_name: str, source: dict, status: str) -> bytes:
     title = _font("barlow-condensed-latin-800-italic.woff2", 30)
     big = _font("barlow-condensed-latin-800-italic.woff2", 34)
     s = SCALE
-    rows = source.get("rows") or []
+    rows = (source.get("rows") or [])[:MAX_ROWS]
     columns = [(key, label) for key, label in COLUMNS
                if key not in OPTIONAL or any(row.get(key) for row in rows)]
 
     probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
     pad = 12 * s
-    widths = [max([_width(probe, label, bold)] + [_width(probe, str(row.get(key, "")), body) for row in rows])
+    widths = [max([_width(probe, label, bold)] + [_width(probe, _cell(row, key), body) for row in rows])
               + 2 * pad for key, label in columns]
     margin = 24 * s
     width = max(sum(widths) + 2 * margin, 980 * s)
@@ -106,7 +115,7 @@ def render_png(client_name: str, source: dict, status: str) -> bytes:
             draw.rectangle([margin, top, width - margin, top + row_h], fill=SURFACE)
         x = margin
         for (key, _label), w in zip(columns, widths):
-            text = str(row.get(key, ""))
+            text = _cell(row, key)
             color = ROW_STATUS.get(text.upper(), "#C27A00") if key == "status" and text else INK
             if key in row.get("flags", []):
                 color = "#C27A00"
