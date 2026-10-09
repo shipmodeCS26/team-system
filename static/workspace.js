@@ -122,7 +122,7 @@ async function openDailyUpdate(){
 async function openEodReport(noShipments=false){
   const button=$("eod-button"),client=state.client,ticket=state.eodRequest=(state.eodRequest||0)+1;button.disabled=true;
   try{
-    const result=await api("/api/eod-report",{method:"POST",body:JSON.stringify({client_id:client,no_shipments_confirmed:noShipments})});
+    const result=await api("/api/eod-report",{method:"POST",body:JSON.stringify({client_id:client,no_shipments_confirmed:noShipments,as_of:noShipments?state.eodAsOf:undefined})});
     if(client!==state.client||ticket!==state.eodRequest)return;  // never show another client's report
     const r=result.report,ready=result.draft.ready_to_send,holds=[...r.hold_reasons,...(r.ready_to_send&&result.draft.note?[result.draft.note]:[])];
     $("eod-client").textContent=clientName(client);
@@ -131,7 +131,8 @@ async function openEodReport(noShipments=false){
     $("eod-hold").innerHTML=ready?"":`<strong>Hold, do not send (${esc(r.status)})</strong><ul>${(holds.length?holds:["Not verified."]).map(t=>`<li>${esc(t)}</li>`).join("")}</ul>`;$("eod-hold").hidden=ready;
     const notes=[...(r.notes||[]),r.ready_to_send?"":result.draft.note||"",r.check.rules&&r.check.rules!=="APPROVED"?`SKU rules for this client are ${r.check.rules}; the check uses them until ShipMode approves them.`:""].filter(Boolean);
     $("eod-note").textContent=notes.join(" ");$("eod-note").hidden=!notes.length;
-    $("eod-no-shipments").checked=noShipments;
+    state.eodAsOf=r.as_of;  // a confirmation is sent with the date it was made for
+    $("eod-no-shipments").checked=Boolean(r.check.no_shipments_confirmed);
     $("eod-image").src=result.image;$("eod-download").href=result.image;$("eod-download").download=result.draft.attach;
     $("eod-text").value=r.text;
     $("eod-read-at").textContent=`Built from the Sheet as read ${result.sheet_read_at?date(result.sheet_read_at,true):"just now"}.`;

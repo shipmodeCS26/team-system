@@ -347,11 +347,17 @@ def eod_report():
             (rows, missing), label = daily_sales_rows(selected), "Daily Sales tab"
     except (ValueError, KeyError, json.JSONDecodeError):
         return jsonify(error="Inventory configuration is invalid or incomplete."), 503
+    confirmed = body.get("no_shipments_confirmed") is True
+    # The warehouse confirmation is for the date the person saw; a Sheet that moved on since needs a new one.
+    stale_confirmation = confirmed and body.get("as_of") != source.get("as_of")
     result = eod_check(selected, source, rows, csv_name=label, missing_reason=missing or "",
-                       no_shipments_confirmed=body.get("no_shipments_confirmed") is True)
+                       no_shipments_confirmed=confirmed and not stale_confirmation)
+    if stale_confirmation:
+        result["reasons"].append(f"'No shipments confirmed' was for {body.get('as_of') or 'another date'}; "
+                                 f"the Sheet is now as of {source.get('as_of') or 'an unknown date'}. Confirm again.")
     report = build_report(selected, names[selected], source, result,
                           None if extra.get("error") else extra, extra.get("error"),
-                          incoming_backdated=report_day < today)
+                          incoming_backdated=report_day != today)
     image = base64.b64encode(render_png(names[selected], source, report["status"])).decode()
     return {"report": report, "draft": slack_draft(selected, report), "image": f"data:image/png;base64,{image}",
             "sheet_read_at": source.get("fetched_at"), "writes": "disabled"}

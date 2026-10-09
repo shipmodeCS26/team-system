@@ -34,7 +34,7 @@ def main(argv=None) -> int:
     parser.add_argument("--csv", help="ShipSidekick CSV export for this client")
     parser.add_argument("--no-shipments-confirmed", action="store_true",
                         help="The warehouse confirmed no shipments on the as-of date")
-    parser.add_argument("--incoming", help="Parsed Incoming Stocks JSON (optional)")
+    parser.add_argument("--incoming", help="Parsed Incoming Stocks JSON; without it the report is held")
     parser.add_argument("--out", required=True, help="Output folder outside the repository (client data)")
     args = parser.parse_args(argv)
 
@@ -46,7 +46,10 @@ def main(argv=None) -> int:
     result = check(args.client, source, rows, csv_name=os.path.basename(args.csv or ""),
                    no_shipments_confirmed=args.no_shipments_confirmed)
     incoming = _json(args.incoming) if args.incoming else None
-    report = build_report(args.client, NAMES[args.client], source, result, incoming)
+    # Without --incoming the Incoming section was never read: hold rather than say "None logged".
+    report = build_report(args.client, NAMES[args.client], source, result, incoming,
+                          None if args.incoming else "no Incoming Stocks file was given (--incoming).")
+    slack = draft(args.client, report)
     os.makedirs(args.out, exist_ok=True)
     base = os.path.join(args.out, args.client)
     with open(f"{base}-eod.txt", "w", encoding="utf-8") as handle:
@@ -54,10 +57,11 @@ def main(argv=None) -> int:
     with open(f"{base}-dashboard.png", "wb") as handle:
         handle.write(render_png(NAMES[args.client], source, report["status"]))
     with open(f"{base}-report.json", "w", encoding="utf-8") as handle:
-        json.dump({"report": report, "draft": draft(args.client, report)}, handle, indent=2, default=str)
+        json.dump({"report": report, "draft": slack}, handle, indent=2, default=str)
     print(report["text"])
-    print(f"\nStatus: {report['status']}  Ready to send: {report['ready_to_send']}", file=sys.stderr)
-    return 0 if report["ready_to_send"] else 2
+    note = f"  ({slack['note']})" if report["ready_to_send"] and slack.get("note") else ""
+    print(f"\nStatus: {report['status']}  Ready to send: {slack['ready_to_send']}{note}", file=sys.stderr)
+    return 0 if slack["ready_to_send"] else 2
 
 
 if __name__ == "__main__":

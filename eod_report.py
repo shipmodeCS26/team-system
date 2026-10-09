@@ -19,7 +19,8 @@ FORMULA_ERROR = re.compile(r"^\s*#(?:DIV/0!|VALUE!|REF!|N/A|NUM!|NAME\?|NULL!|ER
 SECTIONS = ("Inventory", "Forecast", "Incoming", "Alerts", "Actions needed", "Data status")
 ORDER_STATUSES = {"REORDER NOW", "OUT OF STOCK"}
 ATTENTION = {"past_expected": "past its expected date", "needs_transfer": "needs a transfer to Miami",
-             "missing_boxes": "arrived with missing boxes"}
+             "missing_boxes": "arrived with missing boxes",
+             "receipt_not_recorded": "is marked arrived but its received boxes are not recorded"}
 
 
 def _value(row: dict, key: str) -> str:
@@ -97,6 +98,8 @@ def _actions(rows: list[dict], as_of, incoming: dict | None) -> list[str]:
     for po, flags in _client_flags(incoming):
         if "needs_transfer" in flags:
             actions.append(f"• {po}: please book the transfer to our Miami warehouse.")
+        if "receipt_not_recorded" in flags:
+            actions.append(f"• {po}: record the boxes received in the Incoming Stocks tab.")
     actions.append("• Share tracking and quantities for any new shipment to our warehouse.")
     return actions
 
@@ -153,7 +156,7 @@ def build_report(client_id: str, client_name: str, source: dict, check: dict,
     if incoming_backdated:
         # The Incoming Stocks tab only holds today's state: lines received since the report date have
         # already moved to history, so the Incoming section can't be shown as of that date.
-        hold.append("The Sheet's date is before today; Incoming shipments can only be read as of today.")
+        hold.append("The Sheet's date is not today; Incoming shipments can only be read as of today.")
     notes = [f"Left out of Incoming until SKU and quantity are verified: {', '.join(held_back)}."] if held_back else []
     if held_back:
         # The Incoming section would be incomplete: hold until those lines are verified in the Sheet.

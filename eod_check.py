@@ -48,14 +48,15 @@ def check(client_id: str, source: dict, csv_rows: list[dict] | None, *,
     if csv_rows is not None:
         # Only the report date's rows are recounted. A row whose Created Date can't be read could be
         # one of them, so it is named (Sheet row number) and holds the report; it never stops the check.
-        dated, seen = [], {}
+        dated, numbers, seen = [], [], {}
         mine = lambda row: (str(row.get("Organization") or "").strip().lower() == rules.organization.lower()
                             and not is_voided(row.get("Voided", "")))
         for number, row in enumerate(csv_rows, start=2):
             try:
                 created = parse_created_date(row.get("Created Date", ""))
             except ValueError:
-                if any(str(value or "").strip() for value in row.values()):
+                # A voided row is excluded whatever its date, so an unreadable date there holds nothing.
+                if not is_voided(row.get("Voided", "")) and any(str(value or "").strip() for value in row.values()):
                     result["reasons"].append(f"{csv_name or 'Shipments'} row {number}: Created Date "
                                              f"{row.get('Created Date', '')!r} can't be read; it may belong to this date.")
                 continue
@@ -64,6 +65,7 @@ def check(client_id: str, source: dict, csv_rows: list[dict] | None, *,
                 seen.setdefault(tracking, []).append((number, created))
             if created == report_date:
                 dated.append(row)
+                numbers.append(number)
                 if mine(row) and not str(row.get("Items") or "").strip():
                     # Contents can't be recounted, so a zero here would not be proof of zero units.
                     result["reasons"].append(f"{csv_name or 'Shipments'} row {number}: a shipment on this date has no Items.")
@@ -74,7 +76,7 @@ def check(client_id: str, source: dict, csv_rows: list[dict] | None, *,
                 rows_text = ", ".join(str(number) for number, _ in uses)
                 result["reasons"].append(f"Tracking {tracking} appears on more than one date (rows {rows_text}).")
         try:
-            day = build_eod(dated, rules).get(report_date)
+            day = build_eod(dated, rules, numbers).get(report_date)
         except ValueError as error:
             result["reasons"].append(f"The shipments could not be read: {error}.")
             day = None

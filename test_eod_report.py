@@ -499,6 +499,19 @@ class EndpointTests(unittest.TestCase):
         self.assertFalse(data["report"]["ready_to_send"])
         self.assertTrue(any("as of today" in r for r in data["report"]["hold_reasons"]))
 
+    @patch("app.read_incoming", return_value=[{"id": "puravita", "available": False}])
+    @patch("app.read_dashboards")
+    def test_no_shipments_confirmation_for_another_date_is_not_applied(self, dashboards, _incoming):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[14][2] = "0"
+        dashboards.return_value = [parse_dashboard(values) | {"id": "puravita"}]
+        with patch("app.daily_sales_rows", return_value=([], None)):
+            stale = self.post({"client_id": "puravita", "no_shipments_confirmed": True, "as_of": "27 Sep 2026"}).get_json()
+            fresh = self.post({"client_id": "puravita", "no_shipments_confirmed": True, "as_of": "28 Sep 2026"}).get_json()
+        self.assertFalse(stale["report"]["ready_to_send"])
+        self.assertTrue(any("Confirm again" in r for r in stale["report"]["hold_reasons"]))
+        self.assertEqual(fresh["report"]["check_status"], VERIFIED)
+
 
 class CodexRoundThreeTests(unittest.TestCase):
     """Fixes from the Codex review of PR #22 (c049d7b)."""
@@ -531,6 +544,58 @@ class CodexRoundFourTests(unittest.TestCase):
         source["rows"][0]["product"] = "x" * 100000
         image = Image.open(BytesIO(render_png("PuraVita", source, VERIFIED)))
         self.assertLess(image.width, 4000)
+
+
+class CodexRoundFiveTests(unittest.TestCase):
+    """Fixes from the Codex review of PR #22 (001d130)."""
+
+    def setUp(self):
+        self.source = parse_dashboard(SHEETS["puravita"])
+
+    def test_voided_row_with_bad_date_does_not_hold(self):
+        rows = csv_for("puravita") + [dict(row("puravita", "", "1x X", "T9"), Voided="Yes")]
+        self.assertEqual(check("puravita", self.source, rows)["status"], VERIFIED)
+
+    def test_hold_reasons_keep_original_row_numbers(self):
+        rows = [row("puravita", "9/20/26", "1x Puravita Magnesium Performance Capsules (CAP-MAGNESIUM-360)", f"E{i}")
+                for i in range(5)] + csv_for("puravita") + [row("fascial-labs", "9/28/26", "1x Y", "F1")]
+        reasons = check("puravita", self.source, rows)["reasons"]
+        self.assertTrue(any(r.startswith("Row 8:") for r in reasons), reasons)
+
+    def test_receipt_not_recorded_is_an_alert_and_action(self):
+        incoming = {"available": True, "shipments": [{"po": "PO-7", "flags": ["receipt_not_recorded"], "lines": [
+            {"po": "PO-7", "product": "Caps", "sku": "CAP-MAGNESIUM-360", "units": "100",
+             "flags": ["receipt_not_recorded"], "where": "", "expected_date": ""}]}]}
+        report = build_report("puravita", "PuraVita", self.source, check("puravita", self.source, csv_for("puravita")), incoming)
+        self.assertTrue(any("PO-7" in line for line in report["sections"][3]["lines"]))
+        self.assertTrue(any("PO-7" in line for line in report["sections"][4]["lines"]))
+
+    def test_future_dated_report_holds(self):
+        report = build_report("puravita", "PuraVita", self.source, check("puravita", self.source, csv_for("puravita")),
+                              {"available": False}, incoming_backdated=True)
+        self.assertFalse(report["ready_to_send"])
+
+    def test_cli_holds_without_incoming_and_without_a_channel(self):
+        import tempfile, csv as csvmod
+        import eod_cli
+        with tempfile.TemporaryDirectory() as folder:
+            dash, export = os.path.join(folder, "d.json"), os.path.join(folder, "e.csv")
+            with open(dash, "w") as handle:
+                json.dump(SHEETS["puravita"], handle)
+            with open(export, "w", newline="") as handle:
+                writer = csvmod.DictWriter(handle, fieldnames=list(csv_for("puravita")[0]))
+                writer.writeheader(); writer.writerows(csv_for("puravita"))
+            incoming = os.path.join(folder, "i.json")
+            with open(incoming, "w") as handle:
+                json.dump({"available": False}, handle)
+            out = os.path.join(folder, "out")
+            with patch.dict(os.environ, {"CLIENT_CHANNELS_JSON": json.dumps(CHANNELS)}):
+                self.assertEqual(eod_cli.main(["puravita", "--dashboard", dash, "--csv", export, "--out", out]), 2)
+                self.assertEqual(eod_cli.main(["puravita", "--dashboard", dash, "--csv", export, "--incoming", incoming,
+                                               "--out", out]), 0)
+            with patch.dict(os.environ, {"CLIENT_CHANNELS_JSON": "{}"}):
+                self.assertEqual(eod_cli.main(["puravita", "--dashboard", dash, "--csv", export, "--incoming", incoming,
+                                               "--out", out]), 2)
 
 
 if __name__ == "__main__":
