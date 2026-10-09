@@ -13,13 +13,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
-from inventory import ERRORS as SHEET_ERRORS, SHEET_ID, SourceError, source_config
+from inventory import ERROR_VALUE, ERRORS as SHEET_ERRORS, SHEET_ID, SourceError, source_config
 from ledger_sources import SheetReader, column_letter, parse_day, parse_int
 
 log = logging.getLogger(__name__)
 TAB = "'Incoming Stocks'"
 LAST_ROW = 2000  # reaching this row is reported as truncated, never silently dropped
-PROBE_ROWS = 20000  # rows past LAST_ROW checked for any data, so a blank row 2000 can't hide more
 CACHE_SECONDS = 45
 COLUMNS = {
     "po": "PO (Every Row)", "tracking": "Tracking (Every Row)", "product": "Product (Report Name)",
@@ -86,7 +85,8 @@ def line_flags(line: dict, today: date) -> list[str]:
         flags.append("receipt_not_recorded")
     if "transfer" in status and (TRANSFER_NEGATED.search(status) or not TRANSFER_DONE.search(status)):
         flags.append("needs_transfer")
-    if line["treatment"].upper().startswith("REVIEW") or line["sku"].upper() in ("", "REVIEW"):
+    if (line["treatment"].upper().startswith("REVIEW") or line["sku"].upper() in ("", "REVIEW")
+            or ERROR_VALUE.search(line["sku"])):  # a #REF!, #N/A or PENDING SKU is not a verified SKU
         flags.append("sku_unverified")
     expected_day = parse_day(line["expected_date"])
     if expected_day and expected_day < today and nothing_received:
@@ -137,10 +137,10 @@ def parse_incoming(values_by_key: dict[str, list], today: date) -> dict:
             "unverified_lines": unverified}
 
 
-def _read_one(client_id: str, sheet_id: str, credentials: dict, today: date) -> dict:
+def _read_one(client_id: str, sheet_id: str, credentials: dict, today: date, fresh: bool = False) -> dict:
     with _lock:
         cached = _cache.get((client_id, sheet_id, today))  # flags depend on the date they are judged on
-        if cached and time.monotonic() - cached[0] < CACHE_SECONDS:
+        if cached and not fresh and time.monotonic() - cached[0] < CACHE_SECONDS:
             return cached[1]
     reader = SheetReader(sheet_id, credentials)
     header = (reader.batch([f"{TAB}!1:1"], optional=True)[0] or [[]])[0]
@@ -152,7 +152,7 @@ def _read_one(client_id: str, sheet_id: str, credentials: dict, today: date) -> 
             raise SourceError("incoming_layout")
         letters = {key: column_letter(positions[name]) for key, name in COLUMNS.items()}
         blocks = reader.batch([f"{TAB}!{letter}2:{letter}{LAST_ROW}" for letter in letters.values()]
-                              + [f"{TAB}!{letter}{LAST_ROW + 1}:{letter}{PROBE_ROWS}" for letter in letters.values()])
+                              + [f"{TAB}!{letter}{LAST_ROW + 1}:{letter}" for letter in letters.values()])  # to the tab's end
         result = {"id": client_id, **parse_incoming(dict(zip(letters, blocks)), today)}
         beyond = blocks[len(letters):]
         if any(str(cell).strip() for column in beyond for row in (column or []) for cell in (row or [])):
@@ -166,12 +166,12 @@ def _read_one(client_id: str, sheet_id: str, credentials: dict, today: date) -> 
     return result
 
 
-def read_incoming(client_ids: list[str], today: date) -> list[dict]:
-    """Each client is read separately; one failure never hides another."""
+def read_incoming(client_ids: list[str], today: date, fresh: bool = False) -> list[dict]:
+    """Each client is read separately; one failure never hides another. `fresh` skips the cache."""
     sources, credentials = source_config()
     out = []
     with ThreadPoolExecutor(max_workers=max(1, min(6, len(client_ids)))) as pool:
-        futures = {cid: pool.submit(_read_one, cid, sources[cid], credentials, today)
+        futures = {cid: pool.submit(_read_one, cid, sources[cid], credentials, today, fresh)
                    for cid in client_ids
                    if isinstance(sources.get(cid), str) and SHEET_ID.fullmatch(sources[cid])}
         for cid in client_ids:

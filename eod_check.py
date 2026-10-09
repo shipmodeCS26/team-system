@@ -19,6 +19,7 @@ import ssk_check
 from daily_orders import sheet_day
 from eod import REQUIRED_COLUMNS, build_eod, is_voided, parse_created_date
 from incoming import whole_units
+from inventory import ERROR_VALUE
 from ledger_sources import parse_int
 
 VERIFIED, REVIEW, INCOMPLETE = "VERIFIED", "REVIEW", "INCOMPLETE"
@@ -77,6 +78,10 @@ def check(client_id: str, source: dict, csv_rows: list[dict] | None, *,
             if created == report_date:
                 dated.append(row)
                 numbers.append(number)
+                if ERROR_VALUE.search(str(row.get("Voided") or "")):
+                    # Can't tell whether this shipment should be excluded, so it can't be counted either way.
+                    result["reasons"].append(f"{csv_name or 'Shipments'} row {number}: Voided shows "
+                                             f"{str(row.get('Voided')).strip()!r}; it can't be read.")
                 if mine(row) and not str(row.get("Items") or "").strip():
                     # Contents can't be recounted, so a zero here would not be proof of zero units.
                     result["reasons"].append(f"{csv_name or 'Shipments'} row {number}: a shipment on this date has no Items.")

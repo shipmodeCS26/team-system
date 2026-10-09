@@ -511,6 +511,7 @@ class EndpointTests(unittest.TestCase):
             stale = self.post({"client_id": "puravita", "no_shipments_confirmed": True, "as_of": "27 Sep 2026"}).get_json()
             fresh = self.post({"client_id": "puravita", "no_shipments_confirmed": True, "as_of": "28 Sep 2026"}).get_json()
         dashboards.assert_called_with(["puravita"], fresh=True)  # never the cached Dashboard
+        self.assertTrue(_incoming.call_args.kwargs.get("fresh"))  # nor the cached Incoming read
         self.assertFalse(stale["report"]["ready_to_send"])
         self.assertTrue(any("Confirm again" in r for r in stale["report"]["hold_reasons"]))
         self.assertEqual(fresh["report"]["check_status"], VERIFIED)
@@ -671,6 +672,25 @@ class CodexRoundEightTests(unittest.TestCase):
         alerts = build_report("puravita", "PuraVita", source, check("puravita", source, csv_for("puravita")))["sections"][3]["lines"]
         self.assertFalse(any("pending or error" in a for a in alerts), alerts)
         self.assertTrue(any("out of stock" in a for a in alerts), alerts)
+
+
+class CodexRoundNineTests(unittest.TestCase):
+    """Fixes from the Codex review of PR #22 (c9cc648)."""
+
+    def test_unreadable_voided_value_holds(self):
+        source = parse_dashboard(SHEETS["puravita"])
+        rows = [dict(r, Voided="#REF!") for r in csv_for("puravita")]
+        result = check("puravita", source, rows)
+        self.assertNotEqual(result["status"], VERIFIED)
+        self.assertTrue(any("Voided shows" in r for r in result["reasons"]))
+
+    def test_error_sku_is_unverified(self):
+        from incoming import line_flags
+        from datetime import date
+        line = {"status": "", "boxes_expected": "", "boxes_received": "", "units_received": "",
+                "received_date": "", "treatment": "", "sku": "#REF!", "expected_date": "", "included": ""}
+        with patch("incoming._history", return_value=False):
+            self.assertIn("sku_unverified", line_flags(line, date(2026, 9, 28)))
 
 
 if __name__ == "__main__":

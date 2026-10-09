@@ -341,7 +341,7 @@ def eod_report():
         # Incoming flags (e.g. past expected date) are judged on the report's own date, not today.
         today = warehouse_today()
         report_day = daily_orders.sheet_day(source.get("as_of")) or today
-        extra = read_incoming([selected], report_day)[0]
+        extra = read_incoming([selected], report_day, fresh=confirmed)[0]
         if body.get("csv") is not None:  # an uploaded CSV is the override, even when it is empty
             reader = csv.DictReader(io.StringIO(body["csv"].lstrip("\ufeff")))
             rows, missing, label = list(reader), "", str(body.get("csv_name") or "uploaded CSV")[:120]
