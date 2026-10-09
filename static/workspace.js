@@ -191,18 +191,20 @@ function exportSsk(){
 function renderDaily(){
   const d=state.daily, r=d&&d.status==="done"?d.result:null, one=state.client!=="all";
   const fmt=n=>n==null?"—":Number(n).toLocaleString(), diff=n=>n==null?"—":n===0?"0":`<strong>${n>0?"+":""}${Number(n).toLocaleString()}</strong>`;
-  $("daily-check").disabled=!one||d?.status==="running";
+  const mapped=(state.data?.shopify_orders||[]).includes(state.client);
+  $("daily-check").disabled=!one||!mapped||d?.status==="running";
   $("daily-error").hidden=!(d&&(d.status==="failed"||r?.error));
   $("daily-error").textContent=d?.status==="failed"?d.error:r?.error||"";
   const empty=(title,text)=>`<tr><td colspan="8" class="empty-cell"><strong>${esc(title)}</strong>${esc(text)}</td></tr>`;
   if(!one){$("daily-rows").innerHTML=empty("Choose one client","The comparison runs for one client and one day at a time.");$("daily-extra").innerHTML="";$("daily-export").disabled=true;return}
+  if(!mapped){$("daily-rows").innerHTML=empty("No Shopify store connected","This client's Shopify store is not mapped in the private deployment settings yet.");$("daily-extra").innerHTML="";$("daily-export").disabled=true;return}
   if(!d){$("daily-rows").innerHTML=empty("Not checked","Choose a day, then Compare.");$("daily-extra").innerHTML="";$("daily-export").disabled=true;return}
   if(d.status==="running"){$("daily-rows").innerHTML=empty("Reading Shopify…",`${Number(d.orders_read||0).toLocaleString()} orders read so far. Shopify paces reads, so a busy day can take a minute or two.`);$("daily-extra").innerHTML="";$("daily-export").disabled=true;return}
   if(!r||r.error){$("daily-rows").innerHTML=empty("No comparison",r?.error||d.error||"");$("daily-extra").innerHTML="";$("daily-export").disabled=true;return}
   const t=r.totals;
   $("daily-rows").innerHTML=r.rows.map(x=>`<tr><td><strong>${esc(x.sku)} · ${esc(x.label)}</strong></td><td>${fmt(x.shopify_ordered)}</td><td>${fmt(x.eod_shipped)}</td><td>${fmt(x.sheet_sold)}</td><td>${diff(x.eod_minus_shopify)}</td><td>${fmt(x.timing)}</td><td>${diff(x.unexplained)}</td><td>${diff(x.sheet_minus_eod)}</td></tr>`).join("")+`<tr><td><strong>Total</strong><small>${esc(r.date)} · ${r.counts.orders.toLocaleString()} Shopify orders · ${r.counts.eod_orders.toLocaleString()} EOD orders</small></td><td><strong>${fmt(t.shopify_ordered)}</strong></td><td><strong>${fmt(t.eod_shipped)}</strong></td><td><strong>${fmt(t.sheet_sold)}</strong></td><td>${diff(t.eod_minus_shopify)}</td><td>${fmt(t.timing)}</td><td>${diff(t.unexplained)}</td><td>${diff(t.sheet_minus_eod)}</td></tr>`;
   const list=g=>`<div class="eod-card"><strong>${esc(g.text)} (${g.count.toLocaleString()})</strong>${g.orders.map(o=>`<small${g.type==="shipped_later"||g.type==="ordered_earlier"?"":' class="finding"'}>${esc(o.order)}${o.detail?" · "+esc(o.detail):""}${Object.keys(o.units).length?" · "+Object.entries(o.units).filter(([,v])=>v).map(([k,v])=>`${esc(k)} ${v>0&&g.type==="quantity_mismatch"?"+":""}${v}`).join(", "):""}</small>`).join("")}${g.count>g.orders.length?`<small>…and ${(g.count-g.orders.length).toLocaleString()} more (not listed)</small>`:""}</div>`;
-  const info=[r.counts.cancelled_orders?`${r.counts.cancelled_orders} cancelled order(s) not counted`:"",r.counts.test_orders?`${r.counts.test_orders} test order(s) not counted`:"",r.counts.not_checked?`${r.counts.not_checked} shipped order(s) not checked against Shopify (older orders not read)`:"",r.rules_status!=="APPROVED"?"SKU rules are PROPOSED, not yet approved":"",...r.notes].filter(Boolean);
+  const info=[r.counts.cancelled_orders?`${r.counts.cancelled_orders} cancelled order(s) not counted`:"",r.counts.test_orders?`${r.counts.test_orders} test order(s) not counted`:"",r.counts.digital_orders?`${r.counts.digital_orders} digital-only order(s) (no label needed) not counted`:"",r.counts.not_checked?`${r.counts.not_checked} shipped order(s) not checked against Shopify (not looked up, or the search was cut off)`:"",r.rules_status!=="APPROVED"?"SKU rules are PROPOSED, not yet approved":"",...r.notes].filter(Boolean);
   $("daily-extra").innerHTML=(r.exceptions.length?"":'<div class="eod-card"><strong>No order exceptions</strong><small>Every order matched, apart from any timing below.</small></div>')+r.exceptions.map(list).join("")+r.timing_orders.map(list).join("")+(info.length?`<div class="eod-card"><strong>Notes</strong>${info.map(n=>`<small>${esc(n)}</small>`).join("")}</div>`:"");
   $("daily-export").disabled=false;
 }

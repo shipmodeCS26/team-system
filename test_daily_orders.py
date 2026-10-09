@@ -70,8 +70,17 @@ def september_first():
 SHEET_681 = dashboard(MUR001=448, MUR002=146, MUR003=82, MUR004=3, MUR005=2)
 
 
-def compare(orders, labels, sheet=SHEET_681, client="muravai", **kw):
-    return daily_orders.compare(client, DAY, shopify(*orders, **kw), labels, sheet)
+TODAY = date(2026, 9, 5)
+
+
+def lookup(*found, complete=True, all_orders=True):
+    """find_orders() result: `found` is (name, [orders]) pairs."""
+    return {"found": {name: {"orders": list(orders), "search_complete": complete} for name, orders in found},
+            "all_orders": all_orders}
+
+
+def compare(orders, labels, sheet=SHEET_681, client="muravai", lookups=None, today=TODAY, **kw):
+    return daily_orders.compare(client, DAY, shopify(*orders, **kw), labels, sheet, lookups, today=today)
 
 
 def kinds(result):
@@ -94,7 +103,8 @@ class VerifiedDayTests(unittest.TestCase):
         labels, orders = september_first()
         dropped = orders.pop(10)  # shipped, but not in Shopify
         orders.append(order("#5000", [item("THE FILTERED SHOWERHEAD™️", 1)], fulfillment="UNFULFILLED"))
-        result = compare(orders, labels)
+        self.assertEqual(daily_orders.lookup_names("muravai", DAY, shopify(*orders), labels), [dropped["name"]])
+        result = compare(orders, labels, lookups=lookup((dropped["name"], [])))
         self.assertEqual(kinds(result)["not_in_shopify"], [dropped["name"]])
         self.assertEqual(kinds(result)["not_in_ssk"], ["#5000"])
         # #1010's 4 units (kit, showerhead, 2 filter packs) shipped with no Shopify order: unexplained.
@@ -102,9 +112,11 @@ class VerifiedDayTests(unittest.TestCase):
         self.assertEqual((result["totals"]["eod_minus_shopify"], result["totals"]["timing"],
                           result["totals"]["unexplained"]), (3, -1, 4))
 
-    def test_fulfilled_in_shopify_without_label_is_its_own_exception(self):
-        result = compare([order("#1", [item("Shower Hose", 1)])], [])
+    def test_fulfilled_in_shopify_without_label_is_its_own_exception_not_timing(self):
+        result = compare([order("#1", [item("Shower Hose", 1)]), order("#2", [item("Shower Hose", 1)])],
+                         [row(2, "1x Shower Hose", order="#2")])
         self.assertEqual(kinds(result), {"fulfilled_not_in_ssk": ["#1"]})
+        self.assertEqual((result["totals"]["timing"], result["totals"]["unexplained"]), (0, -1))
 
 
 class OrderRulesTests(unittest.TestCase):
@@ -169,6 +181,49 @@ class OrderRulesTests(unittest.TestCase):
         self.assertNotIn("not_in_shopify", kinds(result))
 
 
+class LookupTests(unittest.TestCase):
+    """Orders shipped on the day but placed before the two-day window are looked up by name."""
+    LABELS = [row(1, "1x Shower Hose", order="#OLD")]
+
+    def test_found_older_order_is_timing(self):
+        old = order("#OLD", [item("Shower Hose", 1)], created="2026-08-20T15:00:00Z")
+        result = compare([], self.LABELS, lookups=lookup(("#OLD", [old])))
+        self.assertEqual(kinds(result), {"ordered_earlier": ["#OLD"]})
+        self.assertEqual(result["totals"]["unexplained"], 0)
+
+    def test_absent_only_when_searched_everywhere(self):
+        everywhere = compare([], self.LABELS, lookups=lookup(("#OLD", [])))
+        recent = compare([], self.LABELS, lookups=lookup(("#OLD", []), all_orders=False))
+        self.assertEqual(everywhere["exceptions"][0]["orders"][0]["detail"], "No Shopify order has this name")
+        self.assertIn("last 60 days", recent["exceptions"][0]["orders"][0]["detail"])
+
+    def test_not_looked_up_or_incomplete_is_not_checked(self):
+        for lookups in (None, lookup(("#OLD", []), complete=False)):
+            result = compare([], self.LABELS, lookups=lookups)
+            self.assertNotIn("not_in_shopify", kinds(result))
+            self.assertEqual(result["counts"]["not_checked"], 1)
+
+    def test_lookup_is_capped(self):
+        labels = [row(n, "1x Shower Hose", order=f"#{n}") for n in range(daily_orders.LOOKUP_LIMIT + 5)]
+        self.assertEqual(len(daily_orders.lookup_names("muravai", DAY, shopify(), labels)), daily_orders.LOOKUP_LIMIT)
+
+    def test_earlier_refund_and_test_orders(self):
+        refunded = order("#OLD", [item("Shower Hose", 1)], created="2026-08-31T15:00:00Z", financial="REFUNDED")
+        self.assertIn("refunded_after_shipping", kinds(compare([refunded], self.LABELS)))
+        test = order("#OLD", [item("Shower Hose", 1)], created="2026-08-31T15:00:00Z", test=True)
+        result = compare([test], self.LABELS)
+        self.assertEqual(kinds(result), {"test_order_shipped": ["#OLD"]})
+        self.assertEqual(result["totals"]["unexplained"], 1)
+
+    def test_reship_of_an_already_shipped_order_is_not_timing(self):
+        old = order("#OLD", [item("Shower Hose", 1)], created="2026-08-31T15:00:00Z")
+        labels = [row(1, "1x Shower Hose", order="#OLD", created="8/31/26"),
+                  row(2, "1x Shower Hose", order="#OLD")]
+        result = compare([old], labels)
+        self.assertEqual(kinds(result), {"quantity_mismatch": ["#OLD"]})
+        self.assertEqual((result["totals"]["timing"], result["totals"]["unexplained"]), (0, 1))
+
+
 class TimingTests(unittest.TestCase):
     def test_day_is_eastern_midnight_to_midnight(self):
         late = order("#1", [item("Shower Hose", 1)], created="2026-09-02T03:30:00Z")  # 23:30 ET Sep 1
@@ -190,9 +245,11 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(kinds(result), {"shipped_later": ["#1"], "ordered_earlier": ["#2"]})
         self.assertEqual(result["exceptions"], [])
 
-    def test_incomplete_shopify_day_blanks_the_column(self):
-        result = compare([order("#1", [item("Shower Hose", 1)])], [], complete=False, oldest=SEP1)
+    def test_incomplete_shopify_day_blanks_the_column_and_timing(self):
+        result = compare([order("#1", [item("Shower Hose", 1)], fulfillment="UNFULFILLED")], [],
+                         complete=False, oldest=SEP1)
         self.assertIsNone(result["totals"]["shopify_ordered"])
+        self.assertIsNone(result["rows"][3]["timing"])
         self.assertTrue(any("incomplete" in n for n in result["notes"]))
 
     def test_older_window_unread_means_not_in_shopify_is_not_asserted(self):
@@ -201,6 +258,30 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(result["rows"][3]["shopify_ordered"], 1)
         self.assertNotIn("not_in_shopify", kinds(result))
         self.assertEqual(result["counts"]["not_checked"], 1)
+
+
+class ShopifyLimitsTests(unittest.TestCase):
+    def test_old_day_without_read_all_orders_is_not_compared(self):
+        result = compare([], [row(1, "1x Shower Hose", order="#1")], all_orders=False, today=date(2026, 11, 15))
+        self.assertIsNone(result["totals"]["shopify_ordered"])
+        self.assertNotIn("not_in_shopify", kinds(result))
+        self.assertTrue(any("read_all_orders" in n for n in result["notes"]))
+
+    def test_truncated_order_hides_shopify_totals(self):
+        result = compare([order("#1", [item("Shower Hose", 1)], truncated=True)], [row(1, "1x Shower Hose", order="#1")])
+        self.assertIsNone(result["totals"]["shopify_ordered"])
+        self.assertIn("items_truncated", kinds(result))
+
+    def test_digital_only_orders_need_no_label(self):
+        gift = order("#1", [], fulfillment="UNFULFILLED")
+        gift["digital_only"] = True
+        result = compare([gift], [])
+        self.assertEqual((result["exceptions"], result["counts"]["digital_orders"], result["counts"]["orders"]), ([], 1, 0))
+
+    def test_internal_spaces_in_names_are_kept(self):
+        self.assertEqual(daily_orders.order_key(" #SM 10 "), "sm 10")
+        self.assertNotEqual(daily_orders.order_key("SM 10"), daily_orders.order_key("SM10"))
+        self.assertEqual(daily_orders.order_key("#1001"), daily_orders.order_key("1001"))
 
 
 class SheetColumnTests(unittest.TestCase):
@@ -254,7 +335,7 @@ class ShopifyReadTests(unittest.TestCase):
             calls.append(json)
             if json["query"] == shopify_source.SCOPES_QUERY:
                 return Resp({"data": {"currentAppInstallation": {"accessScopes": [{"handle": s} for s in scopes]}}})
-            assert json["query"] == shopify_source.DAY_ORDERS_QUERY
+            assert json["query"] in (shopify_source.DAY_ORDERS_QUERY, shopify_source.ORDER_QUERY)
             if state["throttle"]:
                 state["throttle"] -= 1
                 return Resp({"errors": [{"message": "Throttled", "extensions": {"code": "THROTTLED"}}]})
@@ -289,6 +370,25 @@ class ShopifyReadTests(unittest.TestCase):
                          "created_at:>='2026-08-30T04:00:00Z' created_at:<'2026-09-02T04:00:00Z'")
         for field in ("customer", "shippingAddress", "billingAddress", "email", "phone", "note"):
             self.assertNotIn(field, shopify_source.DAY_ORDERS_QUERY)
+
+    def test_digital_only_order_is_marked(self):
+        gift = self.node("#3")
+        gift["lineItems"]["nodes"] = gift["lineItems"]["nodes"][1:]  # gift card only
+        result, _, _ = self.read(["read_orders", "read_products"], [[gift, self.node("#2")]])
+        self.assertEqual([o["digital_only"] for o in result["orders"]], [True, False])
+        self.assertEqual(result["orders"][0]["items"], [])
+
+    def test_find_orders_matches_exact_names_only(self):
+        post, calls = self.fake(["read_orders", "read_all_orders", "read_products"],
+                                [[self.node("#OLD"), self.node("#OLD-2")]])
+        with patch.dict("os.environ", {"SHOPIFY_STORES_JSON": json.dumps(self.STORES)}), \
+                patch("shopify_source.requests.post", post):
+            result = shopify_source.find_orders("muravai", ["#OLD", "bad\x00name"], sleep=lambda s: None)
+        self.assertTrue(result["all_orders"])
+        self.assertEqual([o["name"] for o in result["found"]["#OLD"]["orders"]], ["#OLD"])
+        self.assertTrue(result["found"]["#OLD"]["search_complete"])
+        self.assertNotIn("bad\x00name", result["found"])
+        self.assertEqual([c["query"] for c in calls], [shopify_source.SCOPES_QUERY, shopify_source.ORDER_QUERY])
 
     def test_write_scope_and_missing_read_orders_are_refused(self):
         for scopes, code in ((["read_orders", "read_products", "write_orders"], "write_scope_granted"),
@@ -376,6 +476,11 @@ class EndpointTests(unittest.TestCase):
         response, status = self.get("client_id=fascial-labs&date=2026-09-01")  # no store mapped
         self.assertEqual(response.status_code, 503)
         status.assert_not_called()
+
+    def test_workspace_lists_clients_with_a_store(self):
+        with patch.dict("os.environ", self.ENV, clear=True):
+            body = app.test_client().get("/api/workspace", headers=self.AUTH).get_json()
+        self.assertEqual(body["shopify_orders"], ["muravai"])
 
     def test_disabled_exposes_nothing(self):
         self.assertEqual(self.get("client_id=muravai&date=2026-09-01", env={})[0].status_code, 503)

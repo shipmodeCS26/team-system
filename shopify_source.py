@@ -55,7 +55,7 @@ VARIANTS_QUERY = """query ShipModeVariants($after: String) {
 ORDER_QUERY = """query ShipModeOrder($q: String!, $after: String) {
   orders(first: 25, query: $q, after: $after) {
     nodes {
-      id name createdAt cancelledAt displayFinancialStatus displayFulfillmentStatus
+      id name createdAt cancelledAt test displayFinancialStatus displayFulfillmentStatus
       lineItems(first: 30) { nodes { name sku quantity currentQuantity requiresShipping } pageInfo { hasNextPage } }
     }
     pageInfo { hasNextPage endCursor }
@@ -409,6 +409,27 @@ def _window_term(start, end):
     return f"created_at:>='{fmt(start)}' created_at:<'{fmt(end)}'"
 
 
+def _day_order(node):
+    """An order for the daily comparison: no customer fields. The ordered quantity is kept; a
+    refund or edit (currentQuantity differs) is flagged, never subtracted (#14)."""
+    lines = node.get("lineItems") or {}
+    listed = [line for line in (lines.get("nodes") or []) if isinstance(line, dict)]
+    shipping = [line for line in listed if line.get("requiresShipping") is not False]
+    return {
+        "name": str(node.get("name") or "").strip(), "created_at": node.get("createdAt"),
+        "cancelled_at": node.get("cancelledAt"), "test": node.get("test") is True,
+        "financial": node.get("displayFinancialStatus") or "",
+        "fulfillment": node.get("displayFulfillmentStatus") or "",
+        "items": [{"name": (line.get("name") or "").strip(), "sku": (line.get("sku") or "").strip(),
+                   "qty": line.get("quantity"),
+                   "changed": isinstance(line.get("currentQuantity"), int)
+                   and line.get("currentQuantity") != line.get("quantity")} for line in shipping],
+        "items_truncated": bool((lines.get("pageInfo") or {}).get("hasNextPage")),
+        # Gift cards and other digital-only orders never get a shipping label.
+        "digital_only": bool(listed) and not shipping and not (lines.get("pageInfo") or {}).get("hasNextPage"),
+    }
+
+
 THROTTLE_WAITS = (2, 4, 8, 16)
 
 
@@ -438,25 +459,7 @@ def read_day_orders(client_id, start, end, progress=None, sleep=time.sleep):
     for _ in range(DAY_ORDER_PAGES):
         data = _paced(store, DAY_ORDERS_QUERY, {"q": _window_term(start, end), "after": after}, sleep)
         connection = data.get("orders") or {}
-        for node in connection.get("nodes") or []:
-            if not isinstance(node, dict):
-                continue
-            lines = node.get("lineItems") or {}
-            orders.append({
-                "name": str(node.get("name") or "").strip(), "created_at": node.get("createdAt"),
-                "cancelled_at": node.get("cancelledAt"), "test": node.get("test") is True,
-                "financial": node.get("displayFinancialStatus") or "",
-                "fulfillment": node.get("displayFulfillmentStatus") or "",
-                # The ordered quantity is kept; a refund or edit (currentQuantity differs) is flagged,
-                # never subtracted (#14 acceptance criteria).
-                "items": [{"name": (line.get("name") or "").strip(), "sku": (line.get("sku") or "").strip(),
-                           "qty": line.get("quantity"),
-                           "changed": isinstance(line.get("currentQuantity"), int)
-                           and line.get("currentQuantity") != line.get("quantity")}
-                          for line in (lines.get("nodes") or [])
-                          if isinstance(line, dict) and line.get("requiresShipping") is not False],
-                "items_truncated": bool((lines.get("pageInfo") or {}).get("hasNextPage")),
-            })
+        orders += [_day_order(node) for node in connection.get("nodes") or [] if isinstance(node, dict)]
         if progress:
             progress(len(orders))
         info = connection.get("pageInfo") or {}
@@ -467,3 +470,36 @@ def read_day_orders(client_id, start, end, progress=None, sleep=time.sleep):
     return {"orders": orders, "complete": complete, "all_orders": "read_all_orders" in scopes,
             "oldest_read": orders[-1]["created_at"] if orders else None,
             "fetched_at": datetime.now(timezone.utc).isoformat()}
+
+
+def find_orders(client_id, names, sleep=time.sleep):
+    """#14: look up shipped orders that were not in the day window, by exact name (no customer
+    fields). Returns {name: {"orders": [...], "search_complete": bool}} and whether Shopify searched
+    all orders (read_all_orders) or only its last 60 days."""
+    store = store_config().get(client_id)
+    if not _valid_store(store):
+        raise SourceError("not_configured")
+    scopes = granted_scopes(store)
+    check_scopes(scopes)
+    if "read_orders" not in scopes:
+        raise SourceError("order_scope")
+    found = {}
+    for name in names:
+        if not isinstance(name, str) or not ORDER_NAME.fullmatch(name.strip()):
+            continue  # cannot be searched safely; left unchecked
+        nodes, after, search_complete = [], None, True
+        for page in range(ORDER_SEARCH_PAGES):
+            data = _paced(store, ORDER_QUERY, {"q": _search_term(name.strip()), "after": after}, sleep)
+            connection = data.get("orders") or {}
+            nodes += [node for node in connection.get("nodes") or [] if isinstance(node, dict)]
+            info = connection.get("pageInfo") or {}
+            if not info.get("hasNextPage"):
+                break
+            after = info.get("endCursor")
+            if page == ORDER_SEARCH_PAGES - 1:
+                search_complete = False
+        wanted = name.strip().lower()
+        found[name] = {"orders": [_day_order(node) for node in nodes
+                                  if str(node.get("name") or "").strip().lower() == wanted],
+                       "search_complete": search_complete}
+    return {"found": found, "all_orders": "read_all_orders" in scopes}

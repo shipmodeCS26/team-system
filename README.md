@@ -245,12 +245,27 @@ dates, statuses and line items only, never customer fields. Defaults (proposed
 - Ordered on the day but shipped later (or not shipped yet), or ordered earlier
   and shipped on the day, is **timing**. Whatever is left is **unexplained**.
   Orders not shipped yet also appear in the exception list.
-- Order exceptions: in Shopify with no label, shipped but not in Shopify,
-  quantity differs, unmapped item, cancelled but shipped, and refunded after
-  shipping.
-- Shopify orders are read from two days before the chosen day, newest first. If
-  the chosen day can't be read in full, its column stays blank rather than
-  showing a partial number.
+- An order Shopify marks fulfilled but with no label is never counted as timing.
+- An earlier order counts as timing only up to the units it still owes. A reship
+  or extra units stay unexplained and are flagged.
+- Order exceptions:
+  - in Shopify with no label
+  - shipped but not in Shopify
+  - quantity differs
+  - unmapped item
+  - cancelled or test order but shipped
+  - refunded after shipping
+  - several orders with the same name
+- Gift-card and digital-only orders need no label and are left out of the
+  comparison.
+- Shopify orders are read from two days before the chosen day, newest first.
+  Orders shipped on the day but placed earlier than that are looked up by name
+  (up to 40). An order is reported "not in Shopify" only after that lookup.
+- If any of these happen, the Shopify column and timing stay blank rather than
+  showing a partial number:
+  - the chosen day can't be read in full
+  - an order has more than 30 lines
+  - the day is older than 60 days without `read_all_orders`
 
 Shopify paces reads, so the read runs in the background and the page polls. A
 result is reused for 10 minutes (3 minutes for today). Nothing here changes the

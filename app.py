@@ -187,7 +187,7 @@ def workspace():
         records = sample_shipments()
     return {"mode": "live" if live() else "demo", "clients": CLIENTS,
             "shipments": [classify(row) for row in records], "as_of": utcnow().isoformat(),
-            "integration": "Awaiting verified ShipSidekick connection"}
+            "integration": "Awaiting verified ShipSidekick connection", "shopify_orders": shopify_order_clients()}
 
 
 @app.get("/api/inventory")

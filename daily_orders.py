@@ -43,20 +43,25 @@ TEXT = {
     "refunded_after_shipping": "Refunded in Shopify after a label was created (not subtracted)",
     "edited": "Order lines were edited or refunded in Shopify (ordered quantity kept)",
     "several_orders": "More than one Shopify order has this name",
+    "test_order_shipped": "Shopify test order, but a label exists",
     "items_truncated": "Order has more lines than were read; items not compared",
     "shipped_later": "Ordered on this day, shipped on a later day (timing)",
     "ordered_earlier": "Shipped on this day, ordered on an earlier day (timing)",
 }
 EXCEPTIONS = ("not_in_ssk", "fulfilled_not_in_ssk", "not_in_shopify", "quantity_mismatch", "unmapped",
-              "cancelled_but_shipped", "refunded_after_shipping", "several_orders", "items_truncated", "edited")
+              "cancelled_but_shipped", "test_order_shipped", "refunded_after_shipping", "several_orders",
+              "items_truncated", "edited")
+SHIPPED_STATUSES = ("FULFILLED", "PARTIALLY_FULFILLED")
+LOOKUP_LIMIT = 40  # shipped orders older than the window are looked up by name, at most this many
 TIMING = ("shipped_later", "ordered_earlier")
 
 AS_OF_FORMATS = ("%d %b %Y", "%d %B %Y", "%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d")
 
 
 def order_key(name) -> str:
-    """Shopify '#1234' and a ShipSidekick 'Order Name' of '#1234' or '1234' are the same order."""
-    return re.sub(r"\s+", "", str(name or "")).lstrip("#").lower()
+    """Shopify '#1234' and a ShipSidekick 'Order Name' of '#1234' or '1234' are the same order.
+    Only surrounding spaces and a leading '#' are dropped: 'SM 10' and 'SM10' stay different."""
+    return str(name or "").strip().removeprefix("#").strip().lower()
 
 
 def window(day: date) -> tuple[datetime, datetime]:
@@ -144,12 +149,41 @@ def _sheet_column(rules, sheet, day):
     return {sku: (None if sku in unreadable else units.get(sku, 0)) for sku in rules.skus}, notes
 
 
-def compare(client_id, day, shopify, sales_rows, sheet):
+def _window_state(day, shopify, today):
+    oldest = local_day(shopify.get("oldest_read"))
+    # Newest first: the chosen day is fully read once anything older than it was reached.
+    day_complete = bool(shopify.get("complete")) or (oldest is not None and oldest < day)
+    window_complete = bool(shopify.get("complete"))
+    # Without read_all_orders Shopify returns only its last 60 days: an empty answer for an older
+    # day is not proof that there were no orders.
+    hidden = not shopify.get("all_orders") and (today - window(day)[0].date()).days > 59
+    return day_complete and not hidden, window_complete and not hidden, oldest, hidden
+
+
+def lookup_names(client_id, day, shopify, sales_rows):
+    """Names of orders shipped on the day that are not in the Shopify window: they are looked up
+    one by one (an order can be placed long before it ships)."""
+    rules = client_rules.package(client_id)
+    if rules is None:
+        return []
+    try:
+        shipments = _shipments(rules, sales_rows)
+    except ValueError:
+        return []
+    known = {order_key(order.get("name")) for order in shopify.get("orders") or []}
+    names = [labels[0]["name"] for key, labels in shipments.items()
+             if key and key not in known and any(label["day"] == day for label in labels) and labels[0]["name"]]
+    return names[:LOOKUP_LIMIT]
+
+
+def compare(client_id, day, shopify, sales_rows, sheet, lookups=None, today=None):
     """`shopify` is shopify_source.read_day_orders() for window(day); `sales_rows` the Daily Sales
-    rows (eod.REQUIRED_COLUMNS only); `sheet` the client's Dashboard read (or None)."""
+    rows (eod.REQUIRED_COLUMNS only); `sheet` the client's Dashboard read (or None); `lookups` is
+    shopify_source.find_orders() for lookup_names()."""
     rules = client_rules.package(client_id)
     if rules is None:
         return {"client_id": client_id, "error_code": "no_rules", "error": "No SKU rules are defined for this client yet."}
+    today = today or datetime.now(ET).date()
     notes = []
     try:
         reports = eod.build_eod(sales_rows, rules)
@@ -165,17 +199,14 @@ def compare(client_id, day, shopify, sales_rows, sheet):
 
     orders = shopify.get("orders") or []
     start = window(day)[0]
-    oldest = local_day(shopify.get("oldest_read"))
-    # Newest first: the chosen day is fully read once anything older than it was reached.
-    day_complete = bool(shopify.get("complete")) or (oldest is not None and oldest < day)
-    window_complete = bool(shopify.get("complete"))
-    if not day_complete:
+    day_complete, window_complete, oldest, hidden = _window_state(day, shopify, today)
+    if hidden:
+        notes.append("Shopify: without read_all_orders, Shopify only returns its last 60 days of orders, "
+                     "so this day cannot be compared")
+    elif not day_complete:
         notes.append("Shopify: more orders than could be read for this day; the Shopify column is incomplete")
     elif not window_complete:
-        notes.append(f"Shopify: orders before {oldest.strftime('%m/%d/%Y')} were not read; "
-                     "'not found in Shopify' is only checked back to that day")
-    if not shopify.get("all_orders") and (datetime.now(ET).date() - day).days > 59:
-        notes.append("Shopify: without read_all_orders, Shopify only returns the last 60 days of orders")
+        notes.append(f"Shopify: orders before {oldest.strftime('%m/%d/%Y')} were not read in the day window")
 
     by_key = defaultdict(list)
     for order in orders:
@@ -184,11 +215,12 @@ def compare(client_id, day, shopify, sales_rows, sheet):
     ordered, timing = Counter(), Counter()
     found = {kind: [] for kind in EXCEPTIONS + TIMING}
     counts = Counter()
+    truncated = False
 
     def add(kind, name, detail="", units=None):
         counts[kind] += 1
         if len(found[kind]) < LIST_LIMIT:
-            found[kind].append({"order": name, "detail": detail, "units": dict(units or {})})
+            found[kind].append({"order": name, "detail": detail, "units": {k: v for k, v in dict(units or {}).items() if v}})
 
     for order in orders:
         if local_day(order.get("created_at")) != day:
@@ -197,11 +229,16 @@ def compare(client_id, day, shopify, sales_rows, sheet):
         labels = shipments.get(key, [])
         if order.get("test"):
             counts["test_orders"] += 1
+            if labels:
+                add("test_order_shipped", name)
             continue
         if order.get("cancelled_at"):
             counts["cancelled_orders"] += 1
             if labels:
                 add("cancelled_but_shipped", name)
+            continue
+        if order.get("digital_only"):
+            counts["digital_orders"] += 1  # gift cards and digital goods never get a label
             continue
         counts["orders"] += 1
         usage = shopify_usage(rules, order)
@@ -210,6 +247,7 @@ def compare(client_id, day, shopify, sales_rows, sheet):
         if usage.unknown_items:
             add("unmapped", name, "Shopify: " + ", ".join(usage.unknown_items))
         if order.get("items_truncated"):
+            truncated = True  # the order's later lines were not read: Shopify totals are not shown
             add("items_truncated", name)
         if any(item.get("changed") for item in order.get("items") or []):
             add("edited", name)
@@ -217,12 +255,12 @@ def compare(client_id, day, shopify, sales_rows, sheet):
             add("several_orders", name)
             continue
         if not labels:
-            fulfilled = str(order.get("fulfillment") or "").upper() == "FULFILLED"
-            if fulfilled:
+            if str(order.get("fulfillment") or "").upper() in SHIPPED_STATUSES:
+                # Shopify says it shipped, possibly today: never explained away as timing.
                 add("fulfilled_not_in_ssk", name, units=shop)
             else:
                 add("not_in_ssk", name, units=shop)
-            timing.subtract(shop)  # ordered today, not shipped today
+                timing.subtract(shop)  # ordered today, not shipped yet
             continue
         financial = str(order.get("financial") or "").upper()
         if financial in ("REFUNDED", "PARTIALLY_REFUNDED"):
@@ -243,39 +281,81 @@ def compare(client_id, day, shopify, sales_rows, sheet):
             add("shipped_later", name, "Shipped " + ", ".join(sorted({l["day"].strftime("%m/%d/%Y") for l in later})),
                 units=rest)
 
+    looked = (lookups or {}).get("found") or {}
+    all_orders = bool((lookups or {}).get("all_orders"))
     for key, labels in shipments.items():
-        on_day = sum((label["usage"] for label in labels if label["day"] == day), Counter())
         if not any(label["day"] == day for label in labels):
             continue
+        on_day = sum((label["usage"] for label in labels if label["day"] == day), Counter())
         name = labels[0]["name"] or "(no order name)"
         matches = by_key.get(key, [])
         if not matches:
-            if window_complete:
-                add("not_in_shopify", name, f"No Shopify order created {start.strftime('%m/%d/%Y')}–{day.strftime('%m/%d/%Y')}",
-                    units=on_day)
-            else:
-                counts["not_checked"] += 1
-            continue
-        created = [local_day(o.get("created_at")) for o in matches]
-        if len(matches) == 1 and created[0] and created[0] < day:
-            if matches[0].get("cancelled_at"):
-                add("cancelled_but_shipped", name, "Ordered " + created[0].strftime("%m/%d/%Y"))
+            result = looked.get(labels[0]["name"])
+            if result is None:
+                counts["not_checked"] += 1  # not looked up (too many, or not searchable)
                 continue
-            timing.update(on_day)
-            add("ordered_earlier", name, "Ordered " + created[0].strftime("%m/%d/%Y"), units=on_day)
+            matches = result["orders"]
+            if not matches:
+                if result["search_complete"] and all_orders:
+                    add("not_in_shopify", name, "No Shopify order has this name", units=on_day)
+                elif result["search_complete"]:
+                    add("not_in_shopify", name, "Not in Shopify's last 60 days of orders "
+                                                "(older orders need read_all_orders)", units=on_day)
+                else:
+                    counts["not_checked"] += 1
+                continue
+        created = [local_day(o.get("created_at")) for o in matches]
+        if day in created:
+            continue  # placed on the day: handled above
+        if len(matches) > 1:
+            add("several_orders", name)
+            continue
+        match, placed = matches[0], created[0]
+        if placed is None or placed > day:
+            continue
+        when = "Ordered " + placed.strftime("%m/%d/%Y")
+        if match.get("test"):
+            add("test_order_shipped", name, when)
+            continue
+        if match.get("cancelled_at"):
+            add("cancelled_but_shipped", name, when)
+            continue
+        if str(match.get("financial") or "").upper() in ("REFUNDED", "PARTIALLY_REFUNDED"):
+            add("refunded_after_shipping", name, when + ", " + str(match["financial"]).replace("_", " ").lower())
+        usage = shopify_usage(rules, match)
+        unknown = [item for label in labels for item in label["unknown"]]
+        if usage.unknown_items or unknown or match.get("items_truncated"):
+            add("unmapped" if usage.unknown_items or unknown else "items_truncated", name,
+                when + (": " + ", ".join(usage.unknown_items + unknown) if usage.unknown_items or unknown else ""))
+            continue  # not comparable: nothing is explained as timing
+        shop = Counter({k: v for k, v in usage.usage.items() if v})
+        before = sum((label["usage"] for label in labels if label["day"] < day), Counter())
+        outstanding = shop - before
+        explained = on_day & outstanding  # only units still owed on the order are timing
+        excess = on_day - outstanding
+        timing.update(explained)
+        if explained:
+            add("ordered_earlier", name, when, units=explained)
+        if excess:
+            add("quantity_mismatch", name, when + "; shipped more than was still owed (reship or extra units?)",
+                units=excess)
 
     eod_units = dict(report.usage) if report else None
     sheet_units, sheet_notes = _sheet_column(rules, sheet, day)
     notes += sheet_notes
+    if truncated:
+        notes.append("Shopify: an order has more lines than were read, so Shopify totals are not shown")
+    shop_known = day_complete and not truncated
     rows = []
     for sku in rules.skus:
-        shop = ordered.get(sku, 0) if day_complete else None
+        shop = ordered.get(sku, 0) if shop_known else None
         shipped = eod_units.get(sku, 0) if eod_units is not None else None
         sold = sheet_units.get(sku) if sheet_units is not None else None
         diff = None if shop is None or shipped is None else shipped - shop
+        wait = timing.get(sku, 0) if day_complete else None
         rows.append({"sku": sku, "label": rules.labels.get(sku, sku), "shopify_ordered": shop, "eod_shipped": shipped,
-                     "sheet_sold": sold, "eod_minus_shopify": diff, "timing": timing.get(sku, 0),
-                     "unexplained": None if diff is None else diff - timing.get(sku, 0),
+                     "sheet_sold": sold, "eod_minus_shopify": diff, "timing": wait,
+                     "unexplained": None if diff is None or wait is None else diff - wait,
                      "sheet_minus_eod": None if sold is None or shipped is None else sold - shipped})
     total = lambda key: None if any(r[key] is None for r in rows) else sum(r[key] for r in rows)
     return {
@@ -284,8 +364,8 @@ def compare(client_id, day, shopify, sales_rows, sheet):
         "totals": {k: total(k) for k in ("shopify_ordered", "eod_shipped", "sheet_sold", "eod_minus_shopify",
                                          "timing", "unexplained", "sheet_minus_eod")},
         "counts": {"orders": counts["orders"], "cancelled_orders": counts["cancelled_orders"],
-                   "test_orders": counts["test_orders"], "not_checked": counts["not_checked"],
-                   "eod_orders": report.orders if report else 0,
+                   "test_orders": counts["test_orders"], "digital_orders": counts["digital_orders"],
+                   "not_checked": counts["not_checked"], "eod_orders": report.orders if report else 0,
                    **{kind: counts[kind] for kind in EXCEPTIONS + TIMING}},
         "exceptions": [{"type": kind, "text": TEXT[kind], "count": counts[kind], "orders": found[kind]}
                        for kind in EXCEPTIONS if counts[kind]],
@@ -319,8 +399,10 @@ def _read_and_compare(client_id, day, job):
     shopify = shopify_source.read_day_orders(client_id, start, end,
                                              progress=lambda n: job.update(orders_read=n))
     rows = ledger_sources.SheetReader(sheet_id, credentials).daily_sales()
+    names = lookup_names(client_id, day, shopify, rows)
+    lookups = shopify_source.find_orders(client_id, names) if names else None
     sheet = inventory.read_dashboards([client_id])[0]
-    return compare(client_id, day, shopify, rows, sheet)
+    return compare(client_id, day, shopify, rows, sheet, lookups)
 
 
 def _run(key, job):
