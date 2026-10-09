@@ -145,7 +145,7 @@ Install `requirements.txt`, then run `flask --app app run` for development.
 Render build: `pip install -r requirements.txt`.
 Render start: `gunicorn app:app --bind 0.0.0.0:$PORT`.
 Health check: `/api/health`. Auto-deploy: On Commit.
-Tests: `python -B -m unittest -v test_tracking test_inventory test_ledger test_muravai_rules test_shopify test_ssk test_frontend` (test_frontend runs `node --test test_panels.js` when Node.js is installed).
+Tests: `python -B -m unittest -v test_tracking test_inventory test_ledger test_muravai_rules test_shopify test_ssk test_incoming test_daily_update test_order_check test_daily_orders test_frontend` (test_frontend runs `node --test test_panels.js` when Node.js is installed).
 
 ## Live mode prerequisites (not activated)
 
@@ -257,8 +257,62 @@ status is not delivered, one status at a time. Each status is checked against
 what comes back: if the status filter is ignored, the store shows an error
 instead of a partial queue. The existing aging rules apply unchanged: only
 physical carrier scans reset the clock, and label-only shipments fall back to
-the label date. Addresses, line items, prices and label files are never copied
-into a row. Follow-up notes stay off until the database exists.
+the label date. Addresses, prices and label files are never copied into a row; line
+items keep only SKU, product name and quantity (for the Shopify order check). Follow-up notes stay off until the database exists.
+
+Shopify order behind a shipment (#13): with `SHOPIFY_ENABLED=true` and the
+ShipSidekick queue on, opening a shipment in No Movement offers "Show Shopify
+order and address". It reads that one order by its exact name (read-only, needs
+`read_orders`; the address also needs Shopify protected customer data access) and shows payment and
+fulfillment status, items on both sides, and the current ship-to address. Flags
+(not found, cancelled, refunded, items differ, several shipments) are for review
+only and never change a shipment's age or priority. The address is shown only when
+Shopify can search all orders (`read_all_orders`), so an older order with the same
+name can never be mistaken for it. The address is never cached,
+logged, exported or stored, and is cleared from the page when the panel closes.
+
+Shopify orders vs. shipped (#14): on the Inventory tab, for one client and one
+day, the panel compares per SKU the units ordered in Shopify, the units shipped
+in the EOD (calculated from the Daily Sales tab exactly as the EOD is) and the
+Dashboard's units sold (only when the Dashboard shows that day). It needs
+`SHOPIFY_ENABLED`, the Sheets connection and `read_orders`; it reads order names,
+dates, statuses and line items only, never customer fields. Defaults (proposed
+2026-10-06, change in `daily_orders.py`):
+- A day is midnight to midnight US Eastern, by Shopify's order created time and
+  the label's Created Date.
+- Every order that is not cancelled counts as ordered, including on-hold and
+  pre-orders. Cancelled and test orders are excluded and counted separately.
+  A refund after shipping is flagged, never subtracted.
+- Shopify lines go through the client's own rules (kits included), as a Daily
+  Sales Items cell would.
+- Ordered on the day but shipped later (or not shipped yet), or ordered earlier
+  and shipped on the day, is **timing**. Whatever is left is **unexplained**.
+  Orders not shipped yet also appear in the exception list.
+- An order Shopify marks fulfilled but with no label is never counted as timing.
+- An earlier order counts as timing only up to the units it still owes. A reship
+  or extra units stay unexplained and are flagged.
+- Order exceptions:
+  - in Shopify with no label
+  - shipped but not in Shopify
+  - quantity differs
+  - unmapped item
+  - cancelled or test order but shipped
+  - refunded after shipping
+  - several orders with the same name
+- Gift-card and digital-only orders need no label and are left out of the
+  comparison.
+- Shopify orders are read from two days before the chosen day, newest first.
+  Orders shipped on the day but placed earlier than that are looked up by name
+  (up to 40). An order is reported "not in Shopify" only after that lookup.
+- If any of these happen, the Shopify column and timing stay blank rather than
+  showing a partial number:
+  - the chosen day can't be read in full
+  - an order has more than 30 lines
+  - the day is older than 60 days without `read_all_orders`
+
+Shopify paces reads, so the read runs in the background and the page polls. A
+result is reused for 10 minutes (3 minutes for today). Nothing here changes the
+EOD, the ledger, Shopify or the Sheets.
 
 ## Calculated inventory (shadow check)
 

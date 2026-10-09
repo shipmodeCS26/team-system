@@ -52,7 +52,43 @@ VARIANTS_QUERY = """query ShipModeVariants($after: String) {
     pageInfo { hasNextPage endCursor }
   }
 }""" % PAGE_SIZE
-READ_QUERIES = frozenset({SCOPES_QUERY, VARIANTS_QUERY})
+ORDER_QUERY = """query ShipModeOrder($q: String!, $after: String) {
+  orders(first: 25, query: $q, after: $after) {
+    nodes {
+      id name createdAt cancelledAt test displayFinancialStatus displayFulfillmentStatus
+      lineItems(first: 30) { nodes { name sku quantity currentQuantity requiresShipping } pageInfo { hasNextPage } }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}"""
+# Shopify refuses a query whose requested cost is over 1,000 points: 25 orders x 30 lines is about 850.
+# 25 x 100 lines (about 2,600) was refused outright. Longer orders are marked items_truncated.
+ORDER_SEARCH_PAGES = 4  # 100 fuzzy candidates; more is reported as an incomplete search, never a unique match
+# Separate reads: protected customer fields and fulfillment data need extra access. If either is
+# refused, the order itself still shows ("address unavailable" / shipment count unknown).
+ORDER_ADDRESS_QUERY = """query ShipModeOrderAddress($id: ID!) {
+  order(id: $id) { shippingAddress { name address1 address2 city provinceCode zip countryCodeV2 } }
+}"""
+ORDER_FULFILLMENTS_QUERY = """query ShipModeOrderFulfillments($id: ID!) {
+  order(id: $id) { fulfillments { status requiresShipping trackingInfo(first: 10) { number } } }
+}"""
+# #14: one client's orders created in a time window, newest first. Order names, dates, statuses and
+# line items only: no customer, address, price or note fields are requested.
+DAY_ORDERS_QUERY = """query ShipModeDayOrders($q: String!, $after: String) {
+  orders(first: 25, query: $q, after: $after, sortKey: CREATED_AT, reverse: true) {
+    nodes {
+      name createdAt cancelledAt test displayFinancialStatus displayFulfillmentStatus
+      lineItems(first: 30) { nodes { name sku quantity currentQuantity requiresShipping } pageInfo { hasNextPage } }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}"""
+DAY_ORDER_PAGES = 80  # 2,000 orders across the window; the chosen day is read first (newest first)
+READ_QUERIES = frozenset({SCOPES_QUERY, VARIANTS_QUERY, ORDER_QUERY, ORDER_ADDRESS_QUERY, ORDER_FULFILLMENTS_QUERY,
+                          DAY_ORDERS_QUERY})
+# Merchants can customise order prefixes/suffixes, so any printable name is allowed; it is escaped
+# inside the quoted search term. Control characters are refused.
+ORDER_NAME = re.compile(r"[^\x00-\x1f\x7f]{1,100}")
 
 # Shown to signed-in staff. Messages never include shop domains or credentials.
 ERRORS = {
@@ -63,6 +99,8 @@ ERRORS = {
     "not_found": "Shopify store not found. Check the store domain in the private deployment settings.",
     "unavailable": "Shopify did not respond. Try again shortly.",
     "read_failed": "The Shopify store could not be read.",
+    "throttled": "Shopify asked us to slow down. Try again shortly.",
+    "order_scope": "The ShipMode app cannot read orders yet (needs read_orders; addresses also need Shopify protected customer data access).",
 }
 
 
@@ -71,6 +109,10 @@ class SourceError(ValueError):
         super().__init__(code)
         self.code = code
         self.status = status
+
+
+class InvalidOrderName(Exception):
+    """The order name cannot be searched safely; nothing is sent to Shopify."""
 
 
 class ReadOnlyViolation(RuntimeError):
@@ -179,7 +221,9 @@ def _graphql_once(store, document, variables):
         codes = {str((e.get("extensions") or {}).get("code", "")).upper() for e in errors if isinstance(e, dict)}
         if "ACCESS_DENIED" in codes:
             raise SourceError("missing_scope")
-        if "THROTTLED" in codes or "MAX_COST_EXCEEDED" in codes:
+        if "THROTTLED" in codes:
+            raise SourceError("throttled")
+        if "MAX_COST_EXCEEDED" in codes:
             raise SourceError("unavailable")
         raise SourceError("read_failed")
     return body.get("data") or {}
@@ -265,3 +309,202 @@ def read_catalogs(client_ids):
                 log.warning("shopify source failed client=%s type=%s", client_id, type(error).__name__)
                 result.append({"id": client_id, "error_code": "read_failed", "error": ERRORS["read_failed"]})
         return result
+
+
+def _search_term(order_name):
+    return 'name:"' + order_name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _optional(store, document, variables):
+    """A read that may be refused for lack of extra access; the caller shows 'not available'."""
+    try:
+        return _graphql(store, document, variables, retry=False), None
+    except SourceError as error:
+        if error.code in ("missing_scope", "read_failed"):
+            return None, error.code
+        raise
+
+
+def read_order(client_id, order_name):
+    """One client's Shopify order by its exact name, read on demand (#13). Never cached: it carries
+    the shipping address, which is returned to the signed-in browser and never stored or logged."""
+    store = store_config().get(client_id)
+    if not _valid_store(store):
+        raise SourceError("not_configured")
+    if not isinstance(order_name, str) or not ORDER_NAME.fullmatch(order_name.strip()):
+        raise InvalidOrderName(order_name)
+    order_name = order_name.strip()
+    scopes = granted_scopes(store)
+    check_scopes(scopes)  # refuses a token with write access before any order is read
+    if "read_orders" not in scopes:
+        raise SourceError("order_scope")
+    nodes, after, search_complete = [], None, True
+    for page in range(ORDER_SEARCH_PAGES):
+        data = _paced(store, ORDER_QUERY, {"q": _search_term(order_name), "after": after})
+        connection = data.get("orders") or {}
+        nodes += connection.get("nodes") or []
+        info = connection.get("pageInfo") or {}
+        if not info.get("hasNextPage"):
+            break
+        after = info.get("endCursor")
+        if page == ORDER_SEARCH_PAGES - 1:
+            search_complete = False
+    matches = [node for node in nodes if _name_key(node.get("name")) == _name_key(order_name)]
+    # Without read_all_orders Shopify only searches the last 60 days: an older order with the same
+    # (customised) name could be the real one, so the address is shown only after a full search.
+    complete = search_complete and "read_all_orders" in scopes
+    orders = []
+    for node in matches:
+        lines = node.get("lineItems") or {}
+        orders.append({
+            "id": node.get("id"),
+            "name": node.get("name"), "created_at": node.get("createdAt"), "cancelled_at": node.get("cancelledAt"),
+            "financial": node.get("displayFinancialStatus") or "", "fulfillment": node.get("displayFulfillmentStatus") or "",
+            # currentQuantity drops refunded/removed units; a line where it differs from the original
+            # quantity can't tell us what physically shipped, so it is marked "changed" (comparison unverified).
+            "items": [{"name": (line.get("name") or "").strip(), "sku": (line.get("sku") or "").strip(),
+                       "qty": line.get("currentQuantity") if isinstance(line.get("currentQuantity"), int) else line.get("quantity"),
+                       "changed": isinstance(line.get("currentQuantity"), int) and line.get("currentQuantity") != line.get("quantity")}
+                      # Gift cards, digital goods and tips never ship, so they can't be in a parcel.
+                      for line in (lines.get("nodes") or []) if isinstance(line, dict) and line.get("requiresShipping") is not False],
+            "items_truncated": bool((lines.get("pageInfo") or {}).get("hasNextPage")),
+            "address": None, "address_visible": False, "address_withheld": False,
+            "tracking_numbers": None, "fulfillment_count": None, "fulfillments_truncated": False,
+        })
+    # Extra reads only for a single confirmed match: never fan out over duplicate names.
+    if len(orders) == 1 and search_complete:
+        order = orders[0]
+        found, _ = _optional(store, ORDER_FULFILLMENTS_QUERY, {"id": order["id"]})
+        if found is not None:
+            listed = [f for f in (((found.get("order") or {}).get("fulfillments")) or []) if isinstance(f, dict)]
+            # Cancelled or failed attempts are not parcels; a replacement after one is still one shipment.
+            # Digital-only fulfillments (requiresShipping false) are not parcels either.
+            fulfillments = [f for f in listed if str(f.get("status") or "").upper() not in ("CANCELLED", "ERROR", "FAILURE")
+                            and f.get("requiresShipping") is not False]
+            numbers = {str(info.get("number")).strip() for f in fulfillments
+                       for info in (f.get("trackingInfo") or []) if isinstance(info, dict) and info.get("number")}
+            order["tracking_numbers"] = sorted(numbers)
+            # Fulfillments without tracking still mean separate parcels; a full page (20) means maybe more.
+            order["fulfillment_count"] = len(fulfillments)
+            # Order.fulfillments takes no page argument in this API version, so the list is complete.
+        if complete:
+            # Address access is approved per field by Shopify (protected customer data), so ask;
+            # a refusal simply leaves the address unavailable.
+            found, _ = _optional(store, ORDER_ADDRESS_QUERY, {"id": order["id"]})
+            address = ((found or {}).get("order") or {}).get("shippingAddress")
+            if isinstance(address, dict):
+                order["address"] = {key: address.get(key) for key in
+                                    ("name", "address1", "address2", "city", "provinceCode", "zip", "countryCodeV2")}
+            order["address_visible"] = found is not None
+        else:
+            order["address_withheld"] = True
+    for order in orders:
+        order.pop("id", None)
+    return {"orders": orders, "complete": complete, "search_complete": search_complete}
+
+
+def _window_term(start, end):
+    """Shopify search for orders created in [start, end); both are timezone-aware datetimes."""
+    fmt = lambda moment: moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f"created_at:>='{fmt(start)}' created_at:<'{fmt(end)}'"
+
+
+def _day_order(node):
+    """An order for the daily comparison: no customer fields. The ordered quantity is kept; a
+    refund or edit (currentQuantity differs) is flagged, never subtracted (#14)."""
+    lines = node.get("lineItems") or {}
+    listed = [line for line in (lines.get("nodes") or []) if isinstance(line, dict)]
+    shipping = [line for line in listed if line.get("requiresShipping") is not False]
+    return {
+        "name": str(node.get("name") or "").strip(), "created_at": node.get("createdAt"),
+        "cancelled_at": node.get("cancelledAt"), "test": node.get("test") is True,
+        "financial": node.get("displayFinancialStatus") or "",
+        "fulfillment": node.get("displayFulfillmentStatus") or "",
+        "items": [{"name": (line.get("name") or "").strip(), "sku": (line.get("sku") or "").strip(),
+                   "qty": line.get("quantity"),
+                   "changed": isinstance(line.get("currentQuantity"), int)
+                   and line.get("currentQuantity") != line.get("quantity")} for line in shipping],
+        "items_truncated": bool((lines.get("pageInfo") or {}).get("hasNextPage")),
+        # Gift cards and other digital-only orders never get a shipping label.
+        "digital_only": bool(listed) and not shipping and not (lines.get("pageInfo") or {}).get("hasNextPage"),
+    }
+
+
+THROTTLE_WAITS = (2, 4, 8, 16)
+
+
+def _paced(store, document, variables, sleep=None):
+    """Long reads pause and retry when Shopify's rate limit is reached, instead of failing."""
+    sleep = sleep or time.sleep
+    for wait in THROTTLE_WAITS:
+        try:
+            return _graphql(store, document, variables)
+        except SourceError as error:
+            if error.code != "throttled":
+                raise
+            sleep(wait)
+    return _graphql(store, document, variables)
+
+
+def read_day_orders(client_id, start, end, progress=None, sleep=None):
+    """#14: one client's orders created in [start, end), read-only and without customer fields.
+    Returns orders newest first, `complete` (the whole window was read) and `oldest_read`."""
+    store = store_config().get(client_id)
+    if not _valid_store(store):
+        raise SourceError("not_configured")
+    scopes = granted_scopes(store)
+    check_scopes(scopes)  # refuses a token with write access before any order is read
+    if "read_orders" not in scopes:
+        raise SourceError("order_scope")
+    orders, after, complete = [], None, False
+    for _ in range(DAY_ORDER_PAGES):
+        data = _paced(store, DAY_ORDERS_QUERY, {"q": _window_term(start, end), "after": after}, sleep)
+        connection = data.get("orders") or {}
+        orders += [_day_order(node) for node in connection.get("nodes") or [] if isinstance(node, dict)]
+        if progress:
+            progress(len(orders))
+        info = connection.get("pageInfo") or {}
+        if not info.get("hasNextPage"):
+            complete = True
+            break
+        after = info.get("endCursor")
+    return {"orders": orders, "complete": complete, "all_orders": "read_all_orders" in scopes,
+            "oldest_read": orders[-1]["created_at"] if orders else None,
+            "fetched_at": datetime.now(timezone.utc).isoformat()}
+
+
+def _name_key(name):
+    """'#1001' and '1001' are the same order name; internal spaces are kept (same as daily_orders)."""
+    return str(name or "").strip().removeprefix("#").strip().lower()
+
+
+def find_orders(client_id, names, sleep=None):
+    """#14: look up shipped orders that were not in the day window, by exact name (no customer
+    fields). Returns {name: {"orders": [...], "search_complete": bool}} and whether Shopify searched
+    all orders (read_all_orders) or only its last 60 days."""
+    store = store_config().get(client_id)
+    if not _valid_store(store):
+        raise SourceError("not_configured")
+    scopes = granted_scopes(store)
+    check_scopes(scopes)
+    if "read_orders" not in scopes:
+        raise SourceError("order_scope")
+    found = {}
+    for name in names:
+        if not isinstance(name, str) or not ORDER_NAME.fullmatch(name.strip()):
+            continue  # cannot be searched safely; left unchecked
+        nodes, after, search_complete = [], None, True
+        for page in range(ORDER_SEARCH_PAGES):
+            data = _paced(store, ORDER_QUERY, {"q": _search_term(name.strip()), "after": after}, sleep)
+            connection = data.get("orders") or {}
+            nodes += [node for node in connection.get("nodes") or [] if isinstance(node, dict)]
+            info = connection.get("pageInfo") or {}
+            if not info.get("hasNextPage"):
+                break
+            after = info.get("endCursor")
+            if page == ORDER_SEARCH_PAGES - 1:
+                search_complete = False
+        found[name] = {"orders": [_day_order(node) for node in nodes
+                                  if _name_key(node.get("name")) == _name_key(name)],
+                       "search_complete": search_complete}
+    return {"found": found, "all_orders": "read_all_orders" in scopes}
