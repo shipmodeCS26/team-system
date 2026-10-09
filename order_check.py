@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import Counter
 
 import client_rules
+import daily_orders
 
 FLAG_TEXT = {
     "unlinked": "ShipSidekick has no order number for this shipment, so Shopify was not searched",
@@ -26,23 +27,16 @@ FLAG_TEXT = {
 }
 
 
-def _internal(rules, sku, name):
-    if rules is None:
-        return None
-    match = rules.shopify_match({"product": name or "", "variant": "", "sku": sku or ""})
-    return match.get("sku") if match else None
-
-
 def _units(rules, items):
-    counts, unmapped = Counter(), False
-    for item in items:
-        qty = item.get("qty")
-        internal = _internal(rules, item.get("sku"), item.get("name"))
-        if internal is None or not isinstance(qty, int):
-            unmapped = True
-            continue
-        counts[internal] += qty
-    return counts, unmapped
+    """Units per internal SKU, applying the client's rules to the whole item list at once, the
+    way the EOD does (a Muravai kit is tape + hose + connector across three lines). Any item the
+    rules can't map makes the comparison inconclusive."""
+    if rules is None:
+        return Counter(), True
+    if any(not isinstance(item.get("qty"), int) or isinstance(item.get("qty"), bool) for item in items):
+        return Counter(), True
+    result = daily_orders.shopify_usage(rules, {"items": items})
+    return Counter({k: v for k, v in result.usage.items() if v}), bool(result.unknown_items)
 
 
 def check(client_id, shipment, orders, shipments_for_order=1, unlinked=False, complete=True, search_complete=True):

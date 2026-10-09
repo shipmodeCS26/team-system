@@ -349,7 +349,7 @@ def read_order(client_id, order_name):
         after = info.get("endCursor")
         if page == ORDER_SEARCH_PAGES - 1:
             search_complete = False
-    matches = [node for node in nodes if str(node.get("name") or "").strip().lower() == order_name.lower()]
+    matches = [node for node in nodes if _name_key(node.get("name")) == _name_key(order_name)]
     # Without read_all_orders Shopify only searches the last 60 days: an older order with the same
     # (customised) name could be the real one, so the address is shown only after a full search.
     complete = search_complete and "read_all_orders" in scopes

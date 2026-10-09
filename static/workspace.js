@@ -336,7 +336,10 @@ document.querySelectorAll(".close-dialog").forEach(el=>el.addEventListener("clic
 $("detail-dialog").addEventListener("close",()=>{state.orderRequest++;const panel=$("order-panel");if(panel)panel.innerHTML=""});  // customer address leaves the page
 $("export-button").addEventListener("click",exportQueue);
 $("inventory-refresh").addEventListener("click",loadInventory);
-{const y=new Date(Date.now()-864e5);$("daily-date").value=`${y.getFullYear()}-${String(y.getMonth()+1).padStart(2,"0")}-${String(y.getDate()).padStart(2,"0")}`;$("daily-date").max=new Date().toISOString().slice(0,10)}
+{// The comparison day is US Eastern, whatever the browser's time zone.
+const eastern=d=>new Intl.DateTimeFormat("en-CA",{timeZone:"America/New_York",year:"numeric",month:"2-digit",day:"2-digit"}).format(d);
+const today=eastern(new Date()),yesterday=new Date(Date.parse(today+"T12:00:00Z")-864e5).toISOString().slice(0,10);
+$("daily-date").value=yesterday;$("daily-date").max=today}
 $("daily-check").addEventListener("click",()=>{if($("daily-date").value)checkDaily($("daily-date").value)});
 $("daily-export").addEventListener("click",exportDaily);
 $("daily-update-button").addEventListener("click",openDailyUpdate);

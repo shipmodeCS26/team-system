@@ -66,6 +66,10 @@ def read(scopes, nodes, name="#1001", **kw):
 
 
 class ReadOrderTests(unittest.TestCase):
+    def test_name_without_hash_matches_default_shopify_name(self):
+        orders, _ = read(["read_orders", "read_all_orders", "read_products"], [order_node("#1001")], name="1001")
+        self.assertEqual([o["name"] for o in orders], ["#1001"])
+
     def test_exact_name_only_and_address_returned(self):
         orders, fake = read(["read_orders", "read_all_orders", "read_customers", "read_products"],
                             [order_node("#1001"), order_node("#10011")])
@@ -204,6 +208,12 @@ class FlagTests(unittest.TestCase):
 
     def test_matching_order_has_no_flags(self):
         self.assertEqual(self.flags([self.order()]), [])
+
+    def test_kit_lines_are_compared_with_the_order_rules(self):
+        kit = [{"name": "Teflon Tape", "sku": "", "qty": 1}, {"name": "Shower Hose", "sku": "", "qty": 1},
+               {"name": "Shower connector", "sku": "", "qty": 1}]
+        self.assertEqual(self.flags([self.order(items=kit)], shipment={"items": kit}), [])
+        self.assertIn("items_differ", self.flags([self.order(items=kit)], shipment={"items": kit[1:]}))
 
     def test_each_flag(self):
         self.assertEqual(self.flags([]), ["not_found"])
