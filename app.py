@@ -1,4 +1,5 @@
 import csv
+import gzip
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import hmac
@@ -16,10 +17,13 @@ from werkzeug.security import check_password_hash
 from tracking import CLIENTS, classify, parse_csv, parse_date, sample_shipments, tracker_update, utcnow
 from daily_update import build_update
 from incoming import read_incoming
-from inventory import read_dashboards
+from inventory import SHEET_ID, read_dashboards
 from ledger_sources import calculate_clients
 import shopify_source
 import sku_check
+import client_rules
+import daily_orders
+import order_check
 import ssk_check
 import ssk_source
 
@@ -47,6 +51,36 @@ def ready():
 
 def inventory_ready():
     return all(os.getenv(k) for k in ("INVENTORY_SHEETS_JSON", "INVENTORY_SERVICE_ACCOUNT_JSON", "WORKSPACE_USER", "WORKSPACE_PASSWORD_HASH", "SECRET_KEY"))
+
+
+def shopify_order_clients():
+    """Clients whose Shopify store is mapped, so the order lookup is only offered where it can work."""
+    if not shopify_source.enabled():
+        return []
+    try:
+        stores = shopify_source.store_config()
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return []
+    return [client["id"] for client in CLIENTS if shopify_source._valid_store(stores.get(client["id"]))]
+
+
+def inventory_sheet_id(value):
+    return bool(SHEET_ID.fullmatch(value))
+
+
+def daily_order_clients():
+    """Clients the daily Shopify comparison can run for: a mapped store, SKU rules and a mapped
+    workbook (Daily Sales and Dashboard)."""
+    if not inventory_enabled():
+        return []
+    try:
+        sheets = json.loads(os.environ["INVENTORY_SHEETS_JSON"])
+    except (KeyError, json.JSONDecodeError):
+        return []
+    if not isinstance(sheets, dict):
+        return []
+    return [client_id for client_id in shopify_order_clients() if client_rules.package(client_id)
+            and isinstance(sheets.get(client_id), str) and inventory_sheet_id(sheets[client_id])]
 
 
 def shopify_ready():
@@ -116,6 +150,21 @@ def secure(response):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Cache-Control"] = "no-store"
     response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    return compress(response)
+
+
+def compress(response):
+    """Gzip large JSON responses (the ShipSidekick queue can be megabytes); the browser unpacks them."""
+    if (response.mimetype != "application/json" or response.direct_passthrough
+            or request.accept_encodings["gzip"] <= 0  # honours q-values, e.g. "gzip;q=0" means no
+            or "Content-Encoding" in response.headers):
+        return response
+    body = response.get_data()
+    if len(body) < 20_000:
+        return response
+    response.set_data(gzip.compress(body, compresslevel=5))
+    response.headers["Content-Encoding"] = "gzip"
+    response.headers["Vary"] = "Accept-Encoding"
     return response
 
 
@@ -140,9 +189,12 @@ def workspace():
     elif ssk_source.enabled():
         # Issue #17: real shipments pulled read-only from each store's ShipSidekick account; no database.
         days = ssk_source.lookback_days()
-        stores = ssk_source.read_shipment_stores([client["id"] for client in CLIENTS], days)
+        stores = ssk_source.queue_snapshot([client["id"] for client in CLIENTS], days)
         records, sources = [], []
         for store in stores:
+            if store.get("loading"):
+                sources.append({"client_id": store["id"], "loading": True})
+                continue
             if "error_code" in store:
                 sources.append({"client_id": store["id"], "error_code": store["error_code"], "error": store["error"]})
                 continue
@@ -151,14 +203,17 @@ def workspace():
                             "truncated": store["truncated"], "skipped_statuses": store["skipped_statuses"],
                             "environment": store["environment"], "fetched_at": store["fetched_at"]})
         return {"mode": "ssk", "clients": CLIENTS, "sources": sources, "lookback_days": days,
+                "loading": any(src.get("loading") for src in sources),
                 "shipments": [classify(dict(row, id=index + 1)) for index, row in enumerate(records)],
-                "as_of": utcnow().isoformat(), "writes": "disabled",
+                "as_of": utcnow().isoformat(), "writes": "disabled", "shopify_orders": shopify_order_clients(),
+                "daily_orders": daily_order_clients(),
                 "integration": "ShipSidekick API (read-only)"}
     else:
         records = sample_shipments()
     return {"mode": "live" if live() else "demo", "clients": CLIENTS,
             "shipments": [classify(row) for row in records], "as_of": utcnow().isoformat(),
-            "integration": "Awaiting verified ShipSidekick connection"}
+            "integration": "Awaiting verified ShipSidekick connection", "shopify_orders": shopify_order_clients(),
+            "daily_orders": daily_order_clients()}
 
 
 @app.get("/api/inventory")
@@ -260,6 +315,82 @@ def shopify_sku_check():
             warnings.append("Not granted yet (needed for later order checks): " + ", ".join(catalog["missing_scopes"]))
         clients.append(dict(result, warnings=warnings, truncated=catalog["truncated"], fetched_at=catalog["fetched_at"]))
     return {"clients": clients, "as_of": utcnow().isoformat(), "writes": "disabled"}
+
+
+@app.get("/api/shopify/order")
+@protected
+def shopify_order():
+    """#13: the Shopify order behind one ShipSidekick shipment, read on demand. Read-only.
+    The shipping address goes only to this signed-in response (no-store); it is never cached,
+    logged or exported."""
+    if not shopify_source.enabled():
+        return jsonify(error="Shopify is not connected."), 503
+    if not ssk_source.enabled():
+        return jsonify(error="Needs the ShipSidekick shipment queue."), 503
+    client_id, shipment_id = request.args.get("client_id", ""), request.args.get("shipment", "")
+    if client_id not in [client["id"] for client in CLIENTS] or not shipment_id or len(shipment_id) > 64:
+        return jsonify(error="Choose one shipment."), 400
+    try:
+        store = ssk_source.read_shipments(client_id, ssk_source.lookback_days())
+    except ssk_source.SourceError as error:
+        return jsonify(error=ssk_source.ERRORS.get(error.code, ssk_source.ERRORS["read_failed"])), 502
+    # ShipSidekick's own shipment id: unique, unlike a tracking number reused across carriers.
+    matches = [row for row in store["rows"] if row.get("ssk_id") == shipment_id]
+    if len(matches) != 1:
+        return jsonify(error="That shipment is not (uniquely) in this client's current queue."), 404
+    shipment = matches[0]
+    name = shipment.get("order_number")
+    if not name:
+        return {"order": None, **order_check.check(client_id, shipment, [], unlinked=True), "writes": "disabled"}
+    # A voided label (shown as cancelled) is not a parcel: its replacement is the only shipment.
+    key = shopify_source._name_key(name)
+    same_order = sum(shopify_source._name_key(row.get("order_number")) == key
+                     and row.get("carrier_status") != "cancelled" for row in store["rows"])
+    try:
+        found = shopify_source.read_order(client_id, name)
+    except shopify_source.SourceError as error:
+        shopify_source.failure(client_id, error.code, error.status)
+        return jsonify(error=shopify_source.ERRORS[error.code]), 502
+    except shopify_source.InvalidOrderName:
+        return jsonify(error="This shipment's order number cannot be looked up in Shopify."), 422
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return jsonify(error="Shopify configuration is invalid or incomplete."), 503
+    orders = found["orders"]
+    queue_complete = not store.get("truncated") and not store.get("skipped_statuses")
+    result = order_check.check(client_id, shipment, orders, same_order, complete=found["complete"],
+                               queue_complete=queue_complete,
+                               search_complete=found["search_complete"])
+    unique = len(orders) == 1 and found["search_complete"]
+    return {"order": orders[0] if unique else None, "matches": len(orders), **result, "writes": "disabled"}
+
+
+@app.get("/api/shopify/daily-orders")
+@protected
+def shopify_daily_orders():
+    """#14: one client's Shopify orders for one day vs. EOD shipped vs. the Sheet. Read-only and
+    display-only: nothing changes the EOD, the ledger, Shopify or the Sheets. No customer fields.
+    The read runs in the background; the page polls until the status is done or failed."""
+    if not shopify_source.enabled():
+        return jsonify(error="Shopify is not connected."), 503
+    if not inventory_enabled():
+        return jsonify(error="Needs the Google Sheets connection (Daily Sales and Dashboard)."), 503
+    client_id = request.args.get("client_id", "")
+    if client_id not in [client["id"] for client in CLIENTS]:
+        return jsonify(error="Choose one client."), 400
+    today = datetime.now(ZoneInfo("America/New_York")).date()
+    try:
+        day = datetime.strptime(request.args.get("date", ""), "%Y-%m-%d").date()
+    except ValueError:
+        return jsonify(error="Choose a date."), 400
+    if day > today or (today - day).days > 366:
+        return jsonify(error="Choose a date in the last year, not in the future."), 400
+    if client_id not in shopify_order_clients():
+        return jsonify(error="No Shopify store is mapped for this client."), 503
+    if client_rules.package(client_id) is None:
+        # Nothing could be compared, so Shopify and the Sheets are never read for it.
+        return jsonify(error="No SKU rules are defined for this client yet."), 409
+    state = daily_orders.status(client_id, day, today)
+    return state, 202 if state["status"] == "running" else 200
 
 
 @app.get("/api/ssk/shipment-fields")

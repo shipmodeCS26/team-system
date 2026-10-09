@@ -28,6 +28,9 @@ Shopify's help center before sending.
    - `read_products`: SKU mapping check (Issue #12, required)
    - `read_inventory`: inventory comparison (later Issues)
    - `read_orders`: No Movement and daily order checks (Issues #13, #14)
+   - `read_all_orders`: lets the order check search older orders too. Without it
+     Shopify only searches the last 60 days, and ShipMode then hides the address
+     because it cannot confirm the match (Issue #13)
    - `read_customers`: reship address check (Issue #13)
    Shipping addresses and names are also "protected customer data". Shopify may
    ask the app to request that access level separately.
