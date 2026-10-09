@@ -11,12 +11,15 @@ Each client has one inventory sheet and one client Slack channel. Never read fro
 
 Internal channel shared by all clients: #inventory-updates `C0C2G9MBASH`. Warehouse updates (receipts, counts, found stock) are posted there by Orlando and the warehouse team.
 
+Internal channel for reships, shared by all clients: #reshipment-requests `C0C7GSQ11PH` (created Oct 8, 2026; members Gly, Orlando, Carlos, Nick). Gly forwards client reship requests to the warehouse there. Read it along with #inventory-updates, act only on requests that clearly name the client, and track each request until the warehouse confirms it shipped. For Muravai, a confirmed reship goes in the sheet's Adjustments & Reships tab.
+
 ## Required reading before any inventory update or report
 
 Before updating a client's sheet, auditing it, or drafting its report, read both:
 
 1. **#inventory-updates** (`C0C2G9MBASH`), including threads. Act only on messages that clearly name that client or its products. Clients are sometimes misspelled (for example "Facial Labs" for Fascial Labs). If the client is unclear, ask instead of writing.
 2. **The client's own channel**, including threads, for shipment tracking, quantities, ETAs, reships, and warehouse notes.
+3. **#reshipment-requests** (`C0C7GSQ11PH`), including threads, for that client's reship requests and the warehouse's replies.
 
 Log anything relevant in that client's sheet first, then make the report match the sheet. Check the channel's last posted report against the sheet, and call out any mismatch.
 
