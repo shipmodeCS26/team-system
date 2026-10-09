@@ -21,6 +21,7 @@ from inventory import read_dashboards
 from ledger_sources import calculate_clients
 import shopify_source
 import sku_check
+import client_rules
 import daily_orders
 import order_check
 import ssk_check
@@ -61,6 +62,11 @@ def shopify_order_clients():
     except (ValueError, KeyError, json.JSONDecodeError):
         return []
     return [client["id"] for client in CLIENTS if shopify_source._valid_store(stores.get(client["id"]))]
+
+
+def daily_order_clients():
+    """Clients the daily Shopify comparison can run for: a mapped store and SKU rules."""
+    return [client_id for client_id in shopify_order_clients() if client_rules.package(client_id)]
 
 
 def shopify_ready():
@@ -182,12 +188,14 @@ def workspace():
         return {"mode": "ssk", "clients": CLIENTS, "sources": sources, "lookback_days": days,
                 "shipments": [classify(dict(row, id=index + 1)) for index, row in enumerate(records)],
                 "as_of": utcnow().isoformat(), "writes": "disabled", "shopify_orders": shopify_order_clients(),
+                "daily_orders": daily_order_clients(),
                 "integration": "ShipSidekick API (read-only)"}
     else:
         records = sample_shipments()
     return {"mode": "live" if live() else "demo", "clients": CLIENTS,
             "shipments": [classify(row) for row in records], "as_of": utcnow().isoformat(),
-            "integration": "Awaiting verified ShipSidekick connection", "shopify_orders": shopify_order_clients()}
+            "integration": "Awaiting verified ShipSidekick connection", "shopify_orders": shopify_order_clients(),
+            "daily_orders": daily_order_clients()}
 
 
 @app.get("/api/inventory")
@@ -316,7 +324,9 @@ def shopify_order():
     name = shipment.get("order_number")
     if not name:
         return {"order": None, **order_check.check(client_id, shipment, [], unlinked=True), "writes": "disabled"}
-    same_order = sum(row.get("order_number") == name for row in store["rows"])
+    # A voided label (shown as cancelled) is not a parcel: its replacement is the only shipment.
+    same_order = sum(row.get("order_number") == name and row.get("carrier_status") != "cancelled"
+                     for row in store["rows"])
     try:
         found = shopify_source.read_order(client_id, name)
     except shopify_source.SourceError as error:
@@ -355,6 +365,9 @@ def shopify_daily_orders():
         return jsonify(error="Choose a date in the last year, not in the future."), 400
     if client_id not in shopify_order_clients():
         return jsonify(error="No Shopify store is mapped for this client."), 503
+    if client_rules.package(client_id) is None:
+        # Nothing could be compared, so Shopify and the Sheets are never read for it.
+        return jsonify(error="No SKU rules are defined for this client yet."), 409
     state = daily_orders.status(client_id, day, today)
     return state, 202 if state["status"] == "running" else 200
 

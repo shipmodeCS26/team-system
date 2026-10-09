@@ -191,13 +191,13 @@ function exportSsk(){
 function renderDaily(){
   const d=state.daily, r=d&&d.status==="done"?d.result:null, one=state.client!=="all";
   const fmt=n=>n==null?"—":Number(n).toLocaleString(), diff=n=>n==null?"—":n===0?"0":`<strong>${n>0?"+":""}${Number(n).toLocaleString()}</strong>`;
-  const mapped=(state.data?.shopify_orders||[]).includes(state.client);
+  const mapped=(state.data?.daily_orders||[]).includes(state.client);
   $("daily-check").disabled=!one||!mapped||d?.status==="running";
   $("daily-error").hidden=!(d&&(d.status==="failed"||r?.error));
   $("daily-error").textContent=d?.status==="failed"?d.error:r?.error||"";
   const empty=(title,text)=>`<tr><td colspan="8" class="empty-cell"><strong>${esc(title)}</strong>${esc(text)}</td></tr>`;
   if(!one){$("daily-rows").innerHTML=empty("Choose one client","The comparison runs for one client and one day at a time.");$("daily-extra").innerHTML="";$("daily-export").disabled=true;return}
-  if(!mapped){$("daily-rows").innerHTML=empty("No Shopify store connected","This client's Shopify store is not mapped in the private deployment settings yet.");$("daily-extra").innerHTML="";$("daily-export").disabled=true;return}
+  if(!mapped){$("daily-rows").innerHTML=empty("Not available for this client","Needs this client's Shopify store mapped in the private deployment settings and approved SKU rules.");$("daily-extra").innerHTML="";$("daily-export").disabled=true;return}
   if(!d){$("daily-rows").innerHTML=empty("Not checked","Choose a day, then Compare.");$("daily-extra").innerHTML="";$("daily-export").disabled=true;return}
   if(d.status==="running"){$("daily-rows").innerHTML=empty("Reading Shopify…",`${Number(d.orders_read||0).toLocaleString()} orders read so far. Shopify paces reads, so a busy day can take a minute or two.`);$("daily-extra").innerHTML="";$("daily-export").disabled=true;return}
   if(!r||r.error){$("daily-rows").innerHTML=empty("No comparison",r?.error||d.error||"");$("daily-extra").innerHTML="";$("daily-export").disabled=true;return}

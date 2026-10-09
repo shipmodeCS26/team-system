@@ -66,6 +66,21 @@ def read(scopes, nodes, name="#1001", **kw):
 
 
 class ReadOrderTests(unittest.TestCase):
+    def test_throttled_search_page_waits_and_retries(self):
+        fake = FakeShopify(["read_orders", "read_all_orders", "read_products"], [order_node("#1001")])
+        original, calls = fake.post, {"n": 0}
+
+        def post(url, json=None, **kw):
+            if json["query"] == shopify_source.ORDER_QUERY and calls["n"] == 0:
+                calls["n"] += 1
+                return Resp({"errors": [{"message": "Throttled", "extensions": {"code": "THROTTLED"}}]})
+            return original(url, json=json, **kw)
+        with patch.dict("os.environ", {"SHOPIFY_STORES_JSON": json.dumps(STORES)}), \
+                patch("shopify_source.requests.post", post), patch("shopify_source.time.sleep") as sleep:
+            found = shopify_source.read_order("muravai", "#1001")
+        self.assertEqual([o["name"] for o in found["orders"]], ["#1001"])
+        sleep.assert_called_once_with(2)
+
     def test_name_without_hash_matches_default_shopify_name(self):
         orders, _ = read(["read_orders", "read_all_orders", "read_products"], [order_node("#1001")], name="1001")
         self.assertEqual([o["name"] for o in orders], ["#1001"])
@@ -249,6 +264,19 @@ class OrderEndpointTests(unittest.TestCase):
          "items": [{"sku": "", "name": "Filtered Showerhead", "qty": 1}]},
         {"ssk_id": "s2", "tracking_number": "TRK2", "order_number": "#1001", "items": []},
         {"ssk_id": "s3", "tracking_number": "TRK3", "order_number": None, "items": []}]}
+    VOIDED = {"id": "muravai", "rows": [
+        {"ssk_id": "s1", "tracking_number": "TRK1", "order_number": "#1001", "carrier_status": "pre_transit",
+         "items": [{"sku": "", "name": "Filtered Showerhead", "qty": 1}]},
+        {"ssk_id": "s0", "tracking_number": "TRK0", "order_number": "#1001", "carrier_status": "cancelled", "items": []}]}
+
+    def test_voided_label_is_not_a_second_parcel(self):
+        client = app.test_client()
+        fake = FakeShopify(["read_orders", "read_all_orders", "read_products"], [order_node()])
+        with patch.dict("os.environ", self.ENV, clear=True), \
+                patch("app.ssk_source.read_shipments", return_value=self.VOIDED), \
+                patch("shopify_source.requests.post", fake.post):
+            body = client.get("/api/shopify/order?client_id=muravai&shipment=s1", headers=self.AUTH).get_json()
+        self.assertEqual(body["flags"], [])
 
     def test_requires_sign_in_reads_only_that_client_and_never_logs_address(self):
         client = app.test_client()

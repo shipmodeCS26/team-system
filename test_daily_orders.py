@@ -263,6 +263,14 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(kinds(result), {"shipped_later": ["#1"], "ordered_earlier": ["#2"]})
         self.assertEqual(result["exceptions"], [])
 
+    def test_unshipped_remainder_of_a_partly_shipped_order_is_timing(self):
+        orders = [order("#1", [item("Shower Hose", 10)], fulfillment="PARTIALLY_FULFILLED")]
+        result = compare(orders, [row(1, "1x Shower Hose", order="#1")])
+        self.assertEqual(kinds(result), {"partly_shipped": ["#1"]})
+        self.assertEqual((result["totals"]["timing"], result["totals"]["unexplained"]), (-9, 0))
+        fulfilled = compare([order("#1", [item("Shower Hose", 10)])], [row(1, "1x Shower Hose", order="#1")])
+        self.assertEqual(kinds(fulfilled), {"quantity_mismatch": ["#1"]})
+
     def test_incomplete_shopify_day_blanks_the_column_and_timing(self):
         result = compare([order("#1", [item("Shower Hose", 1)], fulfillment="UNFULFILLED")], [],
                          complete=False, oldest=SEP1)
@@ -507,6 +515,17 @@ class EndpointTests(unittest.TestCase):
         with patch.dict("os.environ", self.ENV, clear=True):
             body = app.test_client().get("/api/workspace", headers=self.AUTH).get_json()
         self.assertEqual(body["shopify_orders"], ["muravai"])
+        self.assertEqual(body["daily_orders"], ["muravai"])
+
+    def test_client_without_rules_never_reads_sources(self):
+        stores = {c: {"shop": f"{c}-test.myshopify.com", "token": "shpat_x"} for c in ("muravai", "claritymd")}
+        env = {**self.ENV, "SHOPIFY_STORES_JSON": json.dumps(stores)}
+        response, status = self.get("client_id=claritymd&date=2026-09-01", env=env)
+        self.assertEqual(response.status_code, 409)
+        status.assert_not_called()
+        with patch.dict("os.environ", env, clear=True):
+            body = app.test_client().get("/api/workspace", headers=self.AUTH).get_json()
+        self.assertEqual((sorted(body["shopify_orders"]), body["daily_orders"]), (["claritymd", "muravai"], ["muravai"]))
 
     def test_disabled_exposes_nothing(self):
         self.assertEqual(self.get("client_id=muravai&date=2026-09-01", env={})[0].status_code, 503)

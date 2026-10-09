@@ -47,13 +47,14 @@ TEXT = {
     "items_truncated": "Order has more lines than were read; items not compared",
     "shipped_later": "Ordered on this day, shipped on a later day (timing)",
     "ordered_earlier": "Shipped on this day, ordered on an earlier day (timing)",
+    "partly_shipped": "Ordered on this day, partly shipped; the rest is not shipped yet (timing)",
 }
 EXCEPTIONS = ("not_in_ssk", "fulfilled_not_in_ssk", "not_in_shopify", "quantity_mismatch", "unmapped",
               "cancelled_but_shipped", "test_order_shipped", "refunded_after_shipping", "several_orders",
               "items_truncated", "edited")
 SHIPPED_STATUSES = ("FULFILLED", "PARTIALLY_FULFILLED")
 LOOKUP_LIMIT = 40  # shipped orders older than the window are looked up by name, at most this many
-TIMING = ("shipped_later", "ordered_earlier")
+TIMING = ("shipped_later", "partly_shipped", "ordered_earlier")
 
 AS_OF_FORMATS = ("%d %b %Y", "%d %B %Y", "%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d")
 
@@ -275,14 +276,25 @@ def compare(client_id, day, shopify, sales_rows, sheet, lookups=None, today=None
         if unknown:
             add("unmapped", name, "ShipSidekick: " + ", ".join(unknown))
         comparable = not (usage.unknown_items or unknown or order.get("items_truncated"))
-        if comparable and shipped != shop:
-            add("quantity_mismatch", name, units={k: shipped.get(k, 0) - shop.get(k, 0)
-                                                  for k in set(shipped) | set(shop)})
-        if later:
+        when = "Shipped " + ", ".join(sorted({l["day"].strftime("%m/%d/%Y") for l in later})) if later else ""
+        if comparable:
+            extra, missing = shipped - shop, shop - shipped
+            fulfilled = str(order.get("fulfillment") or "").upper() == "FULFILLED"
+            if extra or (missing and fulfilled):
+                add("quantity_mismatch", name, units={k: shipped.get(k, 0) - shop.get(k, 0)
+                                                      for k in set(shipped) | set(shop)})
+            shipped_later = shop - on_day - missing  # labelled on a later day
+            unshipped = missing if not fulfilled else Counter()  # Shopify still owes these units
+            if shipped_later:
+                timing.subtract(shipped_later)
+                add("shipped_later", name, when, units=shipped_later)
+            if unshipped:
+                timing.subtract(unshipped)
+                add("partly_shipped", name, units=unshipped)
+        elif later:
             rest = shop - on_day
             timing.subtract(rest)
-            add("shipped_later", name, "Shipped " + ", ".join(sorted({l["day"].strftime("%m/%d/%Y") for l in later})),
-                units=rest)
+            add("shipped_later", name, when, units=rest)
 
     looked = (lookups or {}).get("found") or {}
     all_orders = bool((lookups or {}).get("all_orders"))

@@ -340,7 +340,7 @@ def read_order(client_id, order_name):
         raise SourceError("order_scope")
     nodes, after, search_complete = [], None, True
     for page in range(ORDER_SEARCH_PAGES):
-        data = _graphql(store, ORDER_QUERY, {"q": _search_term(order_name), "after": after})
+        data = _paced(store, ORDER_QUERY, {"q": _search_term(order_name), "after": after})
         connection = data.get("orders") or {}
         nodes += connection.get("nodes") or []
         info = connection.get("pageInfo") or {}
@@ -433,8 +433,9 @@ def _day_order(node):
 THROTTLE_WAITS = (2, 4, 8, 16)
 
 
-def _paced(store, document, variables, sleep=time.sleep):
+def _paced(store, document, variables, sleep=None):
     """Long reads pause and retry when Shopify's rate limit is reached, instead of failing."""
+    sleep = sleep or time.sleep
     for wait in THROTTLE_WAITS:
         try:
             return _graphql(store, document, variables)
@@ -445,7 +446,7 @@ def _paced(store, document, variables, sleep=time.sleep):
     return _graphql(store, document, variables)
 
 
-def read_day_orders(client_id, start, end, progress=None, sleep=time.sleep):
+def read_day_orders(client_id, start, end, progress=None, sleep=None):
     """#14: one client's orders created in [start, end), read-only and without customer fields.
     Returns orders newest first, `complete` (the whole window was read) and `oldest_read`."""
     store = store_config().get(client_id)
@@ -477,7 +478,7 @@ def _name_key(name):
     return str(name or "").strip().removeprefix("#").strip().lower()
 
 
-def find_orders(client_id, names, sleep=time.sleep):
+def find_orders(client_id, names, sleep=None):
     """#14: look up shipped orders that were not in the day window, by exact name (no customer
     fields). Returns {name: {"orders": [...], "search_complete": bool}} and whether Shopify searched
     all orders (read_all_orders) or only its last 60 days."""
