@@ -28,6 +28,9 @@ READ_PATHS = frozenset({"/inventory/levels", "/products", "/orders", "/shipments
 PAGE_SIZE = 100
 MAX_PAGES = 50  # 5,000 rows per store; more is reported as a warning, never silently dropped.
 CACHE_SECONDS = 55  # stock moves all day; the Inventory tab refreshes every minute
+SHIPMENT_CACHE_SECONDS = 150  # the No Movement queue is refreshed in the background every 2 minutes
+REFRESH_SECONDS = 120
+STATUS_WORKERS = 4
 
 log = logging.getLogger(__name__)
 _cache = {}
@@ -210,17 +213,26 @@ def open_shipments(key, days):
     """Shipments created in the last `days` days that are not delivered. GET only."""
     since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
     found, truncated, counts, rejected = {}, False, {}, []
-    for state in QUEUE_STATUSES:
+
+    def fetch(state):
         try:
-            rows, cut = get_all(key, "/shipments", {"trackingStatus": state, "dateRange[from]": since})
+            return get_all(key, "/shipments", {"trackingStatus": state, "dateRange[from]": since})
         except SourceError as error:
             if error.status != 400:
                 raise
-            # ShipSidekick does not accept this status word; the others still load, and the store is
-            # reported as incomplete (never as full coverage).
+            return None  # ShipSidekick does not accept this status word
+
+    # The statuses are independent reads, so they run side by side: a busy store loads in seconds,
+    # not one status after another. Any other failure still fails the whole store.
+    with ThreadPoolExecutor(max_workers=STATUS_WORKERS) as pool:
+        results = list(pool.map(fetch, QUEUE_STATUSES))
+    for state, result in zip(QUEUE_STATUSES, results):
+        if result is None:
+            # The others still load, and the store is reported as incomplete (never as full coverage).
             counts[state] = "rejected"
             rejected.append(state)
             continue
+        rows, cut = result
         # If ShipSidekick ignored the filter, other statuses would come back; refuse rather than show a partial queue.
         if any(_norm((row.get("tracker") or {}).get("status") if isinstance(row, dict) else None) != state
                for row in rows):
@@ -242,7 +254,7 @@ def read_shipments(client_id, days):
     cache_key = (client_id, days, hashlib.sha256(key.encode()).hexdigest())
     with _lock:
         cached = _shipment_cache.get(cache_key)
-        if cached and time.monotonic() - cached[0] < CACHE_SECONDS:
+        if cached and time.monotonic() - cached[0] < SHIPMENT_CACHE_SECONDS:
             return cached[1]
     raw, truncated, counts, rejected = open_shipments(key, days)
     rows = [row for row in (to_row(s, client_id) for s in raw) if row]
@@ -275,6 +287,54 @@ def read_shipment_stores(client_ids, days):
                 log.warning("ssk shipments failed client=%s type=%s", cid, type(error).__name__)
                 out.append({"id": cid, "error_code": "read_failed", "error": ERRORS["read_failed"]})
         return out
+
+
+# ---- Background queue -------------------------------------------------------------------------
+# The No Movement page never waits on ShipSidekick: stores are read in a background thread and the
+# page gets the latest finished read of each store (or "loading" until the first one finishes).
+# A request that waited for six stores could pass the web server's time limit and be killed.
+
+_snapshots = {}   # (client_id, days) -> (finished monotonic time, store result or error dict)
+_refreshing = set()
+
+
+def _spawn(target, args):
+    threading.Thread(target=target, args=args, daemon=True).start()
+
+
+def _refresh(client_ids, days):
+    try:
+        for store in read_shipment_stores(client_ids, days):
+            with _lock:
+                _snapshots[(store["id"], days)] = (time.monotonic(), store)
+    finally:
+        with _lock:
+            _refreshing.difference_update((cid, days) for cid in client_ids)
+
+
+def queue_snapshot(client_ids, days):
+    """Latest read of each store, never blocking. Stale or missing stores are refreshed in the
+    background; a store with no finished read yet is returned as {"id", "loading": True}."""
+    todo = []
+    with _lock:
+        for cid in client_ids:
+            if not api_key(cid):
+                continue
+            snap = _snapshots.get((cid, days))
+            if (snap is None or time.monotonic() - snap[0] >= REFRESH_SECONDS) and (cid, days) not in _refreshing:
+                todo.append(cid)
+        _refreshing.update((cid, days) for cid in todo)
+    if todo:
+        _spawn(_refresh, (todo, days))
+    out = []
+    with _lock:
+        for cid in client_ids:
+            if not api_key(cid):
+                out.append({"id": cid, "error_code": "not_configured", "error": ERRORS["not_configured"]})
+                continue
+            snap = _snapshots.get((cid, days))
+            out.append(snap[1] if snap else {"id": cid, "loading": True})
+    return out
 
 
 def read_store(client_id):

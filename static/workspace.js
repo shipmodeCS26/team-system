@@ -298,13 +298,15 @@ async function load(){
       $("client-select").value=state.client;
     }
     if(state.data.mode==="ssk"){
-      const sources=state.data.sources||[], ok=sources.filter(s=>!s.error_code);
+      const sources=state.data.sources||[], ok=sources.filter(s=>!s.error_code&&!s.loading), waiting=sources.filter(s=>s.loading);
       const bad=sources.filter(s=>s.error_code&&s.error_code!=="not_configured"), nokey=sources.filter(s=>s.error_code==="not_configured");
       const partial=s=>s.truncated?" (INCOMPLETE: list cut off)":s.skipped_statuses&&s.skipped_statuses.length?` (INCOMPLETE: ${s.skipped_statuses.join(", ")} not read)`:"";
       const test=ok.some(s=>s.environment==="test");
       $("mode-notice").querySelector("strong").textContent=test?"ShipSidekick TEST environment — not production shipments":"ShipSidekick shipments (read-only)";
-      $("mode-notice").querySelector("div span").textContent=(ok.length?`Not delivered, created in the last ${state.data.lookback_days} days: ${ok.map(s=>`${clientName(s.client_id)} ${s.shipments.toLocaleString()}${partial(s)}`).join(", ")}.`:"No store loaded.")+(bad.length?" Not loaded: "+bad.map(s=>`${clientName(s.client_id)} — ${s.error}`).join("; ")+".":"")+(nokey.length?" No ShipSidekick key yet, so no shipments shown: "+nokey.map(s=>clientName(s.client_id)).join(", ")+".":"");
-      $("side-connection").textContent=ok.length?`Connected · ${ok.map(s=>clientName(s.client_id)).join(", ")}`:"Not connected";
+      $("mode-notice").querySelector("div span").textContent=(ok.length?`Not delivered, created in the last ${state.data.lookback_days} days: ${ok.map(s=>`${clientName(s.client_id)} ${s.shipments.toLocaleString()}${partial(s)}`).join(", ")}.`:"No store loaded.")+(bad.length?" Not loaded: "+bad.map(s=>`${clientName(s.client_id)} — ${s.error}`).join("; ")+".":"")+(nokey.length?" No ShipSidekick key yet, so no shipments shown: "+nokey.map(s=>clientName(s.client_id)).join(", ")+".":"")+(waiting.length?" Still loading from ShipSidekick: "+waiting.map(s=>clientName(s.client_id)).join(", ")+" (this page updates by itself).":"");
+      // Stores are read in the background; check back shortly until every store has loaded.
+      clearTimeout(load.soon);if(waiting.length)load.soon=setTimeout(load,5000);
+      $("side-connection").textContent=ok.length?`Connected · ${ok.map(s=>clientName(s.client_id)).join(", ")}`:waiting.length?"Loading from ShipSidekick…":"Not connected";
       $("setup-button").hidden=true;
     }else if(state.data.mode==="live"){
       $("mode-notice").querySelector("strong").textContent="Live workspace";

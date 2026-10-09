@@ -189,9 +189,12 @@ def workspace():
     elif ssk_source.enabled():
         # Issue #17: real shipments pulled read-only from each store's ShipSidekick account; no database.
         days = ssk_source.lookback_days()
-        stores = ssk_source.read_shipment_stores([client["id"] for client in CLIENTS], days)
+        stores = ssk_source.queue_snapshot([client["id"] for client in CLIENTS], days)
         records, sources = [], []
         for store in stores:
+            if store.get("loading"):
+                sources.append({"client_id": store["id"], "loading": True})
+                continue
             if "error_code" in store:
                 sources.append({"client_id": store["id"], "error_code": store["error_code"], "error": store["error"]})
                 continue
@@ -200,6 +203,7 @@ def workspace():
                             "truncated": store["truncated"], "skipped_statuses": store["skipped_statuses"],
                             "environment": store["environment"], "fetched_at": store["fetched_at"]})
         return {"mode": "ssk", "clients": CLIENTS, "sources": sources, "lookback_days": days,
+                "loading": any(src.get("loading") for src in sources),
                 "shipments": [classify(dict(row, id=index + 1)) for index, row in enumerate(records)],
                 "as_of": utcnow().isoformat(), "writes": "disabled", "shopify_orders": shopify_order_clients(),
                 "daily_orders": daily_order_clients(),

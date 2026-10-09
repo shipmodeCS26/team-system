@@ -542,10 +542,15 @@ class ShipmentMappingTests(unittest.TestCase):
         self.assertIn("https://track.example/6", text)
 
 
+def run_now(target, args):
+    target(*args)
+
+
 class ShipmentReaderTests(unittest.TestCase):
     def setUp(self):
-        ssk_source._shipment_cache.clear()
-        self.addCleanup(ssk_source._shipment_cache.clear)
+        for store in (ssk_source._shipment_cache, ssk_source._snapshots, ssk_source._refreshing):
+            store.clear()
+            self.addCleanup(store.clear)
 
     def fake(self, by_status, reject=()):
         calls = []
@@ -583,7 +588,8 @@ class ShipmentReaderTests(unittest.TestCase):
         env = {"SSK_API_ENABLED": "true", "WORKSPACE_USER": "owner", "SECRET_KEY": "s",
                "WORKSPACE_PASSWORD_HASH": generate_password_hash("pw", method="pbkdf2:sha256"), **KEYS}
         get, _ = self.fake({"in-transit": [shipment("1", "in-transit")]})
-        with patch.dict("os.environ", env, clear=True), patch("ssk_source.requests.get", get):
+        with patch.dict("os.environ", env, clear=True), patch("ssk_source.requests.get", get), \
+                patch("ssk_source._spawn", run_now):
             self.assertEqual(client.get("/api/workspace").status_code, 401)
             body = client.get("/api/workspace", headers=auth).get_json()
         self.assertEqual(body["mode"], "ssk")
@@ -597,6 +603,59 @@ class ShipmentReaderTests(unittest.TestCase):
         self.assertNotIn("DEMO-", json.dumps(body))
 
 
+class BackgroundQueueTests(unittest.TestCase):
+    """The No Movement page never waits on ShipSidekick (a slow read once killed the web worker)."""
+
+    def setUp(self):
+        for store in (ssk_source._shipment_cache, ssk_source._snapshots, ssk_source._refreshing):
+            store.clear()
+            self.addCleanup(store.clear)
+
+    def test_first_request_returns_loading_and_starts_one_refresh(self):
+        started = []
+        with patch.dict("os.environ", KEYS, clear=True), \
+                patch("ssk_source._spawn", lambda target, args: started.append(args)):
+            first = ssk_source.queue_snapshot(["muravai", "onset"], 30)
+            again = ssk_source.queue_snapshot(["muravai", "onset"], 30)
+        self.assertEqual(first[0], {"id": "muravai", "loading": True})
+        self.assertEqual(first[1]["error_code"], "not_configured")
+        self.assertEqual(again[0], {"id": "muravai", "loading": True})
+        self.assertEqual(started, [(["muravai"], 30)])  # a refresh already running is not started twice
+
+    def test_finished_read_is_served_and_refreshed_only_when_stale(self):
+        store = {"id": "muravai", "rows": [], "truncated": False, "skipped_statuses": [],
+                 "environment": "production", "fetched_at": "x"}
+        started = []
+        with patch.dict("os.environ", KEYS, clear=True), \
+                patch("ssk_source.read_shipment_stores", return_value=[store]), \
+                patch("ssk_source._spawn", lambda target, args: (started.append(args), target(*args))):
+            self.assertEqual(ssk_source.queue_snapshot(["muravai"], 30), [store])
+            self.assertEqual(ssk_source.queue_snapshot(["muravai"], 30), [store])
+            self.assertEqual(len(started), 1)
+            ssk_source._snapshots[("muravai", 30)] = (0, store)  # older than REFRESH_SECONDS
+            ssk_source.queue_snapshot(["muravai"], 30)
+        self.assertEqual(len(started), 2)
+        self.assertEqual(ssk_source._refreshing, set())
+
+    def test_failed_refresh_clears_the_running_marker(self):
+        with patch.dict("os.environ", KEYS, clear=True), \
+                patch("ssk_source.read_shipment_stores", side_effect=RuntimeError("boom")), \
+                patch("ssk_source._spawn", lambda target, args: self.assertRaises(RuntimeError, target, *args)):
+            self.assertEqual(ssk_source.queue_snapshot(["muravai"], 30), [{"id": "muravai", "loading": True}])
+        self.assertEqual(ssk_source._refreshing, set())
+
+    def test_workspace_reports_loading_stores(self):
+        auth = {"Authorization": "Basic " + base64.b64encode(b"owner:pw").decode()}
+        env = {"SSK_API_ENABLED": "true", "WORKSPACE_USER": "owner", "SECRET_KEY": "s",
+               "WORKSPACE_PASSWORD_HASH": generate_password_hash("pw", method="pbkdf2:sha256")}
+        with patch.dict("os.environ", env, clear=True), \
+                patch("app.ssk_source.queue_snapshot", return_value=[{"id": "muravai", "loading": True}]):
+            body = app.test_client().get("/api/workspace", headers=auth).get_json()
+        self.assertTrue(body["loading"])
+        self.assertEqual(body["sources"], [{"client_id": "muravai", "loading": True}])
+        self.assertEqual(body["shipments"], [])
+
+
 class ResponseSizeTests(unittest.TestCase):
     def test_large_json_is_gzipped_only_when_accepted(self):
         import gzip as gz
@@ -608,7 +667,7 @@ class ResponseSizeTests(unittest.TestCase):
         store = {"id": "muravai", "rows": rows, "truncated": False, "skipped_statuses": [],
                  "environment": "production", "fetched_at": "2026-10-06T00:00:00+00:00"}
         with patch.dict("os.environ", env, clear=True), \
-                patch("app.ssk_source.read_shipment_stores", return_value=[store]):
+                patch("app.ssk_source.queue_snapshot", return_value=[store]):
             zipped = client.get("/api/workspace", headers={**auth, "Accept-Encoding": "gzip"})
             plain = client.get("/api/workspace", headers=auth)
             refused = client.get("/api/workspace", headers={**auth, "Accept-Encoding": "gzip;q=0, identity"})
