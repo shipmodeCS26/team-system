@@ -313,7 +313,9 @@ class CodexRoundTwoTests(unittest.TestCase):
         self.assertEqual(report["sections"][4]["lines"][0], "• Pending client confirmation of PO26")
         values[10] = ["#REF!"]
         report = build_report("puravita", "PuraVita", parse_dashboard(values), check("puravita", parse_dashboard(values), csv_for("puravita")))
-        self.assertNotIn("#REF!", report["text"])
+        self.assertNotIn("#REF!", report["text"].split("\n\n", 1)[1])
+        self.assertFalse(report["ready_to_send"])
+        self.assertTrue(any("#REF!" in r for r in report["hold_reasons"]))
 
     def test_incomplete_sheet_status_holds(self):
         values = [list(r) for r in SHEETS["muravai"]]

@@ -153,6 +153,9 @@ def build_report(client_id: str, client_name: str, source: dict, check: dict,
         hold.append(f"Incoming shipments were not read: {incoming_error}")
     if incoming and incoming.get("truncated"):
         hold.append("The Incoming Stocks tab is longer than ShipMode reads; later shipments may be missing.")
+    if FORMULA_ERROR.match(source.get("action_list") or ""):
+        # Left out of the client text, but the Sheet's own instructions couldn't be read: hold.
+        hold.append(f"The Dashboard action list shows {source['action_list'].strip()}; fix it in the Sheet.")
     if incoming_backdated:
         # The Incoming Stocks tab only holds today's state: lines received since the report date have
         # already moved to history, so the Incoming section can't be shown as of that date.
