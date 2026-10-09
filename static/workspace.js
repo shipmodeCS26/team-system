@@ -117,6 +117,32 @@ async function openDailyUpdate(){
   }catch(error){toast(error.message)}
   finally{updateDailyButton()}
 }
+// #9: the standard EOD report for one client. Read-only: it is built from the Sheet and checked against
+// ShipSidekick; a person copies the text and image into the client's own channel.
+async function openEodReport(noShipments=false){
+  const button=$("eod-button"),client=state.client,ticket=state.eodRequest=(state.eodRequest||0)+1;button.disabled=true;
+  try{
+    const result=await api("/api/eod-report",{method:"POST",body:JSON.stringify({client_id:client,no_shipments_confirmed:noShipments})});
+    if(client!==state.client||ticket!==state.eodRequest)return;  // never show another client's report
+    const r=result.report;
+    $("eod-client").textContent=clientName(client);
+    $("eod-status").textContent=r.ready_to_send?"Ready to send":r.status;$("eod-status").className="badge "+(r.ready_to_send?"verified":r.status==="REVIEW"?"watch":"");
+    $("eod-hold").innerHTML=r.ready_to_send?"":`<strong>Hold, do not send (${esc(r.status)})</strong><ul>${(r.hold_reasons.length?r.hold_reasons:["Not verified."]).map(t=>`<li>${esc(t)}</li>`).join("")}</ul>`;$("eod-hold").hidden=r.ready_to_send;
+    const notes=[...(r.notes||[]),result.draft.note||"",r.check.rules&&r.check.rules!=="APPROVED"?`SKU rules for this client are ${r.check.rules}; the check uses them until ShipMode approves them.`:""].filter(Boolean);
+    $("eod-note").textContent=notes.join(" ");$("eod-note").hidden=!notes.length;
+    $("eod-no-shipments").checked=noShipments;
+    $("eod-image").src=result.image;$("eod-download").href=result.image;$("eod-download").download=result.draft.attach;
+    $("eod-text").value=r.text;
+    $("eod-read-at").textContent=`Built from the Sheet as read ${result.sheet_read_at?date(result.sheet_read_at,true):"just now"}.`;
+    if(!$("eod-dialog").open)$("eod-dialog").showModal();
+  }catch(error){toast(error.message)}
+  finally{updateDailyButton()}
+}
+async function copyEod(){
+  const text=$("eod-text").value;
+  try{await navigator.clipboard.writeText(text);toast("Report copied. Paste it into the client's channel and attach the image.")}
+  catch{$("eod-text").select();toast("Select-all is ready; press Ctrl+C (⌘C) to copy.")}
+}
 async function copyDailyUpdate(){
   const text=$("update-text").value;
   try{await navigator.clipboard.writeText(text);toast("Update copied. Paste it into the client's channel.")}
@@ -125,6 +151,7 @@ async function copyDailyUpdate(){
 function updateDailyButton(){
   const source=(state.inventorySources||[])[0];
   $("daily-update-button").disabled=state.client==="all"||!source||!!source.error;
+  $("eod-button").disabled=$("daily-update-button").disabled;
 }
 const loadCalculated=makePanelLoader(state,(...a)=>api(...a),"calculated","/api/inventory/calculated",()=>renderCalculated());
 function shopifyRows(){return (state.shopify||[]).filter(c=>!c.error).flatMap(c=>c.variants.map(r=>({...r,client:c.client_id})))}
@@ -328,7 +355,7 @@ function exportQueue(){
 }
 document.querySelectorAll("[data-section]").forEach(el=>el.addEventListener("click",()=>section(el.dataset.section)));
 document.querySelectorAll("[data-tier],[data-filter]").forEach(el=>el.addEventListener("click",()=>{state.filter=el.dataset.tier||el.dataset.filter;state.page=1;render()}));
-$("client-select").addEventListener("change",e=>{state.client=e.target.value;state.page=1;resetPanels(state,["calculated","shopify","ssk","daily"]);state.shopifyShown=200;renderCalculated();renderShopify();renderSsk();try{localStorage.setItem("shipmode-client",state.client)}catch{}render();if(state.section==="inventory")loadInventory()});
+$("client-select").addEventListener("change",e=>{if($("eod-dialog").open)$("eod-dialog").close();state.client=e.target.value;state.page=1;resetPanels(state,["calculated","shopify","ssk","daily"]);state.shopifyShown=200;renderCalculated();renderShopify();renderSsk();try{localStorage.setItem("shipmode-client",state.client)}catch{}render();if(state.section==="inventory")loadInventory()});
 $("search").addEventListener("input",e=>{state.search=e.target.value;state.page=1;render()});
 $("carrier-filter").addEventListener("change",e=>{state.carrier=e.target.value;state.page=1;render()});
 $("previous").addEventListener("click",()=>{state.page--;render()});$("next").addEventListener("click",()=>{state.page++;render()});
@@ -345,6 +372,10 @@ $("daily-date").value=yesterday;$("daily-date").max=today}
 $("daily-check").addEventListener("click",()=>{if($("daily-date").value)checkDaily($("daily-date").value)});
 $("daily-export").addEventListener("click",exportDaily);
 $("daily-update-button").addEventListener("click",openDailyUpdate);
+$("eod-button").addEventListener("click",()=>openEodReport(false));
+$("eod-copy").addEventListener("click",copyEod);
+$("eod-no-shipments").addEventListener("change",e=>openEodReport(e.target.checked));
+$("eod-dialog").addEventListener("close",()=>{state.eodRequest=(state.eodRequest||0)+1;$("eod-text").value="";$("eod-image").removeAttribute("src")});
 $("update-copy").addEventListener("click",copyDailyUpdate);
 $("incoming-history-toggle").addEventListener("click",()=>{state.incomingHistory=!state.incomingHistory;renderIncoming()});
 $("shopify-export").addEventListener("click",exportShopify);
@@ -357,4 +388,4 @@ $("confirm-import").addEventListener("click",async()=>{
   $("confirm-import").disabled=true;
   try{const result=await api("/api/import",{method:"POST",body:JSON.stringify({client_id:$("import-client").value,csv:await file.text()})});$("import-result").textContent=`${result.inserted} added, ${result.updated} updated.`;await load()}catch(e){$("import-result").textContent=e.message}finally{$("confirm-import").disabled=false}
 });
-load();setInterval(()=>{if(!document.hidden && !$("detail-dialog").open && !$("import-dialog").open && !$("update-dialog").open){load();if(state.section==="inventory")loadInventory()}},60000);
+load();setInterval(()=>{if(!document.hidden && !$("detail-dialog").open && !$("import-dialog").open && !$("update-dialog").open && !$("eod-dialog").open){load();if(state.section==="inventory")loadInventory()}},60000);

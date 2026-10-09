@@ -321,7 +321,8 @@ class SkuCheckTests(unittest.TestCase):
         missing = sku_check.check("nuerosmile", [variant("Magnesium Spray", "NEURO-SPRAY")])
         self.assertEqual(missing["rules"][0]["state"], "missing")
         self.assertEqual(missing["summary"]["unmapped"], 1)
-        self.assertEqual(missing["summary"]["rules_missing"], 1)
+        # Neurosmile has two rules (NEURO-120, MAG-SPRAY-360); neither is on this catalog.
+        self.assertEqual(missing["summary"]["rules_missing"], 2)
 
     def test_muravai_matches_by_product_name_like_its_rules(self):
         result = sku_check.check("muravai", [

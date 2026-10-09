@@ -77,6 +77,10 @@ def parse_dashboard(values):
         "demand": column("Daily Demand", "Daily Demand (30d)"),
         "cover": column("Covered Days", "Days of Cover"),
         "status": column("Status", "Reorder Status"),
+        "run_out": column("Runs Out (with incoming)", "Runs Out"),
+        "order_by": column("Order By", "Ship New PO By"),
+        "suggested": column("Suggested Order Qty", "Total to Order (full cases)"),
+        "incoming": column("Incoming (Not Arrived)"),
     }
     if positions["product"] is None or positions["remaining"] is None:
         raise SourceError("layout_changed")
@@ -121,6 +125,9 @@ def parse_dashboard(values):
         "report_status": cell(3, 4) or "SOURCE VALUES",
         "summary": {"products": cell(6, 0), "reorder": cell(6, 2),
                     "out": cell(6, 4), "on_hand": cell(6, 6)},
+        "summary_labels": {"products": cell(5, 0), "reorder": cell(5, 2),
+                           "out": cell(5, 4), "on_hand": cell(5, 6)},
+        "action_list": cell(10, 0),
         "rows": rows,
         "issue_rows": issues,
         "may_continue": may_continue,
