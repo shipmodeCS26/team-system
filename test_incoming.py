@@ -175,6 +175,25 @@ class ReadIncomingTests(unittest.TestCase):
         self.assertEqual(len(FakeReader.last_ranges), len(COLUMNS))
         self.assertNotIn("N2", " ".join(FakeReader.last_ranges))  # Box Details column is never requested
 
+    def test_cache_is_kept_per_evaluation_date(self):
+        # Flags like "past expected date" depend on the day they are judged on, so the EOD report for an
+        # earlier as-of date must never reuse (or overwrite) today's cached read, and the reverse.
+        from datetime import timedelta
+        calls = []
+
+        class Counting(FakeReader):
+            def batch(self, ranges, optional=False):
+                calls.append(1)
+                return super().batch(ranges, optional)
+        with patch("incoming.SheetReader", Counting):
+            incoming.read_incoming(["muravai"], TODAY)
+            first = len(calls)
+            incoming.read_incoming(["muravai"], TODAY - timedelta(days=3))
+            second = len(calls)
+            incoming.read_incoming(["muravai"], TODAY)
+        self.assertGreater(second, first)
+        self.assertEqual(len(calls), second)
+
     def test_missing_tab_changed_header_and_missing_mapping_are_per_client(self):
         class NoTab(FakeReader):
             def batch(self, ranges, optional=False):

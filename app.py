@@ -316,7 +316,11 @@ def eod_report():
     person to review and post."""
     if not inventory_enabled():
         return jsonify(error="Google Sheets inventory is not connected."), 503
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True)
+    if body is None:
+        body = {}
+    if not isinstance(body, dict):
+        return jsonify(error="Send the report request as a JSON object."), 400
     selected = body.get("client_id", "")
     names = {client["id"]: client["name"] for client in CLIENTS}
     if selected not in names:
@@ -330,7 +334,7 @@ def eod_report():
         # Incoming flags (e.g. past expected date) are judged on the report's own date, not today.
         report_day = daily_orders.sheet_day(source.get("as_of")) or datetime.now(ZoneInfo("America/New_York")).date()
         extra = read_incoming([selected], report_day)[0]
-        if body.get("csv"):
+        if body.get("csv") is not None:  # an uploaded CSV is the override, even when it is empty
             rows, missing, label = list(csv.DictReader(io.StringIO(body["csv"].lstrip("\ufeff")))), "", \
                 str(body.get("csv_name") or "uploaded CSV")[:120]
         else:

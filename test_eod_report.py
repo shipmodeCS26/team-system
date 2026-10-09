@@ -234,6 +234,57 @@ class ReviewFixTests(unittest.TestCase):
         self.assertEqual(report["sections"][2]["lines"], ["• Not tracked in this report."])
 
 
+class CodexFixTests(unittest.TestCase):
+    """Fixes from the Codex review of PR #22 (dea1f1c)."""
+
+    def setUp(self):
+        self.source = parse_dashboard(SHEETS["puravita"])
+
+    def test_truncated_incoming_holds_and_status_is_never_verified_when_held(self):
+        result = check("puravita", self.source, csv_for("puravita"))
+        report = build_report("puravita", "PuraVita", self.source, result, {"available": True, "shipments": [], "truncated": True})
+        self.assertFalse(report["ready_to_send"])
+        self.assertEqual((report["status"], report["check_status"]), ("INCOMPLETE", VERIFIED))
+        self.assertTrue(report["text"].startswith("HOLD, DO NOT SEND (INCOMPLETE)"))
+        failed = build_report("puravita", "PuraVita", self.source, result, None, "denied")
+        self.assertEqual(failed["status"], "INCOMPLETE")
+
+    def test_blank_items_hold(self):
+        rows = csv_for("puravita") + [row("puravita", "9/28/26", "  ", "T9", "#9")]
+        result = check("puravita", self.source, rows, csv_name="Daily Sales tab")
+        self.assertEqual(result["status"], REVIEW)
+        self.assertTrue(any("has no Items" in r for r in result["reasons"]))
+
+    def test_same_tracking_on_another_date_holds(self):
+        rows = csv_for("puravita") + [row("puravita", "9/27/26", "1x Puravita Magnesium Performance Capsules (CAP-MAGNESIUM-360)", "T1")]
+        result = check("puravita", self.source, rows)
+        self.assertEqual(result["status"], REVIEW)
+        self.assertTrue(any("Tracking T1 appears on more than one date" in r for r in result["reasons"]))
+
+    def test_fractional_shipped_is_not_a_whole_number(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[14][2] = "300.5"
+        result = check("puravita", parse_dashboard(values), csv_for("puravita"))
+        self.assertEqual(result["status"], REVIEW)
+        self.assertTrue(any("not a whole number" in r for r in result["reasons"]))
+
+    def test_two_dashboard_rows_for_one_sku_hold(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values.append(list(values[14]))
+        result = check("puravita", parse_dashboard(values), csv_for("puravita"))
+        self.assertEqual(result["status"], REVIEW)
+        self.assertTrue(any("More than one Dashboard row maps to PVT001" in r for r in result["reasons"]))
+
+    def test_official_action_list_comes_first(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[10] = ["Ship PO26 by Friday\n- Confirm 9,000 capsules"]
+        report = build_report("puravita", "PuraVita", parse_dashboard(values), check("puravita", parse_dashboard(values), csv_for("puravita")))
+        self.assertEqual(report["sections"][4]["lines"][:2], ["• Ship PO26 by Friday", "• Confirm 9,000 capsules"])
+
+    def test_legacy_private_channel_id_is_accepted(self):
+        self.assertEqual(slack_draft.channel_for("puravita", {"puravita": "G0ABCDEFGH1"}), "G0ABCDEFGH1")
+
+
 class IsolationTests(unittest.TestCase):
     IDENTIFIERS = {
         "puravita": ["PuraVita", "Puravita", "PVT0", "Magnesium Performance", "CAP-MAGNESIUM"],
@@ -316,6 +367,19 @@ class EndpointTests(unittest.TestCase):
         with self.client.session_transaction() as session:
             session["csrf"] = "token"
         return self.client.post("/api/eod-report", json=body, headers={**self.auth, "X-CSRF-Token": csrf})
+
+    def test_non_object_body_is_a_400(self):
+        for body in ([], "puravita", 1):
+            self.assertEqual(self.post(body).status_code, 400, body)
+
+    @patch("app.read_incoming", return_value=[{"id": "puravita", "available": False}])
+    @patch("app.read_dashboards")
+    def test_empty_uploaded_csv_is_used_not_the_daily_sales_tab(self, dashboards, _incoming):
+        dashboards.return_value = [parse_dashboard(SHEETS["puravita"]) | {"id": "puravita"}]
+        with patch("app.daily_sales_rows") as sales:
+            data = self.post({"client_id": "puravita", "csv": ""}).get_json()
+        sales.assert_not_called()
+        self.assertEqual(data["report"]["status"], INCOMPLETE)
 
     def test_requires_sign_in_and_csrf(self):
         self.assertEqual(self.client.post("/api/eod-report", json={"client_id": "puravita"}).status_code, 401)

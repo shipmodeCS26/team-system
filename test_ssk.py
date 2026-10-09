@@ -632,7 +632,8 @@ class BackgroundQueueTests(unittest.TestCase):
             self.assertEqual(ssk_source.queue_snapshot(["muravai"], 30), [store])
             self.assertEqual(ssk_source.queue_snapshot(["muravai"], 30), [store])
             self.assertEqual(len(started), 1)
-            ssk_source._snapshots[("muravai", 30)] = (0, store)  # older than REFRESH_SECONDS
+            stale = ssk_source.time.monotonic() - ssk_source.REFRESH_SECONDS - 1  # not 0: monotonic can be small
+            ssk_source._snapshots[("muravai", 30)] = (stale, store)
             ssk_source.queue_snapshot(["muravai"], 30)
         self.assertEqual(len(started), 2)
         self.assertEqual(ssk_source._refreshing, set())

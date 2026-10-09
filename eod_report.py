@@ -96,6 +96,14 @@ def _actions(rows: list[dict], as_of, incoming: dict | None) -> list[str]:
     return actions
 
 
+def _official_actions(source: dict) -> list[str]:
+    """The Dashboard's own action list (curated in the Sheet) comes first, word for word."""
+    text = (source.get("action_list") or "").strip()
+    if not text or ERROR_VALUE.search(text):
+        return []
+    return [f"• {line.strip().lstrip('•-* ').strip()}" for line in text.splitlines() if line.strip()]
+
+
 def _data_status(check: dict) -> list[str]:
     date_text = check.get("report_date") or "the report date"
     day = parse_as_of(date_text)
@@ -128,23 +136,28 @@ def build_report(client_id: str, client_name: str, source: dict, check: dict,
         {"title": "Forecast", "lines": _forecast(rows)},
         {"title": "Incoming", "lines": listed},
         {"title": "Alerts", "lines": _alerts(rows, as_of, incoming)},
-        {"title": "Actions needed", "lines": _actions(rows, as_of, incoming)},
+        {"title": "Actions needed", "lines": _official_actions(source) + _actions(rows, as_of, incoming)},
         {"title": "Data status", "lines": _data_status(check)},
     ]
     hold = list(check.get("reasons") or [])
     if incoming_error:
         hold.append(f"Incoming shipments were not read: {incoming_error}")
+    if incoming and incoming.get("truncated"):
+        hold.append("The Incoming Stocks tab is longer than ShipMode reads; later shipments may be missing.")
     notes = [f"Left out of Incoming until SKU and quantity are verified: {', '.join(held_back)}."] if held_back else []
     ready = check["status"] == VERIFIED and not hold
+    # One overall status for the window, image and text: a held report is never shown as VERIFIED.
+    status = check["status"] if check["status"] != VERIFIED else (VERIFIED if ready else "INCOMPLETE")
 
     lines = []
     if not ready:
-        lines += [f"HOLD, DO NOT SEND ({check['status']}): " + " ".join(hold or ["Not verified."]), ""]
+        lines += [f"HOLD, DO NOT SEND ({status}): " + " ".join(hold or ["Not verified."]), ""]
     lines.append(f"Hi @channel! Here is the {client_name} End-of-Day Inventory Report "
                  f"as of {source.get('as_of') or 'an unknown date'}.")
     for number, section in enumerate(sections, start=1):
         lines += ["", f"*{number}. {section['title']}*", *section["lines"]]
     lines += ["", "Thank you!"]
-    return {"client_id": client_id, "as_of": source.get("as_of", ""), "status": check["status"],
+    return {"client_id": client_id, "as_of": source.get("as_of", ""), "status": status,
+            "check_status": check["status"],
             "ready_to_send": ready, "hold_reasons": hold, "notes": notes, "held_back": held_back,
             "sections": sections, "check": check, "text": "\n".join(lines)}

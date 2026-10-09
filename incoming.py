@@ -138,7 +138,7 @@ def parse_incoming(values_by_key: dict[str, list], today: date) -> dict:
 
 def _read_one(client_id: str, sheet_id: str, credentials: dict, today: date) -> dict:
     with _lock:
-        cached = _cache.get((client_id, sheet_id))
+        cached = _cache.get((client_id, sheet_id, today))  # flags depend on the date they are judged on
         if cached and time.monotonic() - cached[0] < CACHE_SECONDS:
             return cached[1]
     reader = SheetReader(sheet_id, credentials)
@@ -153,7 +153,7 @@ def _read_one(client_id: str, sheet_id: str, credentials: dict, today: date) -> 
         blocks = reader.batch([f"{TAB}!{letter}2:{letter}{LAST_ROW}" for letter in letters.values()])
         result = {"id": client_id, **parse_incoming(dict(zip(letters, blocks)), today)}
     with _lock:
-        _cache[(client_id, sheet_id)] = (time.monotonic(), result)
+        _cache[(client_id, sheet_id, today)] = (time.monotonic(), result)
     return result
 
 

@@ -17,7 +17,8 @@ from datetime import date
 import client_rules
 import ssk_check
 from daily_orders import sheet_day
-from eod import build_eod, parse_created_date
+from eod import build_eod, is_voided, parse_created_date
+from incoming import whole_units
 from ledger_sources import parse_int
 
 VERIFIED, REVIEW, INCOMPLETE = "VERIFIED", "REVIEW", "INCOMPLETE"
@@ -46,7 +47,9 @@ def check(client_id: str, source: dict, csv_rows: list[dict] | None, *,
     if csv_rows is not None:
         # Only the report date's rows are recounted. A row whose Created Date can't be read could be
         # one of them, so it is named (Sheet row number) and holds the report; it never stops the check.
-        dated = []
+        dated, seen = [], {}
+        mine = lambda row: (str(row.get("Organization") or "").strip().lower() == rules.organization.lower()
+                            and not is_voided(row.get("Voided", "")))
         for number, row in enumerate(csv_rows, start=2):
             try:
                 created = parse_created_date(row.get("Created Date", ""))
@@ -55,8 +58,20 @@ def check(client_id: str, source: dict, csv_rows: list[dict] | None, *,
                     result["reasons"].append(f"{csv_name or 'Shipments'} row {number}: Created Date "
                                              f"{row.get('Created Date', '')!r} can't be read; it may belong to this date.")
                 continue
+            tracking = str(row.get("Tracking Code") or "").strip()
+            if tracking and mine(row):
+                seen.setdefault(tracking, []).append((number, created))
             if created == report_date:
                 dated.append(row)
+                if mine(row) and not str(row.get("Items") or "").strip():
+                    # Contents can't be recounted, so a zero here would not be proof of zero units.
+                    result["reasons"].append(f"{csv_name or 'Shipments'} row {number}: a shipment on this date has no Items.")
+        # The same tracking code on another date (a duplicated or re-dated row) is held, never counted twice.
+        for tracking, uses in seen.items():
+            days = {created for _, created in uses}
+            if report_date in days and len(days) > 1:
+                rows_text = ", ".join(str(number) for number, _ in uses)
+                result["reasons"].append(f"Tracking {tracking} appears on more than one date (rows {rows_text}).")
         try:
             day = build_eod(dated, rules).get(report_date)
         except ValueError as error:
@@ -83,16 +98,25 @@ def check(client_id: str, source: dict, csv_rows: list[dict] | None, *,
         return result
     result["orders"] = orders
 
+    mapped = {}
+    for row in source.get("rows") or []:
+        sku = ssk_check.match_sheet_row(rules, row.get("product", ""))
+        if sku:
+            mapped.setdefault(sku, []).append(row.get("product", "").strip())
+    for sku, products in mapped.items():
+        if len(products) > 1:
+            # Each row would be compared with the same total, so two rows of 10 could "match" a recount of 10.
+            result["reasons"].append(f"More than one Dashboard row maps to {sku}: {', '.join(products)}.")
     for row in source.get("rows") or []:
         # The same Dashboard-name matching the rest of the workspace uses (one client's rules only).
         sku = ssk_check.match_sheet_row(rules, row.get("product", ""))
-        sheet = parse_int(row.get("shipped"))
+        sheet = whole_units(row.get("shipped"))  # 2.5 or -1 is never read as a whole number of units
         item = {"product": row.get("product", "").strip(), "sku": sku or "", "sheet": row.get("shipped", ""),
                 "csv": usage.get(sku) if sku else None}
         if sku is None:
             result["reasons"].append(f"Dashboard product {item['product']!r} has no SKU mapping for this client.")
         elif sheet is None:
-            result["reasons"].append(f"{item['product']}: Sheet shipped value {row.get('shipped')!r} is not a number.")
+            result["reasons"].append(f"{item['product']}: Sheet shipped value {row.get('shipped')!r} is not a whole number.")
         elif sheet != usage[sku]:
             item["gap"] = sheet - usage[sku]
             result["reasons"].append(f"{item['product']} ({sku}): Sheet shows {sheet:,} shipped, "

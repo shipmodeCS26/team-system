@@ -10,7 +10,7 @@ import json
 import os
 import re
 
-CHANNEL_ID = re.compile(r"C[A-Z0-9]{8,}")
+CHANNEL_ID = re.compile(r"[CG][A-Z0-9]{8,}")  # G… = private channel created before 2021
 
 
 def channel_for(client_id: str, registry: dict | None = None) -> str | None:
