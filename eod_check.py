@@ -80,6 +80,9 @@ def check(client_id: str, source: dict, csv_rows: list[dict] | None, *,
             day = None
             missing = "unreadable"
         if day is not None and day.orders == 0:
+            # Other clients' rows, unknown items or duplicates still hold the report, even when the
+            # warehouse confirms no shipments.
+            result["reasons"] += day.flags + day.unknown_items + day.duplicate_tracking_excluded
             day = None  # only voided or other clients' rows: an empty day needs the warehouse confirmation
             missing = f"The shipments ({csv_name or 'export'}) have no counted shipments dated {report_date:%d %b %Y}."
         if day is not None:

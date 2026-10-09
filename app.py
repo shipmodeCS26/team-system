@@ -23,7 +23,8 @@ from eod_report import build_report
 from slack_draft import draft as slack_draft
 import ledger_sources
 from incoming import read_incoming
-import inventory
+# Aliased: the /api/inventory view function below is also named `inventory`.
+import inventory as inventory_source
 from inventory import SHEET_ID, read_dashboards
 from ledger_sources import calculate_clients
 import shopify_source
@@ -294,16 +295,20 @@ def csrf_checked(fn):
     return wrapper
 
 
+def warehouse_today():
+    return datetime.now(ZoneInfo("America/New_York")).date()
+
+
 def daily_sales_rows(client_id):
     """The client's own Daily Sales tab (the ShipSidekick export already in its Sheet), read-only.
     Returns (rows, None) or (None, reason)."""
     try:
-        sources, credentials = inventory.source_config()
+        sources, credentials = inventory_source.source_config()
         sheet_id = sources.get(client_id)
         if not (isinstance(sheet_id, str) and SHEET_ID.fullmatch(sheet_id)):
             return None, "This client's workbook is not mapped in the private settings."
         return ledger_sources.SheetReader(sheet_id, credentials).daily_sales(), None
-    except inventory.SourceError as error:
+    except inventory_source.SourceError as error:
         app.logger.warning("eod daily sales failed client=%s code=%s status=%s", client_id, error.code, error.status)
         return None, "The Daily Sales tab could not be read: " + ledger_sources.ERRORS.get(error.code, ledger_sources.ERRORS["read_failed"])
 
@@ -332,7 +337,8 @@ def eod_report():
         if source.get("error"):
             return jsonify(error=f"{names[selected]} inventory did not load: {source['error']}"), 409
         # Incoming flags (e.g. past expected date) are judged on the report's own date, not today.
-        report_day = daily_orders.sheet_day(source.get("as_of")) or datetime.now(ZoneInfo("America/New_York")).date()
+        today = warehouse_today()
+        report_day = daily_orders.sheet_day(source.get("as_of")) or today
         extra = read_incoming([selected], report_day)[0]
         if body.get("csv") is not None:  # an uploaded CSV is the override, even when it is empty
             rows, missing, label = list(csv.DictReader(io.StringIO(body["csv"].lstrip("\ufeff")))), "", \
@@ -344,7 +350,8 @@ def eod_report():
     result = eod_check(selected, source, rows, csv_name=label, missing_reason=missing or "",
                        no_shipments_confirmed=body.get("no_shipments_confirmed") is True)
     report = build_report(selected, names[selected], source, result,
-                          None if extra.get("error") else extra, extra.get("error"))
+                          None if extra.get("error") else extra, extra.get("error"),
+                          incoming_backdated=report_day < today)
     image = base64.b64encode(render_png(names[selected], source, report["status"])).decode()
     return {"report": report, "draft": slack_draft(selected, report), "image": f"data:image/png;base64,{image}",
             "sheet_read_at": source.get("fetched_at"), "writes": "disabled"}

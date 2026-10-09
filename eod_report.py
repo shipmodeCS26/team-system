@@ -123,7 +123,8 @@ def _data_status(check: dict) -> list[str]:
 
 
 def build_report(client_id: str, client_name: str, source: dict, check: dict,
-                 incoming: dict | None = None, incoming_error: str | None = None) -> dict:
+                 incoming: dict | None = None, incoming_error: str | None = None,
+                 incoming_backdated: bool = False) -> dict:
     """Same six sections, same order, same fields for every client."""
     rows = source.get("rows") or []
     as_of = parse_as_of(source.get("as_of", ""))
@@ -149,6 +150,10 @@ def build_report(client_id: str, client_name: str, source: dict, check: dict,
         hold.append(f"Incoming shipments were not read: {incoming_error}")
     if incoming and incoming.get("truncated"):
         hold.append("The Incoming Stocks tab is longer than ShipMode reads; later shipments may be missing.")
+    if incoming_backdated:
+        # The Incoming Stocks tab only holds today's state: lines received since the report date have
+        # already moved to history, so the Incoming section can't be shown as of that date.
+        hold.append("The Sheet's date is before today; Incoming shipments can only be read as of today.")
     notes = [f"Left out of Incoming until SKU and quantity are verified: {', '.join(held_back)}."] if held_back else []
     if held_back:
         # The Incoming section would be incomplete: hold until those lines are verified in the Sheet.

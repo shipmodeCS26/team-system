@@ -402,10 +402,14 @@ class EndpointTests(unittest.TestCase):
             "WORKSPACE_USER": "gly", "WORKSPACE_PASSWORD_HASH": generate_password_hash("pw"), "SECRET_KEY": "test",
             "CLIENT_CHANNELS_JSON": json.dumps(CHANNELS)})
         self.env.start()
+        from datetime import date
+        self.today = patch("app.warehouse_today", return_value=date(2026, 9, 28))
+        self.today.start()
         self.client = app.test_client()
         self.auth = {"Authorization": "Basic " + base64.b64encode(b"gly:pw").decode()}
 
     def tearDown(self):
+        self.today.stop()
         self.env.stop()
 
     def post(self, body, csrf="token"):
@@ -469,6 +473,44 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(data["report"]["status"], INCOMPLETE)
         self.assertFalse(data["report"]["ready_to_send"])
         self.assertIn("The Daily Sales tab could not be read: x", data["report"]["hold_reasons"])
+
+    @patch("app.read_incoming", return_value=[{"id": "puravita", "available": False}])
+    @patch("app.read_dashboards")
+    def test_default_request_reads_the_daily_sales_tab_through_the_real_helper(self, dashboards, _incoming):
+        # Not patching daily_sales_rows: the route must reach the inventory module, not the view function.
+        dashboards.return_value = [parse_dashboard(SHEETS["puravita"]) | {"id": "puravita"}]
+        sheet_id = "1" + "a" * 43
+        with patch("inventory.source_config", return_value=({"puravita": sheet_id}, {})), \
+                patch("ledger_sources.SheetReader") as reader:
+            reader.return_value.daily_sales.return_value = csv_for("puravita")
+            response = self.post({"client_id": "puravita"})
+        self.assertEqual(response.status_code, 200, response.get_json())
+        reader.assert_called_once_with(sheet_id, {})
+        self.assertEqual(response.get_json()["report"]["status"], VERIFIED)
+
+    @patch("app.read_incoming", return_value=[{"id": "puravita", "available": False}])
+    @patch("app.read_dashboards")
+    def test_backdated_report_holds_because_incoming_is_as_of_today(self, dashboards, _incoming):
+        from datetime import date
+        dashboards.return_value = [parse_dashboard(SHEETS["puravita"]) | {"id": "puravita"}]
+        with patch("app.warehouse_today", return_value=date(2026, 10, 9)), \
+                patch("app.daily_sales_rows", return_value=(csv_for("puravita"), None)):
+            data = self.post({"client_id": "puravita"}).get_json()
+        self.assertFalse(data["report"]["ready_to_send"])
+        self.assertTrue(any("as of today" in r for r in data["report"]["hold_reasons"]))
+
+
+class CodexRoundThreeTests(unittest.TestCase):
+    """Fixes from the Codex review of PR #22 (c049d7b)."""
+
+    def test_other_clients_rows_hold_even_with_no_shipments_confirmed(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[14][2] = "0"
+        source = parse_dashboard(values)
+        rows = [row("fascial-labs", "9/28/26", "5x TrueForm Fascial Release Support (FASCSUPP-1)", "T2")]
+        result = check("puravita", source, rows, no_shipments_confirmed=True)
+        self.assertNotEqual(result["status"], VERIFIED)
+        self.assertTrue(any("excluded" in r for r in result["reasons"]))
 
 
 if __name__ == "__main__":

@@ -124,11 +124,12 @@ async function openEodReport(noShipments=false){
   try{
     const result=await api("/api/eod-report",{method:"POST",body:JSON.stringify({client_id:client,no_shipments_confirmed:noShipments})});
     if(client!==state.client||ticket!==state.eodRequest)return;  // never show another client's report
-    const r=result.report;
+    const r=result.report,ready=result.draft.ready_to_send,holds=[...r.hold_reasons,...(r.ready_to_send&&result.draft.note?[result.draft.note]:[])];
     $("eod-client").textContent=clientName(client);
-    $("eod-status").textContent=r.ready_to_send?"Ready to send":r.status;$("eod-status").className="badge "+(r.ready_to_send?"verified":r.status==="REVIEW"?"watch":"");
-    $("eod-hold").innerHTML=r.ready_to_send?"":`<strong>Hold, do not send (${esc(r.status)})</strong><ul>${(r.hold_reasons.length?r.hold_reasons:["Not verified."]).map(t=>`<li>${esc(t)}</li>`).join("")}</ul>`;$("eod-hold").hidden=r.ready_to_send;
-    const notes=[...(r.notes||[]),result.draft.note||"",r.check.rules&&r.check.rules!=="APPROVED"?`SKU rules for this client are ${r.check.rules}; the check uses them until ShipMode approves them.`:""].filter(Boolean);
+    // Ready only when the draft is: a verified report with no Slack channel mapped is still held.
+    $("eod-status").textContent=ready?"Ready to send":r.status;$("eod-status").className="badge "+(ready?"verified":r.status==="REVIEW"?"watch":"");
+    $("eod-hold").innerHTML=ready?"":`<strong>Hold, do not send (${esc(r.status)})</strong><ul>${(holds.length?holds:["Not verified."]).map(t=>`<li>${esc(t)}</li>`).join("")}</ul>`;$("eod-hold").hidden=ready;
+    const notes=[...(r.notes||[]),r.ready_to_send?"":result.draft.note||"",r.check.rules&&r.check.rules!=="APPROVED"?`SKU rules for this client are ${r.check.rules}; the check uses them until ShipMode approves them.`:""].filter(Boolean);
     $("eod-note").textContent=notes.join(" ");$("eod-note").hidden=!notes.length;
     $("eod-no-shipments").checked=noShipments;
     $("eod-image").src=result.image;$("eod-download").href=result.image;$("eod-download").download=result.draft.attach;
