@@ -17,7 +17,7 @@ from werkzeug.security import check_password_hash
 from tracking import CLIENTS, classify, parse_csv, parse_date, sample_shipments, tracker_update, utcnow
 from daily_update import build_update
 from incoming import read_incoming
-from inventory import read_dashboards
+from inventory import SHEET_ID, read_dashboards
 from ledger_sources import calculate_clients
 import shopify_source
 import sku_check
@@ -64,9 +64,23 @@ def shopify_order_clients():
     return [client["id"] for client in CLIENTS if shopify_source._valid_store(stores.get(client["id"]))]
 
 
+def inventory_sheet_id(value):
+    return bool(SHEET_ID.fullmatch(value))
+
+
 def daily_order_clients():
-    """Clients the daily Shopify comparison can run for: a mapped store and SKU rules."""
-    return [client_id for client_id in shopify_order_clients() if client_rules.package(client_id)]
+    """Clients the daily Shopify comparison can run for: a mapped store, SKU rules and a mapped
+    workbook (Daily Sales and Dashboard)."""
+    if not inventory_enabled():
+        return []
+    try:
+        sheets = json.loads(os.environ["INVENTORY_SHEETS_JSON"])
+    except (KeyError, json.JSONDecodeError):
+        return []
+    if not isinstance(sheets, dict):
+        return []
+    return [client_id for client_id in shopify_order_clients() if client_rules.package(client_id)
+            and isinstance(sheets.get(client_id), str) and inventory_sheet_id(sheets[client_id])]
 
 
 def shopify_ready():
@@ -325,8 +339,9 @@ def shopify_order():
     if not name:
         return {"order": None, **order_check.check(client_id, shipment, [], unlinked=True), "writes": "disabled"}
     # A voided label (shown as cancelled) is not a parcel: its replacement is the only shipment.
-    same_order = sum(row.get("order_number") == name and row.get("carrier_status") != "cancelled"
-                     for row in store["rows"])
+    key = shopify_source._name_key(name)
+    same_order = sum(shopify_source._name_key(row.get("order_number")) == key
+                     and row.get("carrier_status") != "cancelled" for row in store["rows"])
     try:
         found = shopify_source.read_order(client_id, name)
     except shopify_source.SourceError as error:

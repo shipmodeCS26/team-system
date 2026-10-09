@@ -145,6 +145,17 @@ class OrderRulesTests(unittest.TestCase):
         self.assertIn("refunded_after_shipping", kinds(result))
         self.assertIn("edited", kinds(result))
 
+    def test_rule_warnings_are_never_reconciled(self):
+        # Two tapes with one hose and one connector: the Muravai rule flags the kit structure.
+        items = [item("Teflon Tape", 2), item("Shower Hose", 1), item("Shower connector", 1)]
+        result = compare([order("#1", items)], [row(1, "2x Teflon Tape; 1x Shower Hose; 1x Shower connector", order="#1")])
+        self.assertIn("rule_review", kinds(result))
+        self.assertNotIn("quantity_mismatch", kinds(result))
+        old = order("#2", items, created="2026-08-31T15:00:00Z")
+        later = compare([old], [row(2, "2x Teflon Tape; 1x Shower Hose; 1x Shower connector", order="#2")])
+        self.assertEqual(kinds(later), {"rule_review": ["#2"]})
+        self.assertEqual(later["totals"]["timing"], 0)
+
     def test_kits_use_the_client_rules(self):
         labels = [row(1, "1x Teflon Tape; 1x Shower Hose; 1x Shower connector", order="#1")]
         orders = [order("#1", [item("Teflon Tape", 1), item("Shower Hose", 1), item("Shower connector", 1)])]
@@ -481,7 +492,8 @@ class JobTests(unittest.TestCase):
 class EndpointTests(unittest.TestCase):
     ENV = {"SHOPIFY_ENABLED": "true", "INVENTORY_SHEETS_ENABLED": "true",
            "SHOPIFY_STORES_JSON": json.dumps({"muravai": {"shop": "muravai-test.myshopify.com", "token": "shpat_x"}}),
-           "INVENTORY_SHEETS_JSON": "{}", "INVENTORY_SERVICE_ACCOUNT_JSON": "{}",
+           "INVENTORY_SHEETS_JSON": json.dumps({"muravai": "m" * 30, "claritymd": "c" * 30}),
+           "INVENTORY_SERVICE_ACCOUNT_JSON": "{}",
            "WORKSPACE_USER": "owner", "SECRET_KEY": "s",
            "WORKSPACE_PASSWORD_HASH": generate_password_hash("pw", method="pbkdf2:sha256")}
     AUTH = {"Authorization": "Basic " + base64.b64encode(b"owner:pw").decode()}
@@ -516,6 +528,10 @@ class EndpointTests(unittest.TestCase):
             body = app.test_client().get("/api/workspace", headers=self.AUTH).get_json()
         self.assertEqual(body["shopify_orders"], ["muravai"])
         self.assertEqual(body["daily_orders"], ["muravai"])
+        no_sheet = {**self.ENV, "INVENTORY_SHEETS_JSON": json.dumps({"puravita": "p" * 30})}
+        with patch.dict("os.environ", no_sheet, clear=True):
+            body = app.test_client().get("/api/workspace", headers=self.AUTH).get_json()
+        self.assertEqual((body["shopify_orders"], body["daily_orders"]), (["muravai"], []))
 
     def test_client_without_rules_never_reads_sources(self):
         stores = {c: {"shop": f"{c}-test.myshopify.com", "token": "shpat_x"} for c in ("muravai", "claritymd")}

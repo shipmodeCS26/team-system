@@ -43,13 +43,14 @@ TEXT = {
     "refunded_after_shipping": "Refunded in Shopify after a label was created (not subtracted)",
     "edited": "Order lines were edited or refunded in Shopify (ordered quantity kept)",
     "several_orders": "More than one Shopify order has this name",
+    "rule_review": "Items need confirmation under the client's kit rules (not compared)",
     "test_order_shipped": "Shopify test order, but a label exists",
     "items_truncated": "Order has more lines than were read; items not compared",
     "shipped_later": "Ordered on this day, shipped on a later day (timing)",
     "ordered_earlier": "Shipped on this day, ordered on an earlier day (timing)",
     "partly_shipped": "Ordered on this day, partly shipped; the rest is not shipped yet (timing)",
 }
-EXCEPTIONS = ("not_in_ssk", "fulfilled_not_in_ssk", "not_in_shopify", "quantity_mismatch", "unmapped",
+EXCEPTIONS = ("not_in_ssk", "fulfilled_not_in_ssk", "not_in_shopify", "quantity_mismatch", "unmapped", "rule_review",
               "cancelled_but_shipped", "test_order_shipped", "refunded_after_shipping", "several_orders",
               "items_truncated", "edited")
 SHIPPED_STATUSES = ("FULFILLED", "PARTIALLY_FULFILLED")
@@ -125,6 +126,7 @@ def _shipments(rules, rows):
             "day": eod.parse_created_date(row.get("Created Date", "")),
             "usage": Counter({k: v for k, v in result.usage.items() if v}),
             "unknown": list(result.unknown_items),
+            "flags": list(result.flags),
             "name": (row.get("Order Name") or "").strip(),
         })
     return by_order
@@ -275,7 +277,10 @@ def compare(client_id, day, shopify, sales_rows, sheet, lookups=None, today=None
         unknown = [item for label in labels for item in label["unknown"]]
         if unknown:
             add("unmapped", name, "ShipSidekick: " + ", ".join(unknown))
-        comparable = not (usage.unknown_items or unknown or order.get("items_truncated"))
+        rule_flags = usage.flags + [flag for label in labels for flag in label["flags"]]
+        if rule_flags:
+            add("rule_review", name, "; ".join(dict.fromkeys(rule_flags)))
+        comparable = not (usage.unknown_items or unknown or rule_flags or order.get("items_truncated"))
         when = "Shipped " + ", ".join(sorted({l["day"].strftime("%m/%d/%Y") for l in later})) if later else ""
         if comparable:
             extra, missing = shipped - shop, shop - shipped
@@ -340,6 +345,10 @@ def compare(client_id, day, shopify, sales_rows, sheet, lookups=None, today=None
             add("refunded_after_shipping", name, when + ", " + str(match["financial"]).replace("_", " ").lower())
         usage = shopify_usage(rules, match)
         unknown = [item for label in labels for item in label["unknown"]]
+        rule_flags = usage.flags + [flag for label in labels for flag in label["flags"]]
+        if rule_flags:
+            add("rule_review", name, when + ": " + "; ".join(dict.fromkeys(rule_flags)))
+            continue  # the client rule says this structure needs confirmation: never timing
         if usage.unknown_items or unknown or match.get("items_truncated"):
             add("unmapped" if usage.unknown_items or unknown else "items_truncated", name,
                 when + (": " + ", ".join(usage.unknown_items + unknown) if usage.unknown_items or unknown else ""))

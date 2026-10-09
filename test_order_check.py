@@ -224,6 +224,11 @@ class FlagTests(unittest.TestCase):
     def test_matching_order_has_no_flags(self):
         self.assertEqual(self.flags([self.order()]), [])
 
+    def test_rule_warning_makes_items_unverified(self):
+        odd = [{"name": "Teflon Tape", "sku": "", "qty": 2}, {"name": "Shower Hose", "sku": "", "qty": 1},
+               {"name": "Shower connector", "sku": "", "qty": 1}]
+        self.assertIn("items_unverified", self.flags([self.order(items=odd)], shipment={"items": odd}))
+
     def test_kit_lines_are_compared_with_the_order_rules(self):
         kit = [{"name": "Teflon Tape", "sku": "", "qty": 1}, {"name": "Shower Hose", "sku": "", "qty": 1},
                {"name": "Shower connector", "sku": "", "qty": 1}]
@@ -268,6 +273,17 @@ class OrderEndpointTests(unittest.TestCase):
         {"ssk_id": "s1", "tracking_number": "TRK1", "order_number": "#1001", "carrier_status": "pre_transit",
          "items": [{"sku": "", "name": "Filtered Showerhead", "qty": 1}]},
         {"ssk_id": "s0", "tracking_number": "TRK0", "order_number": "#1001", "carrier_status": "cancelled", "items": []}]}
+
+    def test_equivalent_order_names_count_as_siblings(self):
+        store = {"id": "muravai", "rows": [dict(self.VOIDED["rows"][0]),
+                                           {"ssk_id": "s2", "tracking_number": "TRK2", "order_number": " 1001 ",
+                                            "carrier_status": "in_transit", "items": []}]}
+        fake = FakeShopify(["read_orders", "read_all_orders", "read_products"], [order_node()])
+        with patch.dict("os.environ", self.ENV, clear=True), \
+                patch("app.ssk_source.read_shipments", return_value=store), \
+                patch("shopify_source.requests.post", fake.post):
+            body = app.test_client().get("/api/shopify/order?client_id=muravai&shipment=s1", headers=self.AUTH).get_json()
+        self.assertIn("several_shipments", body["flags"])
 
     def test_voided_label_is_not_a_second_parcel(self):
         client = app.test_client()

@@ -36,7 +36,9 @@ def _units(rules, items):
     if any(not isinstance(item.get("qty"), int) or isinstance(item.get("qty"), bool) for item in items):
         return Counter(), True
     result = daily_orders.shopify_usage(rules, {"items": items})
-    return Counter({k: v for k, v in result.usage.items() if v}), bool(result.unknown_items)
+    # A rule warning (e.g. a Muravai kit whose parts don't line up) means the mapping needs
+    # confirmation, even when every item was recognised.
+    return Counter({k: v for k, v in result.usage.items() if v}), bool(result.unknown_items or result.flags)
 
 
 def check(client_id, shipment, orders, shipments_for_order=1, unlinked=False, complete=True, search_complete=True):
