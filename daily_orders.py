@@ -255,7 +255,8 @@ def compare(client_id, day, shopify, sales_rows, sheet, lookups=None, today=None
         if order.get("items_truncated"):
             truncated = True  # the order's later lines were not read: Shopify totals are not shown
             add("items_truncated", name)
-        if any(item.get("changed") for item in order.get("items") or []):
+        edited = any(item.get("changed") for item in order.get("items") or [])
+        if edited:
             add("edited", name)
         if len(by_key[key]) > 1:
             add("several_orders", name)
@@ -270,8 +271,10 @@ def compare(client_id, day, shopify, sales_rows, sheet, lookups=None, today=None
                 add("fulfilled_not_in_ssk", name, units=shop)
             else:
                 add("not_in_ssk", name, units=shop)
-                if not usage.flags:
-                    timing.subtract(shop)  # ordered today, not shipped yet
+                # Only a fully known order is explained as "not shipped yet": unmapped, rule-flagged,
+                # cut-off or edited items leave what is still owed unknown.
+                if not (usage.unknown_items or usage.flags or order.get("items_truncated") or edited):
+                    timing.subtract(shop)
             continue
         financial = str(order.get("financial") or "").upper()
         if financial in ("REFUNDED", "PARTIALLY_REFUNDED"):
@@ -282,7 +285,8 @@ def compare(client_id, day, shopify, sales_rows, sheet, lookups=None, today=None
         unknown = [item for label in labels for item in label["unknown"]]
         if unknown:
             add("unmapped", name, "ShipSidekick: " + ", ".join(unknown))
-        comparable = not (usage.unknown_items or unknown or rule_flags or order.get("items_truncated"))
+        # Timing and quantity verdicts need fully known items on both sides.
+        comparable = not (usage.unknown_items or unknown or rule_flags or order.get("items_truncated") or edited)
         when = "Shipped " + ", ".join(sorted({l["day"].strftime("%m/%d/%Y") for l in later})) if later else ""
         if comparable:
             extra, missing = shipped - shop, shop - shipped
@@ -299,9 +303,7 @@ def compare(client_id, day, shopify, sales_rows, sheet, lookups=None, today=None
                 timing.subtract(unshipped)
                 add("partly_shipped", name, units=unshipped)
         elif later:
-            rest = shop - on_day
-            timing.subtract(rest)
-            add("shipped_later", name, when, units=rest)
+            add("shipped_later", name, when + " (not counted as timing: items could not be verified)")
 
     looked = (lookups or {}).get("found") or {}
     all_orders = bool((lookups or {}).get("all_orders"))

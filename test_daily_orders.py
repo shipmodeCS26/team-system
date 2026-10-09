@@ -163,6 +163,18 @@ class OrderRulesTests(unittest.TestCase):
         self.assertEqual(set(kinds(result)), {"rule_review", "not_in_ssk"})
         self.assertEqual(result["totals"]["timing"], 0)
 
+    def test_unverifiable_orders_are_never_timing(self):
+        odd = [item("Teflon Tape", 2), item("Shower Hose", 1), item("Shower connector", 1)]
+        later = compare([order("#1", odd), order("#2", [item("Shower Hose", 1)])],
+                        [row(1, "2x Teflon Tape; 1x Shower Hose; 1x Shower connector", order="#1", created="9/2/26"),
+                         row(2, "1x Shower Hose", order="#2")])
+        self.assertIn("rule_review", kinds(later))
+        self.assertEqual(later["totals"]["timing"], 0)
+        edited = compare([order("#3", [item("Shower Hose", 2, changed=True)], fulfillment="UNFULFILLED"),
+                          order("#2", [item("Shower Hose", 1)])], [row(2, "1x Shower Hose", order="#2")])
+        self.assertIn("edited", kinds(edited))
+        self.assertEqual(edited["totals"]["timing"], 0)
+
     def test_kits_use_the_client_rules(self):
         labels = [row(1, "1x Teflon Tape; 1x Shower Hose; 1x Shower connector", order="#1")]
         orders = [order("#1", [item("Teflon Tape", 1), item("Shower Hose", 1), item("Shower connector", 1)])]
