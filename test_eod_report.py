@@ -445,7 +445,7 @@ class EndpointTests(unittest.TestCase):
         response = self.post({"client_id": "puravita", "csv": csv_text, "csv_name": "export.csv"})
         self.assertEqual(response.status_code, 200, response.get_json())
         data = response.get_json()
-        dashboards.assert_called_once_with(["puravita"])
+        dashboards.assert_called_once_with(["puravita"], fresh=False)
         self.assertEqual(data["report"]["status"], VERIFIED)
         self.assertEqual(data["draft"]["channel"], CHANNELS["puravita"])
         self.assertFalse(data["draft"]["send"])
@@ -456,7 +456,7 @@ class EndpointTests(unittest.TestCase):
     @patch("app.read_dashboards")
     def test_reads_the_clients_own_daily_sales_tab_by_default(self, dashboards, _incoming):
         dashboards.return_value = [parse_dashboard(SHEETS["puravita"]) | {"id": "puravita"}]
-        with patch("app.daily_sales_rows", return_value=(csv_for("puravita"), None)) as sales:
+        with patch("app.daily_sales_rows", return_value=((csv_for("puravita"), None), None)) as sales:
             data = self.post({"client_id": "puravita"}).get_json()
         sales.assert_called_once_with("puravita")
         from datetime import date
@@ -482,7 +482,7 @@ class EndpointTests(unittest.TestCase):
         sheet_id = "1" + "a" * 43
         with patch("inventory.source_config", return_value=({"puravita": sheet_id}, {})), \
                 patch("ledger_sources.SheetReader") as reader:
-            reader.return_value.daily_sales.return_value = csv_for("puravita")
+            reader.return_value.daily_sales.return_value = (csv_for("puravita"), [2])
             response = self.post({"client_id": "puravita"})
         self.assertEqual(response.status_code, 200, response.get_json())
         reader.assert_called_once_with(sheet_id, {})
@@ -494,7 +494,7 @@ class EndpointTests(unittest.TestCase):
         from datetime import date
         dashboards.return_value = [parse_dashboard(SHEETS["puravita"]) | {"id": "puravita"}]
         with patch("app.warehouse_today", return_value=date(2026, 10, 9)), \
-                patch("app.daily_sales_rows", return_value=(csv_for("puravita"), None)):
+                patch("app.daily_sales_rows", return_value=((csv_for("puravita"), None), None)):
             data = self.post({"client_id": "puravita"}).get_json()
         self.assertFalse(data["report"]["ready_to_send"])
         self.assertTrue(any("as of today" in r for r in data["report"]["hold_reasons"]))
@@ -505,9 +505,10 @@ class EndpointTests(unittest.TestCase):
         values = [list(r) for r in SHEETS["puravita"]]
         values[14][2] = "0"
         dashboards.return_value = [parse_dashboard(values) | {"id": "puravita"}]
-        with patch("app.daily_sales_rows", return_value=([], None)):
+        with patch("app.daily_sales_rows", return_value=(([], None), None)):
             stale = self.post({"client_id": "puravita", "no_shipments_confirmed": True, "as_of": "27 Sep 2026"}).get_json()
             fresh = self.post({"client_id": "puravita", "no_shipments_confirmed": True, "as_of": "28 Sep 2026"}).get_json()
+        dashboards.assert_called_with(["puravita"], fresh=True)  # never the cached Dashboard
         self.assertFalse(stale["report"]["ready_to_send"])
         self.assertTrue(any("Confirm again" in r for r in stale["report"]["hold_reasons"]))
         self.assertEqual(fresh["report"]["check_status"], VERIFIED)
@@ -589,13 +590,64 @@ class CodexRoundFiveTests(unittest.TestCase):
             with open(incoming, "w") as handle:
                 json.dump({"available": False}, handle)
             out = os.path.join(folder, "out")
+            from datetime import date
+            today = patch("eod_cli.warehouse_today", return_value=date(2026, 9, 28))
+            today.start()
+            self.addCleanup(today.stop)
             with patch.dict(os.environ, {"CLIENT_CHANNELS_JSON": json.dumps(CHANNELS)}):
                 self.assertEqual(eod_cli.main(["puravita", "--dashboard", dash, "--csv", export, "--out", out]), 2)
                 self.assertEqual(eod_cli.main(["puravita", "--dashboard", dash, "--csv", export, "--incoming", incoming,
                                                "--out", out]), 0)
+            failed = os.path.join(folder, "f.json")
+            with open(failed, "w") as handle:
+                json.dump({"error": "Incoming could not be read.", "error_code": "read_failed"}, handle)
+            with patch.dict(os.environ, {"CLIENT_CHANNELS_JSON": json.dumps(CHANNELS)}):
+                self.assertEqual(eod_cli.main(["puravita", "--dashboard", dash, "--csv", export, "--incoming", failed,
+                                               "--out", out]), 2)
+                with patch("eod_cli.warehouse_today", return_value=date(2026, 10, 9)):
+                    self.assertEqual(eod_cli.main(["puravita", "--dashboard", dash, "--csv", export,
+                                                   "--incoming", incoming, "--out", out]), 2)
             with patch.dict(os.environ, {"CLIENT_CHANNELS_JSON": "{}"}):
                 self.assertEqual(eod_cli.main(["puravita", "--dashboard", dash, "--csv", export, "--incoming", incoming,
                                                "--out", out]), 2)
+
+
+class CodexRoundSixTests(unittest.TestCase):
+    """Fixes from the Codex review of PR #22 (1eb6f77)."""
+
+    def setUp(self):
+        self.source = parse_dashboard(SHEETS["puravita"])
+
+    def test_csv_missing_an_audit_column_is_not_a_recount(self):
+        rows = [{k: v for k, v in r.items() if k != "Voided"} for r in csv_for("puravita")]
+        result = check("puravita", self.source, rows)
+        self.assertEqual(result["status"], INCOMPLETE)
+        self.assertTrue(any("Voided" in r for r in result["reasons"]))
+        self.assertEqual(check("puravita", self.source, [], columns=["Tracking Code"],
+                               no_shipments_confirmed=True)["status"], INCOMPLETE)
+
+    def test_physical_sheet_rows_are_named(self):
+        rows = csv_for("puravita") + [row("fascial-labs", "9/28/26", "1x Y", "F1")]
+        reasons = check("puravita", self.source, rows, row_numbers=[2, 11])["reasons"]
+        self.assertTrue(any(r.startswith("Row 11:") for r in reasons), reasons)
+
+    def test_data_status_counts_shipments(self):
+        report = build_report("puravita", "PuraVita", self.source, check("puravita", self.source, csv_for("puravita")))
+        self.assertIn("(1 shipments)", report["sections"][5]["lines"][0])
+
+    def test_daily_sales_reader_reports_physical_rows(self):
+        import ledger_sources
+        from eod import REQUIRED_COLUMNS
+        reader = ledger_sources.SheetReader.__new__(ledger_sources.SheetReader)
+        values = [[["T1"]], [], [["T3"]]]
+        def batch(ranges, optional=False):
+            if len(ranges) == 1:
+                return [[list(REQUIRED_COLUMNS)]]
+            return [values if name == "Tracking Code" else [] for name in REQUIRED_COLUMNS]
+        reader.batch = batch
+        rows, numbers = reader.daily_sales(numbered=True)
+        self.assertEqual(numbers, [2, 4])
+        self.assertEqual(reader.daily_sales(), rows)
 
 
 if __name__ == "__main__":

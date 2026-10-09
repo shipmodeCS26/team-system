@@ -11,6 +11,10 @@ import json
 import os
 import sys
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from daily_orders import sheet_day
 from dashboard_image import render_png
 from eod_check import check
 from eod_report import build_report
@@ -19,6 +23,10 @@ from slack_draft import draft
 from tracking import CLIENTS
 
 NAMES = {client["id"]: client["name"] for client in CLIENTS}
+
+
+def warehouse_today():
+    return datetime.now(ZoneInfo("America/New_York")).date()
 
 
 def _json(path):
@@ -39,16 +47,25 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     source = parse_dashboard(_json(args.dashboard))
-    rows = None
+    rows, columns = None, None
     if args.csv:
         with open(args.csv, newline="", encoding="utf-8-sig") as handle:
-            rows = list(csv.DictReader(handle))
-    result = check(args.client, source, rows, csv_name=os.path.basename(args.csv or ""),
+            reader = csv.DictReader(handle)
+            rows, columns = list(reader), reader.fieldnames or []
+    result = check(args.client, source, rows, csv_name=os.path.basename(args.csv or ""), columns=columns,
                    no_shipments_confirmed=args.no_shipments_confirmed)
     incoming = _json(args.incoming) if args.incoming else None
     # Without --incoming the Incoming section was never read: hold rather than say "None logged".
-    report = build_report(args.client, NAMES[args.client], source, result, incoming,
-                          None if args.incoming else "no Incoming Stocks file was given (--incoming).")
+    if incoming is None:
+        incoming_error = "no Incoming Stocks file was given (--incoming)."
+    elif not isinstance(incoming, dict):
+        incoming, incoming_error = None, "the Incoming Stocks file is not a parsed Incoming read."
+    else:
+        incoming_error = incoming.get("error")
+    today = warehouse_today()
+    report = build_report(args.client, NAMES[args.client], source, result,
+                          None if incoming_error else incoming, incoming_error,
+                          incoming_backdated=sheet_day(source.get("as_of")) != today)
     slack = draft(args.client, report)
     os.makedirs(args.out, exist_ok=True)
     base = os.path.join(args.out, args.client)

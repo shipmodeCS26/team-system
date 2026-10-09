@@ -17,7 +17,7 @@ from datetime import date
 import client_rules
 import ssk_check
 from daily_orders import sheet_day
-from eod import build_eod, is_voided, parse_created_date
+from eod import REQUIRED_COLUMNS, build_eod, is_voided, parse_created_date
 from incoming import whole_units
 from ledger_sources import parse_int
 
@@ -30,8 +30,11 @@ def parse_as_of(value: str) -> date | None:
 
 
 def check(client_id: str, source: dict, csv_rows: list[dict] | None, *,
-          csv_name: str = "", no_shipments_confirmed: bool = False, missing_reason: str = "") -> dict:
-    """Compare one client's Dashboard with its own CSV. `source` is parse_dashboard output."""
+          csv_name: str = "", no_shipments_confirmed: bool = False, missing_reason: str = "",
+          row_numbers: list[int] | None = None, columns: list[str] | None = None) -> dict:
+    """Compare one client's Dashboard with its own CSV. `source` is parse_dashboard output.
+    `row_numbers` are the rows' physical Sheet rows (default: CSV order from row 2); `columns` the
+    CSV header, checked for every audit column (default: the first row's keys)."""
     rules = client_rules.package(client_id)
     report_date = parse_as_of(source.get("as_of", ""))
     result = {"status": INCOMPLETE, "report_date": report_date.isoformat() if report_date else "",
@@ -45,13 +48,21 @@ def check(client_id: str, source: dict, csv_rows: list[dict] | None, *,
         return result
 
     usage, orders, missing = None, 0, None
+    header = columns if columns is not None else (list(csv_rows[0]) if csv_rows else None)
+    absent = [name for name in REQUIRED_COLUMNS if header is not None and name not in header]
+    if csv_rows is not None and absent:
+        # Without Voided or Tracking Code the exclusions and duplicate audit can't run: never a recount.
+        result["reasons"].append(f"{csv_name or 'Shipments'} is missing column(s): {', '.join(absent)}.")
+        if no_shipments_confirmed:
+            result["reasons"].append("'No shipments confirmed' was not applied: the shipments could not be read.")
+        return result
     if csv_rows is not None:
         # Only the report date's rows are recounted. A row whose Created Date can't be read could be
         # one of them, so it is named (Sheet row number) and holds the report; it never stops the check.
         dated, numbers, seen = [], [], {}
         mine = lambda row: (str(row.get("Organization") or "").strip().lower() == rules.organization.lower()
                             and not is_voided(row.get("Voided", "")))
-        for number, row in enumerate(csv_rows, start=2):
+        for number, row in zip(row_numbers or range(2, len(csv_rows) + 2), csv_rows):
             try:
                 created = parse_created_date(row.get("Created Date", ""))
             except ValueError:

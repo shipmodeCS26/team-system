@@ -121,7 +121,7 @@ def _data_status(check: dict) -> list[str]:
         if check.get("no_shipments_confirmed"):
             return [f"• VERIFIED: no shipments on {date_text} (confirmed)."]
         return [f"• VERIFIED: shipments on {date_text} match our ShipSidekick recount "
-                f"({check.get('orders', 0):,} orders)."]
+                f"({check.get('orders', 0):,} shipments)."]
     return [f"• {check['status']}: this report is being checked."]
 
 

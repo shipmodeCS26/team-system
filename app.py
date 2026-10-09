@@ -301,13 +301,13 @@ def warehouse_today():
 
 def daily_sales_rows(client_id):
     """The client's own Daily Sales tab (the ShipSidekick export already in its Sheet), read-only.
-    Returns (rows, None) or (None, reason)."""
+    Returns ((rows, sheet_row_numbers), None) or (None, reason)."""
     try:
         sources, credentials = inventory_source.source_config()
         sheet_id = sources.get(client_id)
         if not (isinstance(sheet_id, str) and SHEET_ID.fullmatch(sheet_id)):
             return None, "This client's workbook is not mapped in the private settings."
-        return ledger_sources.SheetReader(sheet_id, credentials).daily_sales(), None
+        return ledger_sources.SheetReader(sheet_id, credentials).daily_sales(numbered=True), None
     except inventory_source.SourceError as error:
         app.logger.warning("eod daily sales failed client=%s code=%s status=%s", client_id, error.code, error.status)
         return None, "The Daily Sales tab could not be read: " + ledger_sources.ERRORS.get(error.code, ledger_sources.ERRORS["read_failed"])
@@ -332,8 +332,10 @@ def eod_report():
         return jsonify(error="Choose one client."), 400
     if body.get("csv") is not None and not isinstance(body["csv"], str):
         return jsonify(error="Provide the CSV as text."), 400
+    confirmed = body.get("no_shipments_confirmed") is True
     try:
-        source = read_dashboards([selected])[0]
+        # A confirmation is checked against the Sheet as it is now, never the 45-second cache.
+        source = read_dashboards([selected], fresh=confirmed)[0]
         if source.get("error"):
             return jsonify(error=f"{names[selected]} inventory did not load: {source['error']}"), 409
         # Incoming flags (e.g. past expected date) are judged on the report's own date, not today.
@@ -341,16 +343,19 @@ def eod_report():
         report_day = daily_orders.sheet_day(source.get("as_of")) or today
         extra = read_incoming([selected], report_day)[0]
         if body.get("csv") is not None:  # an uploaded CSV is the override, even when it is empty
-            rows, missing, label = list(csv.DictReader(io.StringIO(body["csv"].lstrip("\ufeff")))), "", \
-                str(body.get("csv_name") or "uploaded CSV")[:120]
+            reader = csv.DictReader(io.StringIO(body["csv"].lstrip("\ufeff")))
+            rows, missing, label = list(reader), "", str(body.get("csv_name") or "uploaded CSV")[:120]
+            numbers, columns = None, reader.fieldnames or []
         else:
-            (rows, missing), label = daily_sales_rows(selected), "Daily Sales tab"
+            (sales, missing), label = daily_sales_rows(selected), "Daily Sales tab"
+            rows, numbers = sales if sales is not None else (None, None)
+            columns = None  # the reader already requires every audit column
     except (ValueError, KeyError, json.JSONDecodeError):
         return jsonify(error="Inventory configuration is invalid or incomplete."), 503
-    confirmed = body.get("no_shipments_confirmed") is True
     # The warehouse confirmation is for the date the person saw; a Sheet that moved on since needs a new one.
     stale_confirmation = confirmed and body.get("as_of") != source.get("as_of")
     result = eod_check(selected, source, rows, csv_name=label, missing_reason=missing or "",
+                       row_numbers=numbers, columns=columns,
                        no_shipments_confirmed=confirmed and not stale_confirmation)
     if stale_confirmation:
         result["reasons"].append(f"'No shipments confirmed' was for {body.get('as_of') or 'another date'}; "

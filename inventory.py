@@ -138,10 +138,10 @@ def parse_dashboard(values):
     }
 
 
-def _read_one(client_id, sheet_id, credentials):
+def _read_one(client_id, sheet_id, credentials, fresh=False):
     with _cache_lock:
         cached = _cache.get((client_id, sheet_id))
-        if cached and time.monotonic() - cached[0] < 45:
+        if cached and not fresh and time.monotonic() - cached[0] < 45:
             return cached[1]
     creds = service_account.Credentials.from_service_account_info(credentials, scopes=SCOPES)
     session = AuthorizedSession(creds)
@@ -168,11 +168,12 @@ def _failure(client_id, code, status=None):
     return {"id": client_id, "error_code": code, "error": ERRORS[code]}
 
 
-def read_dashboards(client_ids):
-    """Read each client independently so one broken mapping or workbook never hides the others."""
+def read_dashboards(client_ids, fresh=False):
+    """Read each client independently so one broken mapping or workbook never hides the others.
+    `fresh` skips the 45-second cache (a confirmation must be checked against the Sheet as it is now)."""
     sources, credentials = source_config()
     with ThreadPoolExecutor(max_workers=min(6, len(client_ids))) as pool:
-        futures = {client_id: pool.submit(_read_one, client_id, sources[client_id], credentials)
+        futures = {client_id: pool.submit(_read_one, client_id, sources[client_id], credentials, fresh)
                    for client_id in client_ids
                    if isinstance(sources.get(client_id), str) and SHEET_ID.fullmatch(sources[client_id])}
         result = []

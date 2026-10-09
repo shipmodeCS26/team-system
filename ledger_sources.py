@@ -108,7 +108,8 @@ class SheetReader:
             raise SourceError(code, response.status_code)
         return [block.get("values", []) for block in response.json().get("valueRanges", [])]
 
-    def daily_sales(self) -> list[dict]:
+    def daily_sales(self, numbered: bool = False):
+        """Non-blank Daily Sales rows. With `numbered`, also each row's physical Sheet row number."""
         header = (self.batch(["'Daily Sales'!1:1"])[0] or [[]])[0]
         positions = {str(name).strip(): i for i, name in enumerate(header)}
         missing = [c for c in eod.REQUIRED_COLUMNS if c not in positions]
@@ -118,13 +119,14 @@ class SheetReader:
                   for c in eod.REQUIRED_COLUMNS]
         columns = self.batch(ranges)
         length = max((len(col) for col in columns), default=0)
-        rows = []
+        rows, numbers = [], []
         for i in range(length):
             row = {name: (columns[j][i][0] if i < len(columns[j]) and columns[j][i] else "")
                    for j, name in enumerate(eod.REQUIRED_COLUMNS)}
             if any(row.values()):
                 rows.append(row)
-        return rows
+                numbers.append(i + 2)  # the range starts at Sheet row 2
+        return (rows, numbers) if numbered else rows
 
     def approved_records(self) -> tuple[list[dict], list[dict], list[dict]]:
         counts, receipts, adjustments = self.batch(
