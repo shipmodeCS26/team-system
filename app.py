@@ -352,7 +352,9 @@ def shopify_order():
     except (ValueError, KeyError, json.JSONDecodeError):
         return jsonify(error="Shopify configuration is invalid or incomplete."), 503
     orders = found["orders"]
+    queue_complete = not store.get("truncated") and not store.get("skipped_statuses")
     result = order_check.check(client_id, shipment, orders, same_order, complete=found["complete"],
+                               queue_complete=queue_complete,
                                search_complete=found["search_complete"])
     unique = len(orders) == 1 and found["search_complete"]
     return {"order": orders[0] if unique else None, "matches": len(orders), **result, "writes": "disabled"}

@@ -260,13 +260,18 @@ def compare(client_id, day, shopify, sales_rows, sheet, lookups=None, today=None
         if len(by_key[key]) > 1:
             add("several_orders", name)
             continue
+        rule_flags = usage.flags + [flag for label in labels for flag in label["flags"]]
+        if rule_flags:
+            # The client rule says this structure needs confirmation: never reconciled as timing.
+            add("rule_review", name, "; ".join(dict.fromkeys(rule_flags)))
         if not labels:
             if str(order.get("fulfillment") or "").upper() in SHIPPED_STATUSES:
                 # Shopify says it shipped, possibly today: never explained away as timing.
                 add("fulfilled_not_in_ssk", name, units=shop)
             else:
                 add("not_in_ssk", name, units=shop)
-                timing.subtract(shop)  # ordered today, not shipped yet
+                if not usage.flags:
+                    timing.subtract(shop)  # ordered today, not shipped yet
             continue
         financial = str(order.get("financial") or "").upper()
         if financial in ("REFUNDED", "PARTIALLY_REFUNDED"):
@@ -277,9 +282,6 @@ def compare(client_id, day, shopify, sales_rows, sheet, lookups=None, today=None
         unknown = [item for label in labels for item in label["unknown"]]
         if unknown:
             add("unmapped", name, "ShipSidekick: " + ", ".join(unknown))
-        rule_flags = usage.flags + [flag for label in labels for flag in label["flags"]]
-        if rule_flags:
-            add("rule_review", name, "; ".join(dict.fromkeys(rule_flags)))
         comparable = not (usage.unknown_items or unknown or rule_flags or order.get("items_truncated"))
         when = "Shipped " + ", ".join(sorted({l["day"].strftime("%m/%d/%Y") for l in later})) if later else ""
         if comparable:

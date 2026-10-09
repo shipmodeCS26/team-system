@@ -41,7 +41,8 @@ def _units(rules, items):
     return Counter({k: v for k, v in result.usage.items() if v}), bool(result.unknown_items or result.flags)
 
 
-def check(client_id, shipment, orders, shipments_for_order=1, unlinked=False, complete=True, search_complete=True):
+def check(client_id, shipment, orders, shipments_for_order=1, unlinked=False, complete=True, search_complete=True,
+          queue_complete=True):
     if unlinked:
         return {"flags": ["unlinked"], "flag_text": [FLAG_TEXT["unlinked"]]}
     flags = []
@@ -55,7 +56,9 @@ def check(client_id, shipment, orders, shipments_for_order=1, unlinked=False, co
     numbers = (order or {}).get("tracking_numbers") or []
     split = max(shipments_for_order, len(numbers), (order or {}).get("fulfillment_count") or 0) > 1
     # An unread or cut-off fulfillment list can hide a sibling parcel: never prove "not split" from it.
-    split_unknown = bool(order) and (order.get("fulfillment_count") is None or order.get("fulfillments_truncated"))
+    # A cut-off ShipSidekick queue can hide a sibling label, the same as an unread fulfillment list.
+    split_unknown = bool(order) and (order.get("fulfillment_count") is None or order.get("fulfillments_truncated")
+                                     or not queue_complete)
     if order:
         if not complete:
             flags.append("recent_match_only")

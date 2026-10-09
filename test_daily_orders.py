@@ -156,6 +156,13 @@ class OrderRulesTests(unittest.TestCase):
         self.assertEqual(kinds(later), {"rule_review": ["#2"]})
         self.assertEqual(later["totals"]["timing"], 0)
 
+    def test_rule_warning_on_an_unshipped_order_is_not_timing(self):
+        items = [item("Teflon Tape", 2), item("Shower Hose", 1), item("Shower connector", 1)]
+        result = compare([order("#1", items, fulfillment="UNFULFILLED"), order("#2", [item("Shower Hose", 1)])],
+                         [row(2, "1x Shower Hose", order="#2")])
+        self.assertEqual(set(kinds(result)), {"rule_review", "not_in_ssk"})
+        self.assertEqual(result["totals"]["timing"], 0)
+
     def test_kits_use_the_client_rules(self):
         labels = [row(1, "1x Teflon Tape; 1x Shower Hose; 1x Shower connector", order="#1")]
         orders = [order("#1", [item("Teflon Tape", 1), item("Shower Hose", 1), item("Shower connector", 1)])]

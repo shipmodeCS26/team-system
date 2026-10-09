@@ -285,6 +285,15 @@ class OrderEndpointTests(unittest.TestCase):
             body = app.test_client().get("/api/shopify/order?client_id=muravai&shipment=s1", headers=self.AUTH).get_json()
         self.assertIn("several_shipments", body["flags"])
 
+    def test_cut_off_queue_makes_the_split_unknown(self):
+        store = {**self.VOIDED, "truncated": True}
+        fake = FakeShopify(["read_orders", "read_all_orders", "read_products"], [order_node()])
+        with patch.dict("os.environ", self.ENV, clear=True), \
+                patch("app.ssk_source.read_shipments", return_value=store), \
+                patch("shopify_source.requests.post", fake.post):
+            body = app.test_client().get("/api/shopify/order?client_id=muravai&shipment=s1", headers=self.AUTH).get_json()
+        self.assertIn("items_unverified", body["flags"])
+
     def test_voided_label_is_not_a_second_parcel(self):
         client = app.test_client()
         fake = FakeShopify(["read_orders", "read_all_orders", "read_products"], [order_node()])
