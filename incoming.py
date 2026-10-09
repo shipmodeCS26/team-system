@@ -19,6 +19,7 @@ from ledger_sources import SheetReader, column_letter, parse_day, parse_int
 log = logging.getLogger(__name__)
 TAB = "'Incoming Stocks'"
 LAST_ROW = 2000  # reaching this row is reported as truncated, never silently dropped
+PROBE_ROWS = 20000  # rows past LAST_ROW checked for any data, so a blank row 2000 can't hide more
 CACHE_SECONDS = 45
 COLUMNS = {
     "po": "PO (Every Row)", "tracking": "Tracking (Every Row)", "product": "Product (Report Name)",
@@ -150,8 +151,12 @@ def _read_one(client_id: str, sheet_id: str, credentials: dict, today: date) -> 
         if any(name not in positions for name in COLUMNS.values()):
             raise SourceError("incoming_layout")
         letters = {key: column_letter(positions[name]) for key, name in COLUMNS.items()}
-        blocks = reader.batch([f"{TAB}!{letter}2:{letter}{LAST_ROW}" for letter in letters.values()])
+        blocks = reader.batch([f"{TAB}!{letter}2:{letter}{LAST_ROW}" for letter in letters.values()]
+                              + [f"{TAB}!{letter}{LAST_ROW + 1}:{letter}{PROBE_ROWS}" for letter in letters.values()])
         result = {"id": client_id, **parse_incoming(dict(zip(letters, blocks)), today)}
+        beyond = blocks[len(letters):]
+        if any(str(cell).strip() for column in beyond for row in (column or []) for cell in (row or [])):
+            result["truncated"] = True  # data past the rows read: never treated as the whole tab
     with _lock:
         now = time.monotonic()
         # Entries are per evaluation date, so expired ones are dropped here rather than piling up.

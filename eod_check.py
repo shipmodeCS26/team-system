@@ -101,6 +101,9 @@ def check(client_id: str, source: dict, csv_rows: list[dict] | None, *,
         if day is not None:
             usage, orders = day.usage, day.orders
             result["reasons"] += day.flags + day.unknown_items + day.duplicate_tracking_excluded
+            if day.loose_shipments:  # no Mission Num: not tied to a warehouse batch, so checked by a person
+                result["reasons"].append(f"{len(day.loose_shipments)} shipment(s) without a Mission Num: "
+                                         f"{', '.join(day.loose_shipments)}.")
             other = [origin for origin in day.usage_by_origin if origin != "Miami"]
             if other and len(day.usage_by_origin) == 1:  # more than one origin is already flagged
                 result["reasons"].append(f"Shipments did not originate in Miami: {', '.join(other)}.")

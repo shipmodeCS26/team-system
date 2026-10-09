@@ -155,7 +155,10 @@ class FakeReader:
             return [self.header]
         FakeReader.last_ranges = ranges
         blocks = columns(ROWS)
-        return [blocks[key] for key in KEYS]
+        return [blocks[key] for key in KEYS] + [self.beyond(key) for key in KEYS]
+
+    def beyond(self, key):
+        return []
 
 
 class ReadIncomingTests(unittest.TestCase):
@@ -172,8 +175,16 @@ class ReadIncomingTests(unittest.TestCase):
         with patch("incoming.SheetReader", FakeReader):
             result = incoming.read_incoming(["muravai"], TODAY)[0]
         self.assertTrue(result["available"])
-        self.assertEqual(len(FakeReader.last_ranges), len(COLUMNS))
+        self.assertEqual(len(FakeReader.last_ranges), 2 * len(COLUMNS))  # each column, plus a probe past the cap
         self.assertNotIn("N2", " ".join(FakeReader.last_ranges))  # Box Details column is never requested
+        self.assertFalse(result["truncated"])
+
+    def test_data_past_a_blank_last_row_is_truncated(self):
+        class More(FakeReader):
+            def beyond(self, key):
+                return [[], ["PO99"]] if key == KEYS[0] else []
+        with patch("incoming.SheetReader", More):
+            self.assertTrue(incoming.read_incoming(["muravai"], TODAY)[0]["truncated"])
 
     def test_cache_is_kept_per_evaluation_date(self):
         # Flags like "past expected date" depend on the day they are judged on, so the EOD report for an

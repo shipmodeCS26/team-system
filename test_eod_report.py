@@ -652,5 +652,26 @@ class CodexRoundSixTests(unittest.TestCase):
         self.assertEqual(reader.daily_sales(), rows)
 
 
+class CodexRoundEightTests(unittest.TestCase):
+    """Fixes from the Codex review of PR #22 (0df6718)."""
+
+    def setUp(self):
+        self.source = parse_dashboard(SHEETS["puravita"])
+
+    def test_loose_shipment_holds(self):
+        rows = [dict(r, **{"Mission Num": ""}) for r in csv_for("puravita")]
+        result = check("puravita", self.source, rows)
+        self.assertNotEqual(result["status"], VERIFIED)
+        self.assertTrue(any("Mission Num" in r for r in result["reasons"]))
+
+    def test_negative_remaining_is_not_called_an_error_value(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[14][3] = "-5"
+        source = parse_dashboard(values)
+        alerts = build_report("puravita", "PuraVita", source, check("puravita", source, csv_for("puravita")))["sections"][3]["lines"]
+        self.assertFalse(any("pending or error" in a for a in alerts), alerts)
+        self.assertTrue(any("out of stock" in a for a in alerts), alerts)
+
+
 if __name__ == "__main__":
     unittest.main()

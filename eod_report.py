@@ -79,7 +79,8 @@ def _alerts(rows: list[dict], as_of, incoming: dict | None) -> list[str]:
             alerts.append(f"• {row['product']}: reorder now ({_cover_text(row.get('cover', ''))}).")
         if _order_due(row, as_of) and (row.get("order_by") or "").lower() != "now":
             alerts.append(f"• {row['product']}: order-by date {row['order_by']} has been reached.")
-        if row.get("flags"):
+        # A negative Remaining is flagged too, but it is a real value (already an out-of-stock alert).
+        if any(ERROR_VALUE.search(row.get(key) or "") for key in row.get("flags", [])):
             alerts.append(f"• {row['product']}: the Sheet shows a pending or error value.")
     for po, flags in _client_flags(incoming):
         for flag in flags:
