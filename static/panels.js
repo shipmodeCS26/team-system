@@ -31,4 +31,39 @@ function resetPanels(state, keys) {
   }
 }
 
-if (typeof module !== "undefined") module.exports = { makePanelLoader, resetPanels };
+// #14: runs the daily Shopify vs. shipped comparison and polls while the server reads Shopify.
+// A result is applied only while the same client is selected and no newer check was started.
+function makeDailyLoader(state, api, render, wait = ms => new Promise(r => setTimeout(r, ms))) {
+  return async function check(day) {
+    const client = state.client;
+    const ticket = state.panelRequests.daily = (state.panelRequests.daily || 0) + 1;
+    const current = () => state.panelRequests.daily === ticket && state.client === client;
+    state.daily = { client, day, status: "running", orders_read: 0 };
+    render();
+    for (let attempt = 0; attempt < 200; attempt++) {
+      let res;
+      try {
+        res = await api(`/api/shopify/daily-orders?client_id=${encodeURIComponent(client)}&date=${encodeURIComponent(day)}`);
+      } catch (error) {
+        if (current()) { state.daily = { client, day, status: "failed", error: error.message }; render(); }
+        return;
+      }
+      if (!current()) return;
+      if (res.status !== "running") {
+        // Defence in depth: never show another client's comparison.
+        state.daily = res.result && res.result.client_id !== client
+          ? { client, day, status: "failed", error: "Unexpected response. Try again." }
+          : { client, day, ...res };
+        render();
+        return;
+      }
+      state.daily = { client, day, status: "running", orders_read: res.orders_read || 0 };
+      render();
+      await wait(3000);
+      if (!current()) return;
+    }
+    if (current()) { state.daily = { client, day, status: "failed", error: "Shopify is taking too long. Try again." }; render(); }
+  };
+}
+
+if (typeof module !== "undefined") module.exports = { makePanelLoader, resetPanels, makeDailyLoader };

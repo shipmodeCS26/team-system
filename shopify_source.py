@@ -72,7 +72,20 @@ ORDER_ADDRESS_QUERY = """query ShipModeOrderAddress($id: ID!) {
 ORDER_FULFILLMENTS_QUERY = """query ShipModeOrderFulfillments($id: ID!) {
   order(id: $id) { fulfillments { status requiresShipping trackingInfo(first: 10) { number } } }
 }"""
-READ_QUERIES = frozenset({SCOPES_QUERY, VARIANTS_QUERY, ORDER_QUERY, ORDER_ADDRESS_QUERY, ORDER_FULFILLMENTS_QUERY})
+# #14: one client's orders created in a time window, newest first. Order names, dates, statuses and
+# line items only: no customer, address, price or note fields are requested.
+DAY_ORDERS_QUERY = """query ShipModeDayOrders($q: String!, $after: String) {
+  orders(first: 25, query: $q, after: $after, sortKey: CREATED_AT, reverse: true) {
+    nodes {
+      name createdAt cancelledAt test displayFinancialStatus displayFulfillmentStatus
+      lineItems(first: 30) { nodes { name sku quantity currentQuantity requiresShipping } pageInfo { hasNextPage } }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}"""
+DAY_ORDER_PAGES = 80  # 2,000 orders across the window; the chosen day is read first (newest first)
+READ_QUERIES = frozenset({SCOPES_QUERY, VARIANTS_QUERY, ORDER_QUERY, ORDER_ADDRESS_QUERY, ORDER_FULFILLMENTS_QUERY,
+                          DAY_ORDERS_QUERY})
 # Merchants can customise order prefixes/suffixes, so any printable name is allowed; it is escaped
 # inside the quoted search term. Control characters are refused.
 ORDER_NAME = re.compile(r"[^\x00-\x1f\x7f]{1,100}")
@@ -86,6 +99,7 @@ ERRORS = {
     "not_found": "Shopify store not found. Check the store domain in the private deployment settings.",
     "unavailable": "Shopify did not respond. Try again shortly.",
     "read_failed": "The Shopify store could not be read.",
+    "throttled": "Shopify asked us to slow down. Try again shortly.",
     "order_scope": "The ShipMode app cannot read orders yet (needs read_orders; addresses also need Shopify protected customer data access).",
 }
 
@@ -207,7 +221,9 @@ def _graphql_once(store, document, variables):
         codes = {str((e.get("extensions") or {}).get("code", "")).upper() for e in errors if isinstance(e, dict)}
         if "ACCESS_DENIED" in codes:
             raise SourceError("missing_scope")
-        if "THROTTLED" in codes or "MAX_COST_EXCEEDED" in codes:
+        if "THROTTLED" in codes:
+            raise SourceError("throttled")
+        if "MAX_COST_EXCEEDED" in codes:
             raise SourceError("unavailable")
         raise SourceError("read_failed")
     return body.get("data") or {}
@@ -385,3 +401,69 @@ def read_order(client_id, order_name):
     for order in orders:
         order.pop("id", None)
     return {"orders": orders, "complete": complete, "search_complete": search_complete}
+
+
+def _window_term(start, end):
+    """Shopify search for orders created in [start, end); both are timezone-aware datetimes."""
+    fmt = lambda moment: moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f"created_at:>='{fmt(start)}' created_at:<'{fmt(end)}'"
+
+
+THROTTLE_WAITS = (2, 4, 8, 16)
+
+
+def _paced(store, document, variables, sleep=time.sleep):
+    """Long reads pause and retry when Shopify's rate limit is reached, instead of failing."""
+    for wait in THROTTLE_WAITS:
+        try:
+            return _graphql(store, document, variables)
+        except SourceError as error:
+            if error.code != "throttled":
+                raise
+            sleep(wait)
+    return _graphql(store, document, variables)
+
+
+def read_day_orders(client_id, start, end, progress=None, sleep=time.sleep):
+    """#14: one client's orders created in [start, end), read-only and without customer fields.
+    Returns orders newest first, `complete` (the whole window was read) and `oldest_read`."""
+    store = store_config().get(client_id)
+    if not _valid_store(store):
+        raise SourceError("not_configured")
+    scopes = granted_scopes(store)
+    check_scopes(scopes)  # refuses a token with write access before any order is read
+    if "read_orders" not in scopes:
+        raise SourceError("order_scope")
+    orders, after, complete = [], None, False
+    for _ in range(DAY_ORDER_PAGES):
+        data = _paced(store, DAY_ORDERS_QUERY, {"q": _window_term(start, end), "after": after}, sleep)
+        connection = data.get("orders") or {}
+        for node in connection.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            lines = node.get("lineItems") or {}
+            orders.append({
+                "name": str(node.get("name") or "").strip(), "created_at": node.get("createdAt"),
+                "cancelled_at": node.get("cancelledAt"), "test": node.get("test") is True,
+                "financial": node.get("displayFinancialStatus") or "",
+                "fulfillment": node.get("displayFulfillmentStatus") or "",
+                # The ordered quantity is kept; a refund or edit (currentQuantity differs) is flagged,
+                # never subtracted (#14 acceptance criteria).
+                "items": [{"name": (line.get("name") or "").strip(), "sku": (line.get("sku") or "").strip(),
+                           "qty": line.get("quantity"),
+                           "changed": isinstance(line.get("currentQuantity"), int)
+                           and line.get("currentQuantity") != line.get("quantity")}
+                          for line in (lines.get("nodes") or [])
+                          if isinstance(line, dict) and line.get("requiresShipping") is not False],
+                "items_truncated": bool((lines.get("pageInfo") or {}).get("hasNextPage")),
+            })
+        if progress:
+            progress(len(orders))
+        info = connection.get("pageInfo") or {}
+        if not info.get("hasNextPage"):
+            complete = True
+            break
+        after = info.get("endCursor")
+    return {"orders": orders, "complete": complete, "all_orders": "read_all_orders" in scopes,
+            "oldest_read": orders[-1]["created_at"] if orders else None,
+            "fetched_at": datetime.now(timezone.utc).isoformat()}

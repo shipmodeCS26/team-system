@@ -3,7 +3,7 @@
 // replace the panel (or CSV export) of a client selected later.
 const test = require("node:test");
 const assert = require("node:assert");
-const { makePanelLoader, resetPanels } = require("./static/panels.js");
+const { makePanelLoader, resetPanels, makeDailyLoader } = require("./static/panels.js");
 
 function deferredApi() {
   const pending = [];
@@ -60,4 +60,36 @@ test("switching clients clears old data immediately", () => {
   resetPanels(state, ["shopify"]);
   assert.strictEqual(state.shopify, null);
   assert.strictEqual(state.shopifyError, null);
+});
+
+test("daily check: polls while running, then shows the result", async () => {
+  const state = { client: "muravai", panelRequests: {} };
+  const answers = [{ status: "running", orders_read: 25 }, { status: "done", result: { client_id: "muravai", rows: [] } }];
+  const urls = [];
+  const check = makeDailyLoader(state, async url => { urls.push(url); return answers.shift(); }, () => {}, async () => {});
+  await check("2026-09-01");
+  assert.strictEqual(state.daily.status, "done");
+  assert.strictEqual(urls.length, 2);
+  assert.match(urls[0], /client_id=muravai&date=2026-09-01$/);
+});
+
+test("daily check: a client switch stops polling and drops the old answer", async () => {
+  const state = { client: "muravai", panelRequests: {} };
+  const { api, pending } = deferredApi();
+  const check = makeDailyLoader(state, api, () => {}, async () => {});
+  const run = check("2026-09-01");
+  state.client = "puravita";
+  resetPanels(state, ["daily"]);
+  pending[0].resolve({ status: "done", result: { client_id: "muravai", rows: [] } });
+  await run;
+  assert.strictEqual(state.daily, null);
+  assert.strictEqual(pending.length, 1);
+});
+
+test("daily check: a result for another client is never shown", async () => {
+  const state = { client: "muravai", panelRequests: {} };
+  const check = makeDailyLoader(state, async () => ({ status: "done", result: { client_id: "puravita" } }), () => {}, async () => {});
+  await check("2026-09-01");
+  assert.strictEqual(state.daily.status, "failed");
+  assert.strictEqual(state.daily.result, undefined);
 });

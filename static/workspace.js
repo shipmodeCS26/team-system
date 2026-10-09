@@ -37,7 +37,7 @@ function render(){
   $("page-number").textContent=`${state.page} / ${pages}`;$("previous").disabled=state.page===1;$("next").disabled=state.page===pages;
   $("monitoring-count").textContent=`${rows.filter(r=>r.tier==="monitoring").length} under 5 days · ${rows.filter(r=>r.tier==="delivered").length} delivered`;
   document.querySelectorAll(".selected-client-name").forEach(el=>el.textContent=state.client==="all"?"all clients":clientName(state.client));
-  if(state.section==="inventory")renderInventory();
+  if(state.section==="inventory"){renderInventory();renderDaily()}
 }
 function renderInventory(){
   const sources=state.inventorySources||[], loaded=sources.filter(s=>!s.error), selected=state.client==="all"?null:loaded[0];
@@ -188,6 +188,35 @@ function exportSsk(){
   const url=URL.createObjectURL(new Blob([data.map(row=>row.map(cell).join(",")).join("\r\n")],{type:"text/csv;charset=utf-8"}));
   const a=document.createElement("a");a.href=url;a.download="shipmode-shipsidekick-vs-sheet.csv";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
+function renderDaily(){
+  const d=state.daily, r=d&&d.status==="done"?d.result:null, one=state.client!=="all";
+  const fmt=n=>n==null?"—":Number(n).toLocaleString(), diff=n=>n==null?"—":n===0?"0":`<strong>${n>0?"+":""}${Number(n).toLocaleString()}</strong>`;
+  $("daily-check").disabled=!one||d?.status==="running";
+  $("daily-error").hidden=!(d&&(d.status==="failed"||r?.error));
+  $("daily-error").textContent=d?.status==="failed"?d.error:r?.error||"";
+  const empty=(title,text)=>`<tr><td colspan="8" class="empty-cell"><strong>${esc(title)}</strong>${esc(text)}</td></tr>`;
+  if(!one){$("daily-rows").innerHTML=empty("Choose one client","The comparison runs for one client and one day at a time.");$("daily-extra").innerHTML="";$("daily-export").disabled=true;return}
+  if(!d){$("daily-rows").innerHTML=empty("Not checked","Choose a day, then Compare.");$("daily-extra").innerHTML="";$("daily-export").disabled=true;return}
+  if(d.status==="running"){$("daily-rows").innerHTML=empty("Reading Shopify…",`${Number(d.orders_read||0).toLocaleString()} orders read so far. Shopify paces reads, so a busy day can take a minute or two.`);$("daily-extra").innerHTML="";$("daily-export").disabled=true;return}
+  if(!r||r.error){$("daily-rows").innerHTML=empty("No comparison",r?.error||d.error||"");$("daily-extra").innerHTML="";$("daily-export").disabled=true;return}
+  const t=r.totals;
+  $("daily-rows").innerHTML=r.rows.map(x=>`<tr><td><strong>${esc(x.sku)} · ${esc(x.label)}</strong></td><td>${fmt(x.shopify_ordered)}</td><td>${fmt(x.eod_shipped)}</td><td>${fmt(x.sheet_sold)}</td><td>${diff(x.eod_minus_shopify)}</td><td>${fmt(x.timing)}</td><td>${diff(x.unexplained)}</td><td>${diff(x.sheet_minus_eod)}</td></tr>`).join("")+`<tr><td><strong>Total</strong><small>${esc(r.date)} · ${r.counts.orders.toLocaleString()} Shopify orders · ${r.counts.eod_orders.toLocaleString()} EOD orders</small></td><td><strong>${fmt(t.shopify_ordered)}</strong></td><td><strong>${fmt(t.eod_shipped)}</strong></td><td><strong>${fmt(t.sheet_sold)}</strong></td><td>${diff(t.eod_minus_shopify)}</td><td>${fmt(t.timing)}</td><td>${diff(t.unexplained)}</td><td>${diff(t.sheet_minus_eod)}</td></tr>`;
+  const list=g=>`<div class="eod-card"><strong>${esc(g.text)} (${g.count.toLocaleString()})</strong>${g.orders.map(o=>`<small${g.type==="shipped_later"||g.type==="ordered_earlier"?"":' class="finding"'}>${esc(o.order)}${o.detail?" · "+esc(o.detail):""}${Object.keys(o.units).length?" · "+Object.entries(o.units).filter(([,v])=>v).map(([k,v])=>`${esc(k)} ${v>0&&g.type==="quantity_mismatch"?"+":""}${v}`).join(", "):""}</small>`).join("")}${g.count>g.orders.length?`<small>…and ${(g.count-g.orders.length).toLocaleString()} more (not listed)</small>`:""}</div>`;
+  const info=[r.counts.cancelled_orders?`${r.counts.cancelled_orders} cancelled order(s) not counted`:"",r.counts.test_orders?`${r.counts.test_orders} test order(s) not counted`:"",r.counts.not_checked?`${r.counts.not_checked} shipped order(s) not checked against Shopify (older orders not read)`:"",r.rules_status!=="APPROVED"?"SKU rules are PROPOSED, not yet approved":"",...r.notes].filter(Boolean);
+  $("daily-extra").innerHTML=(r.exceptions.length?"":'<div class="eod-card"><strong>No order exceptions</strong><small>Every order matched, apart from any timing below.</small></div>')+r.exceptions.map(list).join("")+r.timing_orders.map(list).join("")+(info.length?`<div class="eod-card"><strong>Notes</strong>${info.map(n=>`<small>${esc(n)}</small>`).join("")}</div>`:"");
+  $("daily-export").disabled=false;
+}
+const checkDaily=makeDailyLoader(state,(...a)=>api(...a),()=>renderDaily());
+function exportDaily(){
+  const r=state.daily?.result;if(!r||r.error)return;
+  const cell=v=>'"'+String(v??"").replace(/^[=+@\-\t\r]/,"'$&").replace(/"/g,'""')+'"';
+  const data=[["client","date","sku","label","shopify_ordered","eod_shipped","sheet_units_sold","eod_minus_shopify","timing","unexplained","sheet_minus_eod"],
+    ...r.rows.map(x=>[clientName(r.client_id),r.date,x.sku,x.label,x.shopify_ordered,x.eod_shipped,x.sheet_sold,x.eod_minus_shopify,x.timing,x.unexplained,x.sheet_minus_eod]),
+    [],["client","date","type","order","detail","units"],
+    ...[...r.exceptions,...r.timing_orders].flatMap(g=>g.orders.map(o=>[clientName(r.client_id),r.date,g.text,o.order,o.detail,Object.entries(o.units).map(([k,v])=>`${k} ${v}`).join("; ")]))];
+  const url=URL.createObjectURL(new Blob([data.map(row=>row.map(cell).join(",")).join("\r\n")],{type:"text/csv;charset=utf-8"}));
+  const a=document.createElement("a");a.href=url;a.download=`shipmode-shopify-vs-shipped-${r.date}.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
 async function loadInventory(){
   if(!state.data)return;
   const request=++state.inventoryRequest,client=state.client;
@@ -245,7 +274,7 @@ async function loadOrder(r){
     if(ticket!==state.orderRequest||state.selected!==id||!$("detail-dialog").open)return;
     const o=res.order, a=o&&o.address;
     const flags=res.flag_text.map(t=>`<span class="badge watch">${esc(t)}</span>`).join(" ");
-    panel.innerHTML=(flags?`<div class="order-flags">${flags}</div>`:"")+(o?`<dl class="detail-grid"><div><dt>Order</dt><dd>${esc(o.name)} · ${esc(date(o.created_at,true))}</dd></div><div><dt>Payment</dt><dd>${esc(o.financial.toLowerCase().replace(/_/g," "))}</dd></div><div><dt>Fulfillment</dt><dd>${esc(o.fulfillment.toLowerCase().replace(/_/g," "))}</dd></div><div><dt>Cancelled</dt><dd>${o.cancelled_at?esc(date(o.cancelled_at,true)):"No"}</dd></div></dl><h4>Items in Shopify${o.items_truncated?" (first 100 only)":""}</h4><ul class="timeline">${o.items.map(i=>`<li>${esc(i.name||i.sku)} × ${esc(i.qty)}<small>${esc(i.sku||"no SKU")}</small></li>`).join("")}</ul><h4>Items in this shipment</h4><ul class="timeline">${(r.items||[]).map(i=>`<li>${esc(i.name||i.sku)} × ${esc(i.qty)}<small>${esc(i.sku||"no SKU")}</small></li>`).join("")||"<li>Not listed by ShipSidekick</li>"}</ul><h4>Ship to (current, in Shopify)</h4>${a?`<address class="ship-to">${[a.name,a.address1,a.address2,[a.city,a.provinceCode,a.zip].filter(Boolean).join(" "),a.countryCodeV2].filter(Boolean).map(esc).join("<br>")}</address>`:`<p class="muted">${o.address_withheld?"Address hidden: Shopify could only search its last 60 days of orders, so this match is not confirmed. Ask the client to add read_all_orders to the ShipMode app.":o.address_visible?"No shipping address on this order.":"Address not available: Shopify has not approved address access for the ShipMode app."}</p>`}`:"")+'<p class="muted">Flags are for review only; they do not change the shipment\'s age or priority.</p>';
+    panel.innerHTML=(flags?`<div class="order-flags">${flags}</div>`:"")+(o?`<dl class="detail-grid"><div><dt>Order</dt><dd>${esc(o.name)} · ${esc(date(o.created_at,true))}</dd></div><div><dt>Payment</dt><dd>${esc(o.financial.toLowerCase().replace(/_/g," "))}</dd></div><div><dt>Fulfillment</dt><dd>${esc(o.fulfillment.toLowerCase().replace(/_/g," "))}</dd></div><div><dt>Cancelled</dt><dd>${o.cancelled_at?esc(date(o.cancelled_at,true)):"No"}</dd></div></dl><h4>Items in Shopify${o.items_truncated?" (first 30 only)":""}</h4><ul class="timeline">${o.items.map(i=>`<li>${esc(i.name||i.sku)} × ${esc(i.qty)}<small>${esc(i.sku||"no SKU")}</small></li>`).join("")}</ul><h4>Items in this shipment</h4><ul class="timeline">${(r.items||[]).map(i=>`<li>${esc(i.name||i.sku)} × ${esc(i.qty)}<small>${esc(i.sku||"no SKU")}</small></li>`).join("")||"<li>Not listed by ShipSidekick</li>"}</ul><h4>Ship to (current, in Shopify)</h4>${a?`<address class="ship-to">${[a.name,a.address1,a.address2,[a.city,a.provinceCode,a.zip].filter(Boolean).join(" "),a.countryCodeV2].filter(Boolean).map(esc).join("<br>")}</address>`:`<p class="muted">${o.address_withheld?"Address hidden: Shopify could only search its last 60 days of orders, so this match is not confirmed. Ask the client to add read_all_orders to the ShipMode app.":o.address_visible?"No shipping address on this order.":"Address not available: Shopify has not approved address access for the ShipMode app."}</p>`}`:"")+'<p class="muted">Flags are for review only; they do not change the shipment\'s age or priority.</p>';
   }catch(error){if(ticket===state.orderRequest&&state.selected===id&&$("order-panel"))$("order-panel").innerHTML=`<p class="error">${esc(error.message)}</p>`}
 }
 async function api(url,options={}){
@@ -295,7 +324,7 @@ function exportQueue(){
 }
 document.querySelectorAll("[data-section]").forEach(el=>el.addEventListener("click",()=>section(el.dataset.section)));
 document.querySelectorAll("[data-tier],[data-filter]").forEach(el=>el.addEventListener("click",()=>{state.filter=el.dataset.tier||el.dataset.filter;state.page=1;render()}));
-$("client-select").addEventListener("change",e=>{state.client=e.target.value;state.page=1;resetPanels(state,["calculated","shopify","ssk"]);state.shopifyShown=200;renderCalculated();renderShopify();renderSsk();try{localStorage.setItem("shipmode-client",state.client)}catch{}render();if(state.section==="inventory")loadInventory()});
+$("client-select").addEventListener("change",e=>{state.client=e.target.value;state.page=1;resetPanels(state,["calculated","shopify","ssk","daily"]);state.shopifyShown=200;renderCalculated();renderShopify();renderSsk();try{localStorage.setItem("shipmode-client",state.client)}catch{}render();if(state.section==="inventory")loadInventory()});
 $("search").addEventListener("input",e=>{state.search=e.target.value;state.page=1;render()});
 $("carrier-filter").addEventListener("change",e=>{state.carrier=e.target.value;state.page=1;render()});
 $("previous").addEventListener("click",()=>{state.page--;render()});$("next").addEventListener("click",()=>{state.page++;render()});
@@ -305,6 +334,9 @@ document.querySelectorAll(".close-dialog").forEach(el=>el.addEventListener("clic
 $("detail-dialog").addEventListener("close",()=>{state.orderRequest++;const panel=$("order-panel");if(panel)panel.innerHTML=""});  // customer address leaves the page
 $("export-button").addEventListener("click",exportQueue);
 $("inventory-refresh").addEventListener("click",loadInventory);
+{const y=new Date(Date.now()-864e5);$("daily-date").value=`${y.getFullYear()}-${String(y.getMonth()+1).padStart(2,"0")}-${String(y.getDate()).padStart(2,"0")}`;$("daily-date").max=new Date().toISOString().slice(0,10)}
+$("daily-check").addEventListener("click",()=>{if($("daily-date").value)checkDaily($("daily-date").value)});
+$("daily-export").addEventListener("click",exportDaily);
 $("daily-update-button").addEventListener("click",openDailyUpdate);
 $("update-copy").addEventListener("click",copyDailyUpdate);
 $("incoming-history-toggle").addEventListener("click",()=>{state.incomingHistory=!state.incomingHistory;renderIncoming()});

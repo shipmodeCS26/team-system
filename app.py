@@ -21,6 +21,7 @@ from inventory import read_dashboards
 from ledger_sources import calculate_clients
 import shopify_source
 import sku_check
+import daily_orders
 import order_check
 import ssk_check
 import ssk_source
@@ -330,6 +331,32 @@ def shopify_order():
                                search_complete=found["search_complete"])
     unique = len(orders) == 1 and found["search_complete"]
     return {"order": orders[0] if unique else None, "matches": len(orders), **result, "writes": "disabled"}
+
+
+@app.get("/api/shopify/daily-orders")
+@protected
+def shopify_daily_orders():
+    """#14: one client's Shopify orders for one day vs. EOD shipped vs. the Sheet. Read-only and
+    display-only: nothing changes the EOD, the ledger, Shopify or the Sheets. No customer fields.
+    The read runs in the background; the page polls until the status is done or failed."""
+    if not shopify_source.enabled():
+        return jsonify(error="Shopify is not connected."), 503
+    if not inventory_enabled():
+        return jsonify(error="Needs the Google Sheets connection (Daily Sales and Dashboard)."), 503
+    client_id = request.args.get("client_id", "")
+    if client_id not in [client["id"] for client in CLIENTS]:
+        return jsonify(error="Choose one client."), 400
+    today = datetime.now(ZoneInfo("America/New_York")).date()
+    try:
+        day = datetime.strptime(request.args.get("date", ""), "%Y-%m-%d").date()
+    except ValueError:
+        return jsonify(error="Choose a date."), 400
+    if day > today or (today - day).days > 366:
+        return jsonify(error="Choose a date in the last year, not in the future."), 400
+    if client_id not in shopify_order_clients():
+        return jsonify(error="No Shopify store is mapped for this client."), 503
+    state = daily_orders.status(client_id, day, today)
+    return state, 202 if state["status"] == "running" else 200
 
 
 @app.get("/api/ssk/shipment-fields")

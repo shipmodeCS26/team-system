@@ -102,7 +102,7 @@ Install `requirements.txt`, then run `flask --app app run` for development.
 Render build: `pip install -r requirements.txt`.
 Render start: `gunicorn app:app --bind 0.0.0.0:$PORT`.
 Health check: `/api/health`. Auto-deploy: On Commit.
-Tests: `python -B -m unittest -v test_tracking test_inventory test_ledger test_muravai_rules test_shopify test_ssk test_frontend` (test_frontend runs `node --test test_panels.js` when Node.js is installed).
+Tests: `python -B -m unittest -v test_tracking test_inventory test_ledger test_muravai_rules test_shopify test_ssk test_incoming test_daily_update test_order_check test_daily_orders test_frontend` (test_frontend runs `node --test test_panels.js` when Node.js is installed).
 
 ## Live mode prerequisites (not activated)
 
@@ -227,6 +227,34 @@ only and never change a shipment's age or priority. The address is shown only wh
 Shopify can search all orders (`read_all_orders`), so an older order with the same
 name can never be mistaken for it. The address is never cached,
 logged, exported or stored, and is cleared from the page when the panel closes.
+
+Shopify orders vs. shipped (#14): on the Inventory tab, for one client and one
+day, the panel compares per SKU the units ordered in Shopify, the units shipped
+in the EOD (calculated from the Daily Sales tab exactly as the EOD is) and the
+Dashboard's units sold (only when the Dashboard shows that day). It needs
+`SHOPIFY_ENABLED`, the Sheets connection and `read_orders`; it reads order names,
+dates, statuses and line items only, never customer fields. Defaults (proposed
+2026-10-06, change in `daily_orders.py`):
+- A day is midnight to midnight US Eastern, by Shopify's order created time and
+  the label's Created Date.
+- Every order that is not cancelled counts as ordered, including on-hold and
+  pre-orders. Cancelled and test orders are excluded and counted separately.
+  A refund after shipping is flagged, never subtracted.
+- Shopify lines go through the client's own rules (kits included), as a Daily
+  Sales Items cell would.
+- Ordered on the day but shipped later (or not shipped yet), or ordered earlier
+  and shipped on the day, is **timing**. Whatever is left is **unexplained**.
+  Orders not shipped yet also appear in the exception list.
+- Order exceptions: in Shopify with no label, shipped but not in Shopify,
+  quantity differs, unmapped item, cancelled but shipped, and refunded after
+  shipping.
+- Shopify orders are read from two days before the chosen day, newest first. If
+  the chosen day can't be read in full, its column stays blank rather than
+  showing a partial number.
+
+Shopify paces reads, so the read runs in the background and the page polls. A
+result is reused for 10 minutes (3 minutes for today). Nothing here changes the
+EOD, the ledger, Shopify or the Sheets.
 
 ## Calculated inventory (shadow check)
 
