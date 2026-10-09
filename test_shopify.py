@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 import unittest
 from unittest.mock import patch
 
@@ -106,6 +107,26 @@ class ShopifyTestCase(unittest.TestCase):
             self.assertNotRegex(call["json"]["query"], r"(?i)\bmutation\b")
 
 
+def requested_cost(document):
+    """Upper bound of Shopify's requested query cost: every object costs 1 and a connection costs
+    2 + first, each multiplied by the `first` of every enclosing connection."""
+    total, stack = 0, [(1, 1)]  # (multiplier for this block, `first` of this block if a connection)
+    for match in re.finditer(r"(\w+)?\s*(\([^()]*\))?\s*\{|\}", document):
+        if match.group(0) == "}":
+            stack.pop()
+            continue
+        first = re.search(r"\bfirst:\s*(\d+)", match.group(2) or "")
+        size = int(first.group(1)) if first else 1
+        multiplier, parent_size = stack[-1]
+        if match.group(1) in ("nodes", "edges"):
+            # A connection's nodes are already priced by its `first`; their fields repeat that often.
+            stack.append((multiplier * parent_size, 1))
+            continue
+        total += multiplier * ((2 + size) if first else 1)
+        stack.append((multiplier, size))
+    return total
+
+
 class ReadOnlyGuardTests(ShopifyTestCase):
     STORE = {"shop": "muravai-test.myshopify.com", "token": "shpat_x"}
 
@@ -123,6 +144,12 @@ class ReadOnlyGuardTests(ShopifyTestCase):
         for document in shopify_source.READ_QUERIES:
             self.assertTrue(document.lstrip().startswith("query "))
             self.assertNotRegex(document, r"(?i)\b(mutation|subscription)\b")
+
+    def test_every_query_is_under_shopifys_cost_limit(self):
+        # Shopify refuses (MAX_COST_EXCEEDED) any single query whose requested cost is over 1,000.
+        for document in shopify_source.READ_QUERIES:
+            self.assertLessEqual(requested_cost(document), 1000, document.split("(")[0])
+        self.assertGreater(requested_cost("query { orders(first: 25) { nodes { lineItems(first: 100) { nodes { name } } } } }"), 1000)
 
     def test_token_with_any_write_scope_is_refused(self):
         with self.assertRaises(shopify_source.SourceError) as error:

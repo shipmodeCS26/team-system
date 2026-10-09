@@ -56,11 +56,13 @@ ORDER_QUERY = """query ShipModeOrder($q: String!, $after: String) {
   orders(first: 25, query: $q, after: $after) {
     nodes {
       id name createdAt cancelledAt displayFinancialStatus displayFulfillmentStatus
-      lineItems(first: 100) { nodes { name sku quantity currentQuantity requiresShipping } pageInfo { hasNextPage } }
+      lineItems(first: 30) { nodes { name sku quantity currentQuantity requiresShipping } pageInfo { hasNextPage } }
     }
     pageInfo { hasNextPage endCursor }
   }
 }"""
+# Shopify refuses a query whose requested cost is over 1,000 points: 25 orders x 30 lines is about 850.
+# 25 x 100 lines (about 2,600) was refused outright. Longer orders are marked items_truncated.
 ORDER_SEARCH_PAGES = 4  # 100 fuzzy candidates; more is reported as an incomplete search, never a unique match
 # Separate reads: protected customer fields and fulfillment data need extra access. If either is
 # refused, the order itself still shows ("address unavailable" / shipment count unknown).
