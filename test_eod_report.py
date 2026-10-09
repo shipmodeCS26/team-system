@@ -285,6 +285,51 @@ class CodexFixTests(unittest.TestCase):
         self.assertEqual(slack_draft.channel_for("puravita", {"puravita": "G0ABCDEFGH1"}), "G0ABCDEFGH1")
 
 
+class CodexRoundTwoTests(unittest.TestCase):
+    """Fixes from the Codex review of PR #22 (e7b1b7a)."""
+
+    def setUp(self):
+        self.source = parse_dashboard(SHEETS["puravita"])
+
+    def test_voided_only_day_needs_the_confirmation(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[14][2] = "0"
+        source = parse_dashboard(values)
+        rows = [dict(row("puravita", "9/28/26", "1x Puravita Magnesium Performance Capsules (CAP-MAGNESIUM-360)", "T1"), Voided="Yes")]
+        self.assertEqual(check("puravita", source, rows)["status"], INCOMPLETE)
+        self.assertEqual(check("puravita", source, rows, no_shipments_confirmed=True)["status"], VERIFIED)
+
+    def test_held_back_incoming_holds_the_report(self):
+        incoming = {"available": True, "shipments": [{"po": "PO-9", "flags": ["sku_unverified"], "lines": [
+            {"po": "PO-9", "product": "", "sku": "", "units": "100", "flags": ["sku_unverified"], "where": "", "expected_date": ""}]}]}
+        report = build_report("puravita", "PuraVita", self.source, check("puravita", self.source, csv_for("puravita")), incoming)
+        self.assertFalse(report["ready_to_send"])
+        self.assertTrue(any("PO-9" in r for r in report["hold_reasons"]))
+
+    def test_action_text_with_pending_is_kept(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[10] = ["Pending client confirmation of PO26"]
+        report = build_report("puravita", "PuraVita", parse_dashboard(values), check("puravita", parse_dashboard(values), csv_for("puravita")))
+        self.assertEqual(report["sections"][4]["lines"][0], "• Pending client confirmation of PO26")
+        values[10] = ["#REF!"]
+        report = build_report("puravita", "PuraVita", parse_dashboard(values), check("puravita", parse_dashboard(values), csv_for("puravita")))
+        self.assertNotIn("#REF!", report["text"])
+
+    def test_incomplete_sheet_status_holds(self):
+        values = [list(r) for r in SHEETS["muravai"]]
+        values[3][4] = "INCOMPLETE"
+        result = check("muravai", parse_dashboard(values), csv_for("muravai"))
+        self.assertEqual(result["status"], REVIEW)
+        self.assertIn("The Sheet marks this report INCOMPLETE.", result["reasons"])
+
+    def test_unreadable_remaining_holds(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[14][3] = "see note"
+        result = check("puravita", parse_dashboard(values), csv_for("puravita"))
+        self.assertEqual(result["status"], REVIEW)
+        self.assertTrue(any("remaining value" in r for r in result["reasons"]))
+
+
 class IsolationTests(unittest.TestCase):
     IDENTIFIERS = {
         "puravita": ["PuraVita", "Puravita", "PVT0", "Magnesium Performance", "CAP-MAGNESIUM"],

@@ -193,6 +193,12 @@ class ReadIncomingTests(unittest.TestCase):
             incoming.read_incoming(["muravai"], TODAY)
         self.assertGreater(second, first)
         self.assertEqual(len(calls), second)
+        # Expired per-date entries are dropped when a new read is stored, so they never pile up.
+        for key in list(incoming._cache):
+            incoming._cache[key] = (incoming._cache[key][0] - incoming.CACHE_SECONDS - 1, incoming._cache[key][1])
+        with patch("incoming.SheetReader", Counting):
+            incoming.read_incoming(["muravai"], TODAY - timedelta(days=9))
+        self.assertEqual(len(incoming._cache), 1)
 
     def test_missing_tab_changed_header_and_missing_mapping_are_per_client(self):
         class NoTab(FakeReader):

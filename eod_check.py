@@ -22,6 +22,7 @@ from incoming import whole_units
 from ledger_sources import parse_int
 
 VERIFIED, REVIEW, INCOMPLETE = "VERIFIED", "REVIEW", "INCOMPLETE"
+SHEET_OK = {"", "SOURCE VALUES", VERIFIED}  # any other Dashboard report status (REVIEW, INCOMPLETE…) holds
 
 
 def parse_as_of(value: str) -> date | None:
@@ -78,6 +79,9 @@ def check(client_id: str, source: dict, csv_rows: list[dict] | None, *,
             result["reasons"].append(f"The shipments could not be read: {error}.")
             day = None
             missing = "unreadable"
+        if day is not None and day.orders == 0:
+            day = None  # only voided or other clients' rows: an empty day needs the warehouse confirmation
+            missing = f"The shipments ({csv_name or 'export'}) have no counted shipments dated {report_date:%d %b %Y}."
         if day is not None:
             usage, orders = day.usage, day.orders
             result["reasons"] += day.flags + day.unknown_items + day.duplicate_tracking_excluded
@@ -121,6 +125,9 @@ def check(client_id: str, source: dict, csv_rows: list[dict] | None, *,
             item["gap"] = sheet - usage[sku]
             result["reasons"].append(f"{item['product']} ({sku}): Sheet shows {sheet:,} shipped, "
                                      f"ShipSidekick recount is {usage[sku]:,} (gap {item['gap']:+,}).")
+        if parse_int(row.get("remaining")) is None:
+            # Without a usable balance the Inventory, Alerts and Actions can't be stated.
+            result["reasons"].append(f"{item['product']}: Sheet remaining value {row.get('remaining')!r} is not a number.")
         result["checks"].append(item)
     listed = {item["sku"] for item in result["checks"]}
     for sku in rules.skus:
@@ -129,8 +136,9 @@ def check(client_id: str, source: dict, csv_rows: list[dict] | None, *,
     if not result["checks"]:
         result["reasons"].append("The Dashboard lists no products to check.")
 
-    if str(source.get("report_status", "")).upper() == REVIEW:
-        result["reasons"].append("The Sheet marks this report REVIEW.")
+    sheet_status = str(source.get("report_status", "")).strip().upper()
+    if sheet_status not in SHEET_OK:
+        result["reasons"].append(f"The Sheet marks this report {sheet_status}.")
     result["reasons"] += [f"Dashboard: {warning}." for warning in source.get("warnings") or []]
     result["status"] = REVIEW if result["reasons"] else VERIFIED
     return result

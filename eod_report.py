@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from eod_check import VERIFIED, parse_as_of
 from daily_update import _cover_text, _number, incoming_lines, usable_lines
+import re
+
 from inventory import ERROR_VALUE
+
+# Spreadsheet error codes only: ordinary words such as "pending" in a curated action are kept.
+FORMULA_ERROR = re.compile(r"^\s*#(?:DIV/0!|VALUE!|REF!|N/A|NUM!|NAME\?|NULL!|ERROR!|SPILL!|CALC!)\s*$", re.I)
 
 SECTIONS = ("Inventory", "Forecast", "Incoming", "Alerts", "Actions needed", "Data status")
 ORDER_STATUSES = {"REORDER NOW", "OUT OF STOCK"}
@@ -99,7 +104,7 @@ def _actions(rows: list[dict], as_of, incoming: dict | None) -> list[str]:
 def _official_actions(source: dict) -> list[str]:
     """The Dashboard's own action list (curated in the Sheet) comes first, word for word."""
     text = (source.get("action_list") or "").strip()
-    if not text or ERROR_VALUE.search(text):
+    if not text or FORMULA_ERROR.match(text):
         return []
     return [f"• {line.strip().lstrip('•-* ').strip()}" for line in text.splitlines() if line.strip()]
 
@@ -145,6 +150,9 @@ def build_report(client_id: str, client_name: str, source: dict, check: dict,
     if incoming and incoming.get("truncated"):
         hold.append("The Incoming Stocks tab is longer than ShipMode reads; later shipments may be missing.")
     notes = [f"Left out of Incoming until SKU and quantity are verified: {', '.join(held_back)}."] if held_back else []
+    if held_back:
+        # The Incoming section would be incomplete: hold until those lines are verified in the Sheet.
+        hold.append(f"Incoming shipments not verified yet (SKU or quantity): {', '.join(held_back)}.")
     ready = check["status"] == VERIFIED and not hold
     # One overall status for the window, image and text: a held report is never shown as VERIFIED.
     status = check["status"] if check["status"] != VERIFIED else (VERIFIED if ready else "INCOMPLETE")
