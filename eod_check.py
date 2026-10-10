@@ -82,6 +82,9 @@ def check(client_id: str, source: dict, csv_rows: list[dict] | None, *,
                     # Can't tell whether this shipment should be excluded, so it can't be counted either way.
                     result["reasons"].append(f"{csv_name or 'Shipments'} row {number}: Voided shows "
                                              f"{str(row.get('Voided')).strip()!r}; it can't be read.")
+                if mine(row) and not tracking:
+                    # Without a tracking code the duplicate checks can't run on this shipment.
+                    result["reasons"].append(f"{csv_name or 'Shipments'} row {number}: a shipment on this date has no Tracking Code.")
                 if mine(row) and not str(row.get("Items") or "").strip():
                     # Contents can't be recounted, so a zero here would not be proof of zero units.
                     result["reasons"].append(f"{csv_name or 'Shipments'} row {number}: a shipment on this date has no Items.")
@@ -160,6 +163,10 @@ def check(client_id: str, source: dict, csv_rows: list[dict] | None, *,
     for sku in rules.skus:
         if usage.get(sku) and sku not in listed:
             result["reasons"].append(f"ShipSidekick shows {usage[sku]:,} units of {sku}, which is not on the Dashboard.")
+        elif sku not in listed:
+            # Even with no shipments today, a tracked product missing from the Dashboard leaves its
+            # inventory, forecast and alerts out of the report.
+            result["reasons"].append(f"{sku} is tracked for this client but is not on the Dashboard.")
     if not result["checks"]:
         result["reasons"].append("The Dashboard lists no products to check.")
 

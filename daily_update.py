@@ -6,6 +6,7 @@ It never posts anywhere: the workspace shows the text for a person to review and
 from __future__ import annotations
 
 from incoming import FLAGS as INCOMING_FLAGS, whole_units
+from inventory import ERROR_VALUE
 
 
 def _number(value: str) -> float | None:
@@ -39,7 +40,8 @@ def review_reasons(source: dict) -> list[str]:
 def usable_lines(group: dict) -> list[dict]:
     """Lines that may appear in client text: a verified SKU and a whole, non-negative quantity."""
     return [line for line in group["lines"] if "sku_unverified" not in line["flags"]
-            and whole_units(line.get("units")) is not None]
+            and whole_units(line.get("units")) is not None
+            and not ERROR_VALUE.search(line.get("product") or "")]  # never print #REF!/PENDING as a name
 
 
 def incoming_lines(incoming: dict | None) -> tuple[list[str], list[str]]:

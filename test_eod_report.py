@@ -48,7 +48,14 @@ SHEETS = {
         ["Replacement Filters, 3-Pack", "12", "4", "8", "478.6", "0.0", "1", "REORDER NOW", "2026-11-27", "Now",
          "14,400", "26,400", "0", "14,400", "14,400"],
         ["Shower Hose*", "0", "0", "0", "0.9", "0.0", "33.2", "OUT OF STOCK", "2026-12-03", "2026-10-04",
-         "24", "60", "0", "24", "24"]], ("2", "1", "1", "8"), status="SOURCE VALUES"),
+         "24", "60", "0", "24", "24"],
+        # Every tracked SKU is on the real Dashboard (MUR001-MUR005); these three shipped nothing that day.
+        ["Filtered Showerhead", "40", "0", "40", "1.0", "40.0", "10", "STOCK SUFFICIENT", "2026-11-07", "2026-10-20",
+         "0", "0", "0", "0", "0"],
+        ["Connector Kit Box", "30", "0", "30", "1.0", "30.0", "0", "STOCK SUFFICIENT", "2026-10-28", "2026-10-15",
+         "0", "0", "0", "0", "0"],
+        ["Bracket / Connector", "5", "0", "5", "0.1", "50.0", "0", "STOCK SUFFICIENT", "2026-11-17", "2026-11-01",
+         "0", "0", "0", "0", "0"]], ("5", "1", "1", "83"), status="SOURCE VALUES"),
 }
 NAMES = {"puravita": "PuraVita", "fascial-labs": "Fascial. Labs", "nuerosmile": "Neurosmile", "muravai": "Muravai"}
 ORGS = {"puravita": "PuraVita", "fascial-labs": "Fascial Labs", "nuerosmile": "NeuroSmile", "muravai": "Muravai"}
@@ -735,6 +742,29 @@ class SelfReviewTests(unittest.TestCase):
         source = parse_dashboard(values)
         report = build_report("puravita", "PuraVita", source, check("puravita", source, csv_for("puravita")))
         self.assertNotIn("#DIV/0!", report["text"].split("\n\n", 1)[-1])
+
+
+class CodexRoundTenTests(unittest.TestCase):
+    """Fixes from the Codex review of PR #22 (6b77eba)."""
+
+    def test_tracked_sku_missing_from_dashboard_holds_even_with_no_usage(self):
+        values = [list(r) for r in SHEETS["muravai"]]
+        del values[16]  # Filtered Showerhead (MUR002), which shipped nothing
+        result = check("muravai", parse_dashboard(values), csv_for("muravai"))
+        self.assertTrue(any("MUR002 is tracked" in r for r in result["reasons"]), result["reasons"])
+
+    def test_shipment_without_tracking_code_holds(self):
+        source = parse_dashboard(SHEETS["puravita"])
+        rows = [dict(r, **{"Tracking Code": ""}) for r in csv_for("puravita")]
+        self.assertTrue(any("no Tracking Code" in r for r in check("puravita", source, rows)["reasons"]))
+
+    def test_error_product_name_is_held_back(self):
+        from daily_update import incoming_lines
+        incoming = {"available": True, "shipments": [{"po": "PO-3", "flags": [], "lines": [
+            {"po": "PO-3", "product": "#REF!", "sku": "PVT001", "units": "10", "flags": [], "where": "", "expected_date": ""}]}]}
+        listed, held_back = incoming_lines(incoming)
+        self.assertEqual(listed, [])
+        self.assertEqual(held_back, ["PO-3"])
 
 
 if __name__ == "__main__":

@@ -119,7 +119,7 @@ async function openDailyUpdate(){
 }
 // #9: the standard EOD report for one client. Read-only: it is built from the Sheet and checked against
 // ShipSidekick; a person copies the text and image into the client's own channel.
-async function openEodReport(noShipments=false){
+async function openEodReport(noShipments=false,fromToggle=false){
   const button=$("eod-button"),client=state.client,ticket=state.eodRequest=(state.eodRequest||0)+1;button.disabled=true;
   try{
     const result=await api("/api/eod-report",{method:"POST",body:JSON.stringify({client_id:client,no_shipments_confirmed:noShipments,as_of:noShipments?state.eodAsOf:undefined})});
@@ -139,7 +139,8 @@ async function openEodReport(noShipments=false){
     if(!$("eod-dialog").open)$("eod-dialog").showModal();
   }catch(error){
     // A failed confirmation leaves the earlier, unconfirmed report on screen: the box must say so too.
-    if(noShipments&&client===state.client&&ticket===state.eodRequest)$("eod-no-shipments").checked=false;
+    // The report on screen is still the one from before the toggle, so the box goes back to match it.
+    if(fromToggle&&client===state.client&&ticket===state.eodRequest)$("eod-no-shipments").checked=!noShipments;
     toast(error.message)}
   finally{updateDailyButton()}
 }
@@ -379,7 +380,7 @@ $("daily-export").addEventListener("click",exportDaily);
 $("daily-update-button").addEventListener("click",openDailyUpdate);
 $("eod-button").addEventListener("click",()=>openEodReport(false));
 $("eod-copy").addEventListener("click",copyEod);
-$("eod-no-shipments").addEventListener("change",e=>openEodReport(e.target.checked));
+$("eod-no-shipments").addEventListener("change",e=>openEodReport(e.target.checked,true));
 $("eod-dialog").addEventListener("close",()=>{state.eodRequest=(state.eodRequest||0)+1;$("eod-text").value="";$("eod-image").removeAttribute("src")});
 $("update-copy").addEventListener("click",copyDailyUpdate);
 $("incoming-history-toggle").addEventListener("click",()=>{state.incomingHistory=!state.incomingHistory;renderIncoming()});
