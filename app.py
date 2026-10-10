@@ -1,3 +1,4 @@
+import base64
 import csv
 import gzip
 from concurrent.futures import ThreadPoolExecutor
@@ -16,7 +17,15 @@ from werkzeug.security import check_password_hash
 
 from tracking import CLIENTS, classify, parse_csv, parse_date, sample_shipments, tracker_update, utcnow
 from daily_update import build_update
+from dashboard_image import render_png
+from eod_check import check as eod_check
+from eod_report import build_report
+from slack_draft import draft as slack_draft
+import eod
+import ledger_sources
 from incoming import read_incoming
+# Aliased: the /api/inventory view function below is also named `inventory`.
+import inventory as inventory_source
 from inventory import SHEET_ID, read_dashboards
 from ledger_sources import calculate_clients
 import shopify_source
@@ -136,11 +145,16 @@ def writable(fn):
     def wrapper(*args, **kwargs):
         if not live():
             return jsonify(error="Sample workspace is read-only. Connect private storage and sign-in before adding real shipment data."), 409
-        expected = session.get("csrf", "")
-        if not expected or not hmac.compare_digest(expected, request.headers.get("X-CSRF-Token", "")):
+        if not csrf_ok():
             return jsonify(error="Refresh the workspace and try again."), 403
         return fn(*args, **kwargs)
     return wrapper
+
+
+def csrf_ok():
+    """The page's CSRF token, checked the same way for every state-changing or POST endpoint."""
+    expected = session.get("csrf", "")
+    return bool(expected) and hmac.compare_digest(expected, request.headers.get("X-CSRF-Token", ""))
 
 
 @app.after_request
@@ -269,6 +283,94 @@ def daily_update():
             "incoming_error": extra.get("error") or (None if extra.get("available") else
                                                       "This client's workbook has no Incoming Stocks tab."),
             "sheet_read_at": source.get("fetched_at")}
+
+
+def csrf_checked(fn):
+    """Signed-in POST that changes nothing stored, but still needs the page's CSRF token."""
+    @wraps(fn)
+    @protected
+    def wrapper(*args, **kwargs):
+        if not csrf_ok():
+            return jsonify(error="Refresh the workspace and try again."), 403
+        return fn(*args, **kwargs)
+    return wrapper
+
+
+def warehouse_today():
+    return datetime.now(ZoneInfo("America/New_York")).date()
+
+
+def daily_sales_rows(client_id):
+    """The client's own Daily Sales tab (the ShipSidekick export already in its Sheet), read-only.
+    Returns ((rows, sheet_row_numbers), None) or (None, reason)."""
+    try:
+        sources, credentials = inventory_source.source_config()
+        sheet_id = sources.get(client_id)
+        if not (isinstance(sheet_id, str) and SHEET_ID.fullmatch(sheet_id)):
+            return None, "This client's workbook is not mapped in the private settings."
+        return ledger_sources.SheetReader(sheet_id, credentials).daily_sales(numbered=True), None
+    except inventory_source.SourceError as error:
+        app.logger.warning("eod daily sales failed client=%s code=%s status=%s", client_id, error.code, error.status)
+        return None, "The Daily Sales tab could not be read: " + ledger_sources.ERRORS.get(error.code, ledger_sources.ERRORS["read_failed"])
+
+
+@app.post("/api/eod-report")
+@csrf_checked
+def eod_report():
+    """#9: standard EOD report for one client: Sheet values, ShipSidekick cross-check, dashboard
+    image, Slack draft. Reads only that client's Sheet. Nothing is stored or sent; the draft is for a
+    person to review and post."""
+    if not inventory_enabled():
+        return jsonify(error="Google Sheets inventory is not connected."), 503
+    body = request.get_json(silent=True)
+    if body is None:
+        body = {}
+    if not isinstance(body, dict):
+        return jsonify(error="Send the report request as a JSON object."), 400
+    selected = body.get("client_id", "")
+    names = {client["id"]: client["name"] for client in CLIENTS}
+    if selected not in names:
+        return jsonify(error="Choose one client."), 400
+    if body.get("csv") is not None and not isinstance(body["csv"], str):
+        return jsonify(error="Provide the CSV as text."), 400
+    confirmed = body.get("no_shipments_confirmed") is True
+    try:
+        # A confirmation is checked against the Sheet as it is now, never the 45-second cache.
+        source = read_dashboards([selected], fresh=confirmed)[0]
+        if source.get("error"):
+            return jsonify(error=f"{names[selected]} inventory did not load: {source['error']}"), 409
+        # Incoming flags (e.g. past expected date) are judged on the report's own date, not today.
+        today = warehouse_today()
+        report_day = daily_orders.sheet_day(source.get("as_of")) or today
+        extra = read_incoming([selected], report_day, fresh=confirmed)[0]
+        if body.get("csv") is not None:  # an uploaded CSV is the override, even when it is empty
+            reader = csv.DictReader(io.StringIO(body["csv"].lstrip("\ufeff")))
+            # Only the audit columns are kept: customer names and addresses in an export are never loaded.
+            rows = [{name: row.get(name) or "" for name in eod.REQUIRED_COLUMNS} for row in reader]
+            missing, label = "", str(body.get("csv_name") or "uploaded CSV")[:120]
+            numbers, columns = None, reader.fieldnames or []
+        else:
+            (sales, missing), label = daily_sales_rows(selected), "Daily Sales tab"
+            rows, numbers = sales if sales is not None else (None, None)
+            columns = None  # the reader already requires every audit column
+    except csv.Error:
+        return jsonify(error="The uploaded CSV can't be read. Export it again as a UTF-8 CSV."), 400
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return jsonify(error="Inventory configuration is invalid or incomplete."), 503
+    # The warehouse confirmation is for the date the person saw; a Sheet that moved on since needs a new one.
+    stale_confirmation = confirmed and body.get("as_of") != source.get("as_of")
+    result = eod_check(selected, source, rows, csv_name=label, missing_reason=missing or "",
+                       row_numbers=numbers, columns=columns,
+                       no_shipments_confirmed=confirmed and not stale_confirmation)
+    if stale_confirmation:
+        result["reasons"].append(f"'No shipments confirmed' was for {body.get('as_of') or 'another date'}; "
+                                 f"the Sheet is now as of {source.get('as_of') or 'an unknown date'}. Confirm again.")
+    report = build_report(selected, names[selected], source, result,
+                          None if extra.get("error") else extra, extra.get("error"),
+                          incoming_backdated=report_day != today)
+    image = base64.b64encode(render_png(names[selected], source, report["status"])).decode()
+    return {"report": report, "draft": slack_draft(selected, report), "image": f"data:image/png;base64,{image}",
+            "sheet_read_at": source.get("fetched_at"), "writes": "disabled"}
 
 
 @app.get("/api/inventory/calculated")

@@ -155,7 +155,10 @@ class FakeReader:
             return [self.header]
         FakeReader.last_ranges = ranges
         blocks = columns(ROWS)
-        return [blocks[key] for key in KEYS]
+        return [blocks[key] + self.beyond(key) for key in KEYS]
+
+    def beyond(self, key):
+        return []
 
 
 class ReadIncomingTests(unittest.TestCase):
@@ -173,7 +176,44 @@ class ReadIncomingTests(unittest.TestCase):
             result = incoming.read_incoming(["muravai"], TODAY)[0]
         self.assertTrue(result["available"])
         self.assertEqual(len(FakeReader.last_ranges), len(COLUMNS))
+        # Open-ended: a range starting past a short tab's last row would make Google reject the whole read.
+        self.assertTrue(all(r[-1].isalpha() for r in FakeReader.last_ranges), FakeReader.last_ranges)
         self.assertNotIn("N2", " ".join(FakeReader.last_ranges))  # Box Details column is never requested
+        self.assertFalse(result["truncated"])
+
+    def test_data_past_a_blank_last_row_is_truncated(self):
+        class More(FakeReader):
+            def beyond(self, key):
+                # Pad to the cap, then one blank row 2000 and data in row 2002.
+                pad = [[]] * (incoming.LAST_ROW - 1 - len(columns(ROWS)[key]))
+                return pad + [[], ["PO99"]] if key == KEYS[0] else []
+        with patch("incoming.SheetReader", More):
+            self.assertTrue(incoming.read_incoming(["muravai"], TODAY)[0]["truncated"])
+
+    def test_cache_is_kept_per_evaluation_date(self):
+        # Flags like "past expected date" depend on the day they are judged on, so the EOD report for an
+        # earlier as-of date must never reuse (or overwrite) today's cached read, and the reverse.
+        from datetime import timedelta
+        calls = []
+
+        class Counting(FakeReader):
+            def batch(self, ranges, optional=False):
+                calls.append(1)
+                return super().batch(ranges, optional)
+        with patch("incoming.SheetReader", Counting):
+            incoming.read_incoming(["muravai"], TODAY)
+            first = len(calls)
+            incoming.read_incoming(["muravai"], TODAY - timedelta(days=3))
+            second = len(calls)
+            incoming.read_incoming(["muravai"], TODAY)
+        self.assertGreater(second, first)
+        self.assertEqual(len(calls), second)
+        # Expired per-date entries are dropped when a new read is stored, so they never pile up.
+        for key in list(incoming._cache):
+            incoming._cache[key] = (incoming._cache[key][0] - incoming.CACHE_SECONDS - 1, incoming._cache[key][1])
+        with patch("incoming.SheetReader", Counting):
+            incoming.read_incoming(["muravai"], TODAY - timedelta(days=9))
+        self.assertEqual(len(incoming._cache), 1)
 
     def test_missing_tab_changed_header_and_missing_mapping_are_per_client(self):
         class NoTab(FakeReader):

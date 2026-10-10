@@ -6,6 +6,7 @@ It never posts anywhere: the workspace shows the text for a person to review and
 from __future__ import annotations
 
 from incoming import FLAGS as INCOMING_FLAGS, whole_units
+from inventory import ERROR_VALUE
 
 
 def _number(value: str) -> float | None:
@@ -36,6 +37,38 @@ def review_reasons(source: dict) -> list[str]:
     return reasons + list(source.get("warnings") or [])
 
 
+def usable_lines(group: dict) -> list[dict]:
+    """Lines that may appear in client text: a verified SKU and a whole, non-negative quantity."""
+    return [line for line in group["lines"] if "sku_unverified" not in line["flags"]
+            and whole_units(line.get("units")) is not None
+            and not ERROR_VALUE.search(line.get("product") or "")]  # never print #REF!/PENDING as a name
+
+
+def incoming_lines(incoming: dict | None) -> tuple[list[str], list[str]]:
+    """Client-facing lines for open incoming shipments, and the POs held back for internal review.
+    Shared by the daily update and the EOD report so both word incoming shipments the same way."""
+    listed, held_back = [], []
+    if not (incoming and incoming.get("available") and incoming.get("shipments")):
+        return listed, held_back
+    for group in incoming["shipments"]:
+        usable = usable_lines(group)
+        if len(usable) < len(group["lines"]) and group["po"] not in held_back:
+            held_back.append(group["po"])  # internal review item, not client-facing (also when only partly left out)
+        if not usable:
+            continue
+        # A blank product name falls back to the verified SKU rather than hiding the line.
+        items = "; ".join(f"{line.get('product') or line['sku']} {line['units']}" for line in usable)
+        first = group["lines"][0]
+        details = "; ".join(text for text in (first.get("where"), f"Expected in Miami: {first['expected_date']}"
+                                              if first.get("expected_date") else "") if text)
+        # Only flags of lines that are in the text; held-back lines stay internal.
+        flags = [INCOMING_FLAGS[flag] for flag in sorted({f for line in usable for f in line["flags"]})
+                 if flag in INCOMING_FLAGS]
+        listed.append(f"• {group['po']}: {items}" + (f". {details}" if details else "")
+                      + (f". Needs attention: {', '.join(flags)}" if flags else "") + ".")
+    return listed, held_back
+
+
 def build_update(client_name: str, source: dict, incoming: dict | None = None) -> dict:
     rows = source.get("rows") or []
     lines = []
@@ -59,28 +92,9 @@ def build_update(client_name: str, source: dict, incoming: dict | None = None) -
         demand = f" at the Sheet's current daily demand of {row['demand']}/day" if row.get("demand") else ""
         lines.append(f"Earliest to run out: {row['product']} ({_cover_text(row['cover'])}{demand}). This is an estimate.")
 
-    held_back = []
-    if incoming and incoming.get("available") and incoming.get("shipments"):
-        listed = []
-        for group in incoming["shipments"]:
-            usable = [line for line in group["lines"] if "sku_unverified" not in line["flags"]
-                      and whole_units(line.get("units")) is not None]
-            if len(usable) < len(group["lines"]) and group["po"] not in held_back:
-                held_back.append(group["po"])  # internal review item, not client-facing (also when only partly left out)
-            if not usable:
-                continue
-            # A blank product name falls back to the verified SKU rather than hiding the line.
-            items = "; ".join(f"{line.get('product') or line['sku']} {line['units']}" for line in usable)
-            first = group["lines"][0]
-            details = "; ".join(text for text in (first.get("where"), f"Expected in Miami: {first['expected_date']}"
-                                                  if first.get("expected_date") else "") if text)
-            # Only flags of lines that are in the text; held-back lines stay internal.
-            flags = [INCOMING_FLAGS[flag] for flag in sorted({f for line in usable for f in line["flags"]})
-                     if flag in INCOMING_FLAGS]
-            listed.append(f"• {group['po']}: {items}" + (f". {details}" if details else "")
-                          + (f". Needs attention: {', '.join(flags)}" if flags else "") + ".")
-        if listed:
-            lines += ["", "Incoming, not yet in stock:", *listed]
+    listed, held_back = incoming_lines(incoming)
+    if listed:
+        lines += ["", "Incoming, not yet in stock:", *listed]
 
     lines += ["", "Please let us know of any incoming inventory so we can reflect it in planning. Thank you!"]
     return {"text": "\n".join(lines), "draft": bool(reasons), "held_back": held_back,

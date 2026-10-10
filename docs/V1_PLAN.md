@@ -39,7 +39,7 @@ shows, until the two match every day for two weeks (shadow mode).
 | Muravai | APPROVED | Manual Counts tab | Initial Stock tab disagrees with approved counts (decision sheet 4b) |
 | Fascial Labs | PROPOSED (FASCSUPP-1 → FAS001) | none | Three conflicting starting numbers; receipt damage unknown |
 | PuraVita | PROPOSED (CAP-MAGNESIUM-360 → PVT001) | none | Count and rule approval |
-| NeuroSmile | PROPOSED (NEURO-120 → NEU001) | none | NEU002 ShipSidekick code unknown |
+| NeuroSmile | PROPOSED (NEURO-120 → NEU001, MAG-SPRAY-360 → NEU002 from Sep 2026 exports; Pill Carrier held) | none | Needs ShipMode approval of both codes |
 | ClarityMD, Onset | none | none | Sheets not supplied |
 
 ## Next, in order (each its own Issue)

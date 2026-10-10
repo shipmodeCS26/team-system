@@ -271,6 +271,37 @@ Shopify paces reads, so the read runs in the background and the page polls. A
 result is reused for 10 minutes (3 minutes for today). Nothing here changes the
 EOD, the ledger, Shopify or the Sheets.
 
+## Standard EOD report (#9, read-only, never sent)
+
+On the Inventory tab, **EOD report** builds one client's end-of-day report in the same six
+sections for every client: Inventory, Forecast, Incoming, Alerts, Actions needed and Data status.
+Every number is restated from the client's Sheet Dashboard, which is the official number; nothing
+is recalculated.
+
+The shipped counts are cross-checked against a recount of the client's own **Daily Sales** tab
+(the ShipSidekick export), using only that client's rule package. A CSV can also be posted as an
+override.
+- **VERIFIED:** every product matches, and the report is ready to send.
+- **REVIEW:** a gap (named per SKU), an unknown or unapproved item, a duplicate, another client's
+  row, or a Sheet warning.
+- **INCOMPLETE:** no shipments for the date. "No shipments on this day (confirmed)" passes only
+  when the Sheet shows 0.
+
+Anything not VERIFIED starts with `HOLD, DO NOT SEND` and lists the reasons.
+
+The window also shows a dashboard image drawn from the same read (`dashboard_image.py`, Pillow),
+and the draft text. The client's channel comes from private `CLIENT_CHANNELS_JSON`
+(`{"muravai": "C…"}`). There is no Slack sending code; a person copies the text and image into
+the client's own channel.
+
+Open rules held in code, never guessed:
+- Fascial Labs `FASCSUPPx2` and `FAC3XBDL` (units and bundle contents not approved yet).
+- Neurosmile `PILL-CARRIER-360` (whether it is tracked).
+
+Entry points:
+- `POST /api/eod-report`: signed in, CSRF token required, one client.
+- `eod_cli.py`: builds the report from saved values. `--out` is required.
+
 ## Calculated inventory (shadow check)
 
 See `docs/V1_PLAN.md`. Off by default; set `INVENTORY_LEDGER_ENABLED=true` in the private Render settings after the Sheets connection works. Approved counts for clients without a Manual Counts tab go in `INVENTORY_BASELINES_JSON` (format in the plan). Only nine ShipSidekick columns are read; customer names and addresses are never requested.

@@ -81,7 +81,7 @@ def is_voided(value: str) -> bool:
     return (value or "").strip().lower() in VOID_VALUES
 
 
-def build_eod(rows: list[dict], rules) -> dict[date, DayReport]:
+def build_eod(rows: list[dict], rules, row_numbers: list[int] | None = None) -> dict[date, DayReport]:
     """Group valid rows by Created Date and compute each date independently.
 
     `rules` is a client rule package: .organization, .skus, .order_usage(items).
@@ -91,7 +91,8 @@ def build_eod(rows: list[dict], rules) -> dict[date, DayReport]:
     order_rows: dict[tuple[date, str], list[tuple[str, str]]] = defaultdict(list)
     missions: dict[date, set] = defaultdict(set)
 
-    for index, row in enumerate(rows, start=2):  # row 1 is the CSV header
+    # row 1 is the CSV header; a caller passing a filtered subset gives each row's original number.
+    for index, row in zip(row_numbers or range(2, len(rows) + 2), rows):
         day = parse_created_date(row.get("Created Date", ""))
         report = reports.setdefault(day, DayReport(day=day, skus=rules.skus))
 

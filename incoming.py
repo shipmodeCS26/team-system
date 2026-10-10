@@ -13,7 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
-from inventory import ERRORS as SHEET_ERRORS, SHEET_ID, SourceError, source_config
+from inventory import ERROR_VALUE, ERRORS as SHEET_ERRORS, SHEET_ID, SourceError, source_config
 from ledger_sources import SheetReader, column_letter, parse_day, parse_int
 
 log = logging.getLogger(__name__)
@@ -85,7 +85,8 @@ def line_flags(line: dict, today: date) -> list[str]:
         flags.append("receipt_not_recorded")
     if "transfer" in status and (TRANSFER_NEGATED.search(status) or not TRANSFER_DONE.search(status)):
         flags.append("needs_transfer")
-    if line["treatment"].upper().startswith("REVIEW") or line["sku"].upper() in ("", "REVIEW"):
+    if (line["treatment"].upper().startswith("REVIEW") or line["sku"].upper() in ("", "REVIEW")
+            or ERROR_VALUE.search(line["sku"])):  # a #REF!, #N/A or PENDING SKU is not a verified SKU
         flags.append("sku_unverified")
     expected_day = parse_day(line["expected_date"])
     if expected_day and expected_day < today and nothing_received:
@@ -136,10 +137,10 @@ def parse_incoming(values_by_key: dict[str, list], today: date) -> dict:
             "unverified_lines": unverified}
 
 
-def _read_one(client_id: str, sheet_id: str, credentials: dict, today: date) -> dict:
+def _read_one(client_id: str, sheet_id: str, credentials: dict, today: date, fresh: bool = False) -> dict:
     with _lock:
-        cached = _cache.get((client_id, sheet_id))
-        if cached and time.monotonic() - cached[0] < CACHE_SECONDS:
+        cached = _cache.get((client_id, sheet_id, today))  # flags depend on the date they are judged on
+        if cached and not fresh and time.monotonic() - cached[0] < CACHE_SECONDS:
             return cached[1]
     reader = SheetReader(sheet_id, credentials)
     header = (reader.batch([f"{TAB}!1:1"], optional=True)[0] or [[]])[0]
@@ -150,19 +151,28 @@ def _read_one(client_id: str, sheet_id: str, credentials: dict, today: date) -> 
         if any(name not in positions for name in COLUMNS.values()):
             raise SourceError("incoming_layout")
         letters = {key: column_letter(positions[name]) for key, name in COLUMNS.items()}
-        blocks = reader.batch([f"{TAB}!{letter}2:{letter}{LAST_ROW}" for letter in letters.values()])
-        result = {"id": client_id, **parse_incoming(dict(zip(letters, blocks)), today)}
+        # Open-ended ranges (like Daily Sales): a range starting past the tab's last row would be rejected
+        # by Google, so each column is read to its end and cut at LAST_ROW here instead.
+        blocks = reader.batch([f"{TAB}!{letter}2:{letter}" for letter in letters.values()])
+        keep = LAST_ROW - 1  # Sheet rows 2..LAST_ROW
+        result = {"id": client_id, **parse_incoming({key: block[:keep] for key, block in zip(letters, blocks)}, today)}
+        if any(str(cell).strip() for block in blocks for row in block[keep:] for cell in (row or [])):
+            result["truncated"] = True  # data past the rows read: never treated as the whole tab
     with _lock:
-        _cache[(client_id, sheet_id)] = (time.monotonic(), result)
+        now = time.monotonic()
+        # Entries are per evaluation date, so expired ones are dropped here rather than piling up.
+        for key in [key for key, (at, _) in _cache.items() if now - at >= CACHE_SECONDS]:
+            _cache.pop(key)
+        _cache[(client_id, sheet_id, today)] = (now, result)
     return result
 
 
-def read_incoming(client_ids: list[str], today: date) -> list[dict]:
-    """Each client is read separately; one failure never hides another."""
+def read_incoming(client_ids: list[str], today: date, fresh: bool = False) -> list[dict]:
+    """Each client is read separately; one failure never hides another. `fresh` skips the cache."""
     sources, credentials = source_config()
     out = []
     with ThreadPoolExecutor(max_workers=max(1, min(6, len(client_ids)))) as pool:
-        futures = {cid: pool.submit(_read_one, cid, sources[cid], credentials, today)
+        futures = {cid: pool.submit(_read_one, cid, sources[cid], credentials, today, fresh)
                    for cid in client_ids
                    if isinstance(sources.get(cid), str) and SHEET_ID.fullmatch(sources[cid])}
         for cid in client_ids:
