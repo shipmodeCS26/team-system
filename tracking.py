@@ -7,7 +7,7 @@ CLIENTS = [
     {"id": "claritymd", "name": "ClarityMD", "initials": "CM"},
     {"id": "fascial-labs", "name": "Fascial. Labs", "initials": "FL"},
     {"id": "muravai", "name": "Muravai", "initials": "MU"},
-    {"id": "nuerosmile", "name": "Neurosmile", "initials": "NS"},
+    {"id": "nuerosmile", "name": "NeuroSmile", "initials": "NS"},
     {"id": "puravita", "name": "PuraVita", "initials": "PV"},
     {"id": "onset", "name": "Onset", "initials": "ON"},
 ]

@@ -67,8 +67,14 @@ def base_url():
     return TEST if os.getenv("SSK_API_BASE", "").rstrip("/") == TEST else PRODUCTION
 
 
+# The internal ID "nuerosmile" is a historical typo; the store is NeuroSmile, so a key saved under
+# the correct spelling is found too.
+KEY_ALIASES = {"nuerosmile": ("NEUROSMILE",)}
+
+
 def api_key(client_id):
-    return os.getenv("SSK_API_KEY_" + client_id.upper().replace("-", "_"), "").strip()
+    names = (client_id.upper().replace("-", "_"),) + KEY_ALIASES.get(client_id, ())
+    return next((value for name in names if (value := os.getenv("SSK_API_KEY_" + name, "").strip())), "")
 
 
 def _status_error(status):
