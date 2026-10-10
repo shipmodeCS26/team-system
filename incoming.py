@@ -151,11 +151,12 @@ def _read_one(client_id: str, sheet_id: str, credentials: dict, today: date, fre
         if any(name not in positions for name in COLUMNS.values()):
             raise SourceError("incoming_layout")
         letters = {key: column_letter(positions[name]) for key, name in COLUMNS.items()}
-        blocks = reader.batch([f"{TAB}!{letter}2:{letter}{LAST_ROW}" for letter in letters.values()]
-                              + [f"{TAB}!{letter}{LAST_ROW + 1}:{letter}" for letter in letters.values()])  # to the tab's end
-        result = {"id": client_id, **parse_incoming(dict(zip(letters, blocks)), today)}
-        beyond = blocks[len(letters):]
-        if any(str(cell).strip() for column in beyond for row in (column or []) for cell in (row or [])):
+        # Open-ended ranges (like Daily Sales): a range starting past the tab's last row would be rejected
+        # by Google, so each column is read to its end and cut at LAST_ROW here instead.
+        blocks = reader.batch([f"{TAB}!{letter}2:{letter}" for letter in letters.values()])
+        keep = LAST_ROW - 1  # Sheet rows 2..LAST_ROW
+        result = {"id": client_id, **parse_incoming({key: block[:keep] for key, block in zip(letters, blocks)}, today)}
+        if any(str(cell).strip() for block in blocks for row in block[keep:] for cell in (row or [])):
             result["truncated"] = True  # data past the rows read: never treated as the whole tab
     with _lock:
         now = time.monotonic()
