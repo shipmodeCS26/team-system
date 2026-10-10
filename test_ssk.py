@@ -90,6 +90,13 @@ class ReadOnlyGuardTests(SskTestCase):
 
 
 class SourceTests(SskTestCase):
+    def test_neurosmile_key_is_found_under_either_spelling(self):
+        for name in ("SSK_API_KEY_NUEROSMILE", "SSK_API_KEY_NEUROSMILE"):
+            with patch.dict("os.environ", {name: "k-123"}, clear=True):
+                self.assertEqual(ssk_source.api_key("nuerosmile"), "k-123", name)
+        with patch.dict("os.environ", {"SSK_API_KEY_NEUROSMILE": "k-123"}, clear=True):
+            self.assertEqual(ssk_source.api_key("onset"), "")
+
     def test_each_store_uses_its_own_key_and_fails_alone(self):
         fake = FakeSsk({"ssk_secret_muravai": [[level("MV-SH", "Filtered Showerhead", 5)]],
                         "ssk_secret_fascial": 401, "ssk_secret_puravita": requests.Timeout("slow"),

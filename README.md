@@ -34,7 +34,7 @@ settings, never in this public repository:
 - `WORKSPACE_USER`, `WORKSPACE_PASSWORD_HASH`, `SECRET_KEY` = private workspace
   authentication settings. The inventory connection fails closed without them.
 
-`nuerosmile` is the existing app's internal ID; its display name is Neurosmile.
+`nuerosmile` is the existing app's internal ID; its display name is NeuroSmile. Its ShipSidekick key may be saved as `SSK_API_KEY_NUEROSMILE` or `SSK_API_KEY_NEUROSMILE`.
 `APP_MODE` may remain `demo` for shipment tracking while Inventory reads Sheets.
 When inventory is enabled, the whole workspace requires Basic authentication.
 The server fetches only bounded `Dashboard!A1:S39` displayed values via the
