@@ -28,6 +28,7 @@ from incoming import read_incoming
 import inventory as inventory_source
 from inventory import SHEET_ID, read_dashboards
 from ledger_sources import calculate_clients
+import shipping_report
 import shopify_source
 import sku_check
 import client_rules
@@ -493,6 +494,26 @@ def shopify_daily_orders():
         return jsonify(error="No SKU rules are defined for this client yet."), 409
     state = daily_orders.status(client_id, day, today)
     return state, 202 if state["status"] == "running" else 200
+
+
+@app.get("/api/shipping-report")
+@protected
+def shipping_report_view():
+    """#24: one client's shipping report from the same read-only ShipSidekick snapshot as No Movement.
+    Never waits on ShipSidekick: a store still loading answers 202. Nothing is stored or sent."""
+    if not ssk_source.enabled():
+        return jsonify(error="ShipSidekick API is not connected."), 503
+    names = {client["id"]: client["name"] for client in CLIENTS}
+    client_id = request.args.get("client_id", "")
+    if client_id not in names:
+        return jsonify(error="Choose one client."), 400
+    days = ssk_source.lookback_days()
+    store = ssk_source.queue_snapshot([client_id], days)[0]
+    if store.get("loading"):
+        return jsonify(loading=True, error=f"{names[client_id]} shipments are still loading. Try again in a minute."), 202
+    if "error_code" in store:
+        return jsonify(error=f"{names[client_id]} shipments did not load: {store['error']}"), 409
+    return shipping_report.build(client_id, names[client_id], store, days)
 
 
 @app.get("/api/ssk/shipment-fields")
