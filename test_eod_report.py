@@ -419,6 +419,23 @@ class EndpointTests(unittest.TestCase):
             session["csrf"] = "token"
         return self.client.post("/api/eod-report", json=body, headers={**self.auth, "X-CSRF-Token": csrf})
 
+    @patch("app.read_incoming", return_value=[{"id": "puravita", "available": False}])
+    @patch("app.read_dashboards")
+    def test_unreadable_uploaded_csv_is_a_400_and_extra_columns_are_dropped(self, dashboards, _incoming):
+        dashboards.return_value = [parse_dashboard(SHEETS["puravita"]) | {"id": "puravita"}]
+        self.assertEqual(self.post({"client_id": "puravita", "csv": "a,b\n" + "x" * 200000 + ",2\n"}).status_code, 400)
+        captured = {}
+        real = __import__("app").eod_check
+        def spy(client_id, source, rows, **kwargs):
+            captured["rows"] = rows
+            return real(client_id, source, rows, **kwargs)
+        csv_text = ("Tracking Code,Created Date,Organization,Order Name,Tracking Status,Voided,Mission Num,Items,"
+                    "Origin Address,Customer Name\nT1,9/28/26,PuraVita,#1,pre-transit,No,M1,"
+                    "300x Puravita Magnesium Performance Capsules (CAP-MAGNESIUM-360),\"Miami, FL, 33166\",Jane\n")
+        with patch("app.eod_check", spy):
+            self.post({"client_id": "puravita", "csv": csv_text})
+        self.assertNotIn("Customer Name", captured["rows"][0])
+
     def test_non_object_body_is_a_400(self):
         for body in ([], "puravita", 1):
             self.assertEqual(self.post(body).status_code, 400, body)
@@ -691,6 +708,33 @@ class CodexRoundNineTests(unittest.TestCase):
                 "received_date": "", "treatment": "", "sku": "#REF!", "expected_date": "", "included": ""}
         with patch("incoming._history", return_value=False):
             self.assertIn("sku_unverified", line_flags(line, date(2026, 9, 28)))
+
+
+class SelfReviewTests(unittest.TestCase):
+    """Fixes from the independent review of 6b77eba (Codex pending)."""
+
+    def setUp(self):
+        self.source = parse_dashboard(SHEETS["puravita"])
+
+    def test_held_report_never_says_verified_in_data_status(self):
+        report = build_report("puravita", "PuraVita", self.source, check("puravita", self.source, csv_for("puravita")),
+                              None, "the tab could not be read")
+        self.assertFalse(report["ready_to_send"])
+        self.assertNotIn("VERIFIED", report["sections"][5]["lines"][0])
+
+    def test_accounting_negative_remaining_alerts(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[14][3], values[14][6] = "(12)", ""
+        source = parse_dashboard(values)
+        alerts = build_report("puravita", "PuraVita", source, check("puravita", source, csv_for("puravita")))["sections"][3]["lines"]
+        self.assertTrue(any("out of stock" in a for a in alerts), alerts)
+
+    def test_error_cover_is_not_restated(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[14][7] = "#DIV/0!"
+        source = parse_dashboard(values)
+        report = build_report("puravita", "PuraVita", source, check("puravita", source, csv_for("puravita")))
+        self.assertNotIn("#DIV/0!", report["text"].split("\n\n", 1)[-1])
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from daily_update import _cover_text, _number, incoming_lines, usable_lines
 import re
 
 from inventory import ERROR_VALUE
+from ledger_sources import parse_int
 
 # Spreadsheet error codes only: ordinary words such as "pending" in a curated action are kept.
 FORMULA_ERROR = re.compile(r"^\s*#(?:DIV/0!|VALUE!|REF!|N/A|NUM!|NAME\?|NULL!|ERROR!|SPILL!|CALC!)\s*$", re.I)
@@ -46,7 +47,7 @@ def _inventory(rows: list[dict]) -> list[str]:
 def _forecast(rows: list[dict]) -> list[str]:
     lines = []
     for row in rows:
-        parts = [f"{_value(row, 'demand')}/day", _cover_text(row.get("cover", ""))]
+        parts = [f"{_value(row, 'demand')}/day", _cover_text(_value(row, "cover"))]
         if _value(row, "run_out") != "not shown":
             parts.append(f"runs out {row['run_out']}")
         parts += [f"order by {_value(row, 'order_by')}", f"suggested order {_value(row, 'suggested')}"]
@@ -62,8 +63,13 @@ def _order_due(row: dict, as_of) -> bool:
     return bool(day and as_of and day <= as_of)
 
 
+def _remaining(row: dict) -> int | None:
+    # Same reading as the cross-check, so "(12)" is a negative balance here too.
+    return parse_int(row.get("remaining", "")) if not ERROR_VALUE.search(row.get("remaining") or "") else None
+
+
 def _needs_order(row: dict, as_of) -> bool:
-    remaining = _number(row.get("remaining", ""))
+    remaining = _remaining(row)
     return (row.get("status", "").upper() in ORDER_STATUSES or _order_due(row, as_of)
             or (remaining is not None and remaining <= 0))
 
@@ -71,13 +77,13 @@ def _needs_order(row: dict, as_of) -> bool:
 def _alerts(rows: list[dict], as_of, incoming: dict | None) -> list[str]:
     alerts = []
     for row in rows:
-        remaining = _number(row.get("remaining", ""))
+        remaining = _remaining(row)
         status = row.get("status", "").upper()
         if status == "OUT OF STOCK" or (remaining is not None and remaining <= 0):
             alerts.append(f"• {row['product']} is out of stock.")
         elif status == "REORDER NOW":
-            alerts.append(f"• {row['product']}: reorder now ({_cover_text(row.get('cover', ''))}).")
-        if _order_due(row, as_of) and (row.get("order_by") or "").lower() != "now":
+            alerts.append(f"• {row['product']}: reorder now ({_cover_text(_value(row, 'cover'))}).")
+        if _order_due(row, as_of) and (row.get("order_by") or "").strip().lower() != "now":
             alerts.append(f"• {row['product']}: order-by date {row['order_by']} has been reached.")
         # A negative Remaining is flagged too, but it is a real value (already an out-of-stock alert).
         if any(ERROR_VALUE.search(row.get(key) or "") for key in row.get("flags", [])):
@@ -169,6 +175,9 @@ def build_report(client_id: str, client_name: str, source: dict, check: dict,
     # One overall status for the window, image and text: a held report is never shown as VERIFIED.
     status = check["status"] if check["status"] != VERIFIED else (VERIFIED if ready else "INCOMPLETE")
 
+    if status != VERIFIED:
+        # The client text never says VERIFIED for a held report, even if the shipment check matched.
+        sections[5]["lines"] = [f"• {status}: this report is being checked."]
     lines = []
     if not ready:
         lines += [f"HOLD, DO NOT SEND ({status}): " + " ".join(hold or ["Not verified."]), ""]

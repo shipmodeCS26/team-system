@@ -137,7 +137,10 @@ async function openEodReport(noShipments=false){
     $("eod-text").value=r.text;
     $("eod-read-at").textContent=`Built from the Sheet as read ${result.sheet_read_at?date(result.sheet_read_at,true):"just now"}.`;
     if(!$("eod-dialog").open)$("eod-dialog").showModal();
-  }catch(error){toast(error.message)}
+  }catch(error){
+    // A failed confirmation leaves the earlier, unconfirmed report on screen: the box must say so too.
+    if(noShipments&&client===state.client&&ticket===state.eodRequest)$("eod-no-shipments").checked=false;
+    toast(error.message)}
   finally{updateDailyButton()}
 }
 async function copyEod(){

@@ -21,6 +21,7 @@ from dashboard_image import render_png
 from eod_check import check as eod_check
 from eod_report import build_report
 from slack_draft import draft as slack_draft
+import eod
 import ledger_sources
 from incoming import read_incoming
 # Aliased: the /api/inventory view function below is also named `inventory`.
@@ -344,12 +345,16 @@ def eod_report():
         extra = read_incoming([selected], report_day, fresh=confirmed)[0]
         if body.get("csv") is not None:  # an uploaded CSV is the override, even when it is empty
             reader = csv.DictReader(io.StringIO(body["csv"].lstrip("\ufeff")))
-            rows, missing, label = list(reader), "", str(body.get("csv_name") or "uploaded CSV")[:120]
+            # Only the audit columns are kept: customer names and addresses in an export are never loaded.
+            rows = [{name: row.get(name) or "" for name in eod.REQUIRED_COLUMNS} for row in reader]
+            missing, label = "", str(body.get("csv_name") or "uploaded CSV")[:120]
             numbers, columns = None, reader.fieldnames or []
         else:
             (sales, missing), label = daily_sales_rows(selected), "Daily Sales tab"
             rows, numbers = sales if sales is not None else (None, None)
             columns = None  # the reader already requires every audit column
+    except csv.Error:
+        return jsonify(error="The uploaded CSV can't be read. Export it again as a UTF-8 CSV."), 400
     except (ValueError, KeyError, json.JSONDecodeError):
         return jsonify(error="Inventory configuration is invalid or incomplete."), 503
     # The warehouse confirmation is for the date the person saw; a Sheet that moved on since needs a new one.
