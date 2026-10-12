@@ -672,3 +672,14 @@ def too_large(error):
 @app.errorhandler(500)
 def service_error(error):
     return jsonify(error="The workspace could not load or save data. Please try again; contact the workspace administrator if it continues."), 500
+
+
+def warm_shipsidekick():
+    """Start the read-only ShipSidekick store reads when the server boots (opt-in with
+    SSK_WARM_ON_START=true), so No Movement has data before anyone opens it and each store's
+    result shows in the logs right after a deploy. Same background GET reads as the page."""
+    if os.getenv("SSK_WARM_ON_START", "").lower() == "true" and ssk_source.enabled():
+        ssk_source.queue_snapshot([client["id"] for client in CLIENTS], ssk_source.lookback_days())
+
+
+warm_shipsidekick()

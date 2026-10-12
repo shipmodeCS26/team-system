@@ -90,6 +90,17 @@ class ReadOnlyGuardTests(SskTestCase):
 
 
 class SourceTests(SskTestCase):
+    def test_warm_start_is_opt_in_and_reads_every_store_in_the_background(self):
+        import app as app_module
+        with patch("ssk_source.queue_snapshot") as snapshot, \
+                patch.dict("os.environ", {"SSK_API_ENABLED": "true"}, clear=False):
+            app_module.warm_shipsidekick()
+            snapshot.assert_not_called()  # off unless SSK_WARM_ON_START=true
+            with patch.dict("os.environ", {"SSK_WARM_ON_START": "true"}):
+                app_module.warm_shipsidekick()
+        snapshot.assert_called_once()
+        self.assertEqual(snapshot.call_args[0][0], [client["id"] for client in app_module.CLIENTS])
+
     def test_neurosmile_key_is_found_under_either_spelling(self):
         for name in ("SSK_API_KEY_NUEROSMILE", "SSK_API_KEY_NEUROSMILE"):
             with patch.dict("os.environ", {name: "k-123"}, clear=True):
