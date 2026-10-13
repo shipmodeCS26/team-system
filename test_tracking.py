@@ -53,6 +53,37 @@ class AgingTests(unittest.TestCase):
 
 
 class ImportTests(unittest.TestCase):
+    now = datetime(2026, 9, 8, 12, tzinfo=timezone.utc)
+
+    def test_missing_data_has_no_guessed_age(self):
+        row=dict(carrier_status="in_transit",shipped_at=(self.now-timedelta(days=30)).isoformat())
+        result=classify(row,self.now)
+        self.assertEqual(result["tier"],"data_gap")
+        self.assertIsNone(result["days"])
+
+    def test_carrier_error_status_is_missing_data_not_rejected(self):
+        rows=parse_csv("Tracking Code,Created Date,Organization,Order Name,Carrier,Tracking Status,Voided\nDEMO-1,09/20/2026,ClarityMD,#1,USPS,error,No\nDEMO-2,09/20/2026,ClarityMD,#2,USPS,in-transit,No\n","claritymd")
+        self.assertEqual([r["carrier_status"] for r in rows],["error","in_transit"])
+        result=classify(rows[0],self.now)
+        self.assertEqual(result["tier"],"data_gap")
+        self.assertIn("could not track",result["reason"])
+
+    def test_date_only_label_is_never_over_aged(self):
+        # Label printed some time on Sep 1 (Miami). Aging starts at the end of that day (Sep 2 04:00 UTC),
+        # so the count is a lower bound: 4 days at Sep 7 03:59 UTC, 5 days a minute later.
+        row={"carrier_status":"pre_transit","label_created_at":"2026-09-01T00:00:00+00:00","date_precision":"report_date"}
+        self.assertEqual(classify(row,datetime(2026,9,7,3,59,tzinfo=timezone.utc))["days"],4)
+        self.assertEqual(classify(row,datetime(2026,9,7,4,0,tzinfo=timezone.utc))["days"],5)
+        self.assertEqual(classify(row,datetime(2026,9,9,4,0,tzinfo=timezone.utc))["days"],7)
+        self.assertEqual(classify(row,datetime(2026,9,9,4,0,tzinfo=timezone.utc))["tier"],"urgent")
+        timed=dict(row,date_precision="timestamp")
+        self.assertEqual(classify(timed,datetime(2026,9,7,3,59,tzinfo=timezone.utc))["days"],6)
+
+    def test_scan_timestamp_overrides_date_only_precision(self):
+        row={"carrier_status":"in_transit","label_created_at":"2026-09-01T00:00:00+00:00","date_precision":"report_date",
+             "last_movement_at":(self.now-timedelta(days=5,hours=1)).isoformat()}
+        self.assertEqual(classify(row,self.now)["days"],5)
+
     def test_native_export_uses_label_date_not_scan(self):
         rows=parse_csv("Tracking Code,Created Date,Organization,Order Name,Carrier,Tracking Status,Voided\nDEMO-1,8/1/26,ClarityMD,#1,USPS,pre_transit,No\n","claritymd")
         self.assertIsNone(rows[0]["last_movement_at"])
@@ -129,3 +160,20 @@ class AppTests(unittest.TestCase):
 
 if __name__=="__main__":
     unittest.main()
+
+
+class SchemaTests(unittest.TestCase):
+    def test_tables_created_once_without_a_shell(self):
+        import app as app_module
+        from unittest.mock import MagicMock
+        app_module._schema_ready = False
+        self.addCleanup(setattr, app_module, "_schema_ready", False)
+        conn = MagicMock()
+        with patch.dict("os.environ", {"DATABASE_URL": "postgresql://example"}), \
+                patch("psycopg.connect", return_value=conn) as connect:
+            app_module.db()
+            app_module.db()
+        self.assertEqual(connect.call_count, 2)
+        created = [c.args[0] for c in conn.execute.call_args_list]
+        self.assertEqual(len(created), 2)
+        self.assertTrue(all("CREATE TABLE IF NOT EXISTS" in sql for sql in created))
