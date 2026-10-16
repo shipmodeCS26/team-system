@@ -34,7 +34,7 @@ settings, never in this public repository:
 - `WORKSPACE_USER`, `WORKSPACE_PASSWORD_HASH`, `SECRET_KEY` = private workspace
   authentication settings. The inventory connection fails closed without them.
 
-`nuerosmile` is the existing app's internal ID; its display name is Neurosmile.
+`nuerosmile` is the existing app's internal ID; its display name is NeuroSmile. Its ShipSidekick key may be saved as `SSK_API_KEY_NUEROSMILE` or `SSK_API_KEY_NEUROSMILE`.
 `APP_MODE` may remain `demo` for shipment tracking while Inventory reads Sheets.
 When inventory is enabled, the whole workspace requires Basic authentication.
 The server fetches only bounded `Dashboard!A1:S39` displayed values via the
@@ -52,6 +52,37 @@ code, and HTTP status only, never spreadsheet IDs or credentials. Cells with
 possible products past row 39, summary errors, negative balances, and reorder
 summary mismatches are listed as warnings. Verify the six mappings and access in
 a private environment before enabling this on Render.
+
+## Incoming shipments (read-only)
+
+With one client selected, the Inventory tab shows open shipments from that
+client's `Incoming Stocks` tab (`/api/incoming?client_id=…`, signed in).
+Only these headers are read: PO (Every Row), Tracking (Every Row), Product
+(Report Name), Verified SKU, Verified Inventory Units, Status, Forecast
+Treatment, Boxes Expected, Boxes Received, Units Received, Received Date, Where
+It Is Now, Expected in Miami. A missing header shows `incoming_layout` for that
+client only; a workbook without the tab shows "not available".
+
+Rows marked `INCLUDED IN LATEST COUNT` are received history (hidden by default,
+never flagged). Other rows are grouped by PO and tracking number and flagged:
+missing boxes (received date set, boxes received < expected), receipt not
+recorded (status arrived/delivered, boxes received blank), needs transfer, SKU
+not verified, and past expected date (nothing received). Incoming totals per
+SKU use verified open rows only and are never added to on-hand or to the
+calculated panel. Flags change no numbers; receiving entry needs approved
+receipt rules first.
+
+## Daily update draft (nothing is sent)
+
+With one client selected and its Dashboard loaded, **Copy daily update** opens
+a review dialog with Slack-ready text built from the displayed Sheet values
+(`/api/daily-update?client_id=…`, signed in): one line per product with units,
+days of cover, and reorder status; products out of stock now; the earliest
+product to run out (an estimate at the Sheet's daily demand); and open incoming
+shipments with their flags. A REVIEW report or any warning puts a
+`DRAFT (source under review)` line first. Incoming shipments without a verified
+SKU or quantity are left out of the text and named in the dialog. The app has no
+Slack access; staff copy the text and post it themselves.
 
 ## Aging rules
 
@@ -71,7 +102,7 @@ Install `requirements.txt`, then run `flask --app app run` for development.
 Render build: `pip install -r requirements.txt`.
 Render start: `gunicorn app:app --bind 0.0.0.0:$PORT`.
 Health check: `/api/health`. Auto-deploy: On Commit.
-Tests: `python -B -m unittest -v test_tracking test_inventory`.
+Tests: `python -B -m unittest -v test_tracking test_inventory test_ledger test_muravai_rules test_shopify test_ssk test_incoming test_daily_update test_order_check test_daily_orders test_frontend` (test_frontend runs `node --test test_panels.js` when Node.js is installed).
 
 ## Live mode prerequisites (not activated)
 
@@ -147,6 +178,129 @@ quantity. Muravai also has receipts, physical counts, adjustments/reships and
 audit exceptions. Some displayed summary statuses and calculation guides disagree;
 validate the business formulas rather than blindly porting those cells. Preserve
 the original Sheets as read-only references until a separate migration is agreed.
+
+## Shopify SKU mapping (read-only, off by default)
+
+Setup and safety rules: [docs/SHOPIFY_SETUP.md](docs/SHOPIFY_SETUP.md). With
+`SHOPIFY_ENABLED=true` and `SHOPIFY_STORES_JSON` set privately, the Inventory tab
+shows each Shopify variant matched to the client's ShipSidekick code and internal
+SKU, with blank, duplicate, draft/archived and unmapped SKUs flagged. ShipMode
+never writes to Shopify: only allowlisted read queries can be sent, and a token
+with any write scope is refused. Enabling Shopify makes the whole workspace
+require sign-in.
+
+## ShipSidekick API stock (read-only, off by default)
+
+`ssk_source.py` reads each store's `GET /inventory/levels` with that store's own
+API key and shows ShipSidekick available / committed / incoming / damaged next to
+the Sheet's Remaining (Inventory tab, "ShipSidekick stock vs. Sheet"). ShipMode
+never writes to ShipSidekick: only GET requests to an allowlist of read paths on
+ShipSidekick's own hosts can be sent. Private Render settings:
+
+- `SSK_API_ENABLED=true` (also makes the whole workspace require sign-in)
+- `SSK_API_KEY_CLARITYMD`, `SSK_API_KEY_FASCIAL_LABS`, `SSK_API_KEY_MURAVAI`,
+  `SSK_API_KEY_NUEROSMILE`, `SSK_API_KEY_PURAVITA`, `SSK_API_KEY_ONSET`
+- optional `SSK_API_BASE=https://test.shipsidekick.com/api/v1` to read the test environment
+
+A store without a key shows "not configured"; the others still load. Which
+ShipSidekick number should equal the Sheet's Remaining is undecided (#16), so
+both differences are shown.
+
+No Movement from ShipSidekick (#17): with `SSK_API_ENABLED=true` (and not
+`APP_MODE=live`), the No Movement queue shows each store's real shipments
+instead of sample data. For each store with a key it reads, GET only, shipments
+created in the last `SSK_SHIPMENT_DAYS` days (default 30, max 90) whose tracking
+status is not delivered, one status at a time. Each status is checked against
+what comes back: if the status filter is ignored, the store shows an error
+instead of a partial queue. The existing aging rules apply unchanged: only
+physical carrier scans reset the clock, and label-only shipments fall back to
+the label date. Addresses, prices and label files are never copied into a row; line
+items keep only SKU, product name and quantity (for the Shopify order check). Follow-up notes stay off until the database exists.
+
+Shopify order behind a shipment (#13): with `SHOPIFY_ENABLED=true` and the
+ShipSidekick queue on, opening a shipment in No Movement offers "Show Shopify
+order and address". It reads that one order by its exact name (read-only, needs
+`read_orders`; the address also needs Shopify protected customer data access) and shows payment and
+fulfillment status, items on both sides, and the current ship-to address. Flags
+(not found, cancelled, refunded, items differ, several shipments) are for review
+only and never change a shipment's age or priority. The address is shown only when
+Shopify can search all orders (`read_all_orders`), so an older order with the same
+name can never be mistaken for it. The address is never cached,
+logged, exported or stored, and is cleared from the page when the panel closes.
+
+Shopify orders vs. shipped (#14): on the Inventory tab, for one client and one
+day, the panel compares per SKU the units ordered in Shopify, the units shipped
+in the EOD (calculated from the Daily Sales tab exactly as the EOD is) and the
+Dashboard's units sold (only when the Dashboard shows that day). It needs
+`SHOPIFY_ENABLED`, the Sheets connection and `read_orders`; it reads order names,
+dates, statuses and line items only, never customer fields. Defaults (proposed
+2026-10-06, change in `daily_orders.py`):
+- A day is midnight to midnight US Eastern, by Shopify's order created time and
+  the label's Created Date.
+- Every order that is not cancelled counts as ordered, including on-hold and
+  pre-orders. Cancelled and test orders are excluded and counted separately.
+  A refund after shipping is flagged, never subtracted.
+- Shopify lines go through the client's own rules (kits included), as a Daily
+  Sales Items cell would.
+- Ordered on the day but shipped later (or not shipped yet), or ordered earlier
+  and shipped on the day, is **timing**. Whatever is left is **unexplained**.
+  Orders not shipped yet also appear in the exception list.
+- An order Shopify marks fulfilled but with no label is never counted as timing.
+- An earlier order counts as timing only up to the units it still owes. A reship
+  or extra units stay unexplained and are flagged.
+- Order exceptions:
+  - in Shopify with no label
+  - shipped but not in Shopify
+  - quantity differs
+  - unmapped item
+  - cancelled or test order but shipped
+  - refunded after shipping
+  - several orders with the same name
+- Gift-card and digital-only orders need no label and are left out of the
+  comparison.
+- Shopify orders are read from two days before the chosen day, newest first.
+  Orders shipped on the day but placed earlier than that are looked up by name
+  (up to 40). An order is reported "not in Shopify" only after that lookup.
+- If any of these happen, the Shopify column and timing stay blank rather than
+  showing a partial number:
+  - the chosen day can't be read in full
+  - an order has more than 30 lines
+  - the day is older than 60 days without `read_all_orders`
+
+Shopify paces reads, so the read runs in the background and the page polls. A
+result is reused for 10 minutes (3 minutes for today). Nothing here changes the
+EOD, the ledger, Shopify or the Sheets.
+
+## Standard EOD report (#9, read-only, never sent)
+
+On the Inventory tab, **EOD report** builds one client's end-of-day report in the same six
+sections for every client: Inventory, Forecast, Incoming, Alerts, Actions needed and Data status.
+Every number is restated from the client's Sheet Dashboard, which is the official number; nothing
+is recalculated.
+
+The shipped counts are cross-checked against a recount of the client's own **Daily Sales** tab
+(the ShipSidekick export), using only that client's rule package. A CSV can also be posted as an
+override.
+- **VERIFIED:** every product matches, and the report is ready to send.
+- **REVIEW:** a gap (named per SKU), an unknown or unapproved item, a duplicate, another client's
+  row, or a Sheet warning.
+- **INCOMPLETE:** no shipments for the date. "No shipments on this day (confirmed)" passes only
+  when the Sheet shows 0.
+
+Anything not VERIFIED starts with `HOLD, DO NOT SEND` and lists the reasons.
+
+The window also shows a dashboard image drawn from the same read (`dashboard_image.py`, Pillow),
+and the draft text. The client's channel comes from private `CLIENT_CHANNELS_JSON`
+(`{"muravai": "C…"}`). There is no Slack sending code; a person copies the text and image into
+the client's own channel.
+
+Open rules held in code, never guessed:
+- Fascial Labs `FASCSUPPx2` and `FAC3XBDL` (units and bundle contents not approved yet).
+- Neurosmile `PILL-CARRIER-360` (whether it is tracked).
+
+Entry points:
+- `POST /api/eod-report`: signed in, CSRF token required, one client.
+- `eod_cli.py`: builds the report from saved values. `--out` is required.
 
 ## Calculated inventory (shadow check)
 
