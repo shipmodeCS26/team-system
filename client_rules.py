@@ -46,6 +46,11 @@ class AliasRules:
             usage[sku] += qty
         return OrderResult(usage=usage, raw=dict(usage), unknown_items=unknown)
 
+    def shopify_match(self, variant: dict) -> dict | None:
+        """A Shopify variant maps when its SKU is a ShipSidekick product code in this package."""
+        sku = self.aliases.get(variant.get("sku", "").strip().upper())
+        return {"sku": sku, "how": "Shopify SKU = ShipSidekick code"} if sku else None
+
 
 PROPOSED = "PROPOSED — mapping taken from ShipSidekick exports and the client Sheet; needs ShipMode approval"
 
@@ -55,7 +60,7 @@ PACKAGES = {
         "fascial-labs", "Fascial Labs", {"FASCSUPP-1": "FAS001"},
         {"FAS001": "TrueForm Fascial Release Support"}, "PROPOSED", PROPOSED,
         pending={
-            # TODO(issue #9, open rule 1): units per line not approved; held, never guessed.
+            # Issue #9, open rule 1: units per line not approved; held, never guessed.
             "FASCSUPPx2": "units per line not approved yet (Issue #9, open rule 1)",
             "FAC3XBDL": "bundle contents not approved yet (Issue #9, open rule 1)",
         }),
@@ -68,30 +73,10 @@ PACKAGES = {
         "nuerosmile", "NeuroSmile", {"NEURO-120": "NEU001", "MAG-SPRAY-360": "NEU002"},
         {"NEU001": "Nerve Support", "NEU002": "Magnesium Spray"}, "PROPOSED", PROPOSED,
         pending={
-            # TODO(issue #9, open rule 2): is the Pill Carrier tracked inventory?
+            # Issue #9, open rule 2: is the Pill Carrier tracked inventory?
             "PILL-CARRIER-360": "not decided whether this item is tracked (Issue #9, open rule 2)",
         }),
 }
-
-# Dashboard product name (as the Sheet shows it) → internal SKU, per client. Used only to line up the
-# Sheet's "shipped on date" with the CSV recount; a Dashboard row missing here holds the report.
-DASHBOARD_PRODUCTS = {
-    "muravai": {"Replacement Filters, 3-Pack": "MUR001", "Filtered Showerhead": "MUR002",
-                "Connector Kit Box": "MUR003", "Shower Hose": "MUR004", "Bracket / Connector": "MUR005"},
-    "fascial-labs": {"TrueForm Fascial Release Support": "FAS001"},
-    "puravita": {"Magnesium Performance Capsules": "PVT001"},
-    "nuerosmile": {"Nerve Support": "NEU001", "Magnesium Spray": "NEU002"},
-}
-
-
-def _product_key(name: str) -> str:
-    return re.sub(r"\s+", " ", (name or "").replace("*", "")).strip().lower()
-
-
-def dashboard_sku(client_id: str, product: str) -> str | None:
-    """Look up one client's Dashboard product. Other clients' names never match."""
-    names = {_product_key(name): sku for name, sku in DASHBOARD_PRODUCTS.get(client_id, {}).items()}
-    return names.get(_product_key(product))
 
 
 def package(client_id: str):

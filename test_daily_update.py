@@ -7,7 +7,7 @@ from werkzeug.security import generate_password_hash
 from app import app
 from daily_update import build_update
 from incoming import parse_incoming
-from test_incoming import ROWS, TODAY, columns
+from test_incoming import ROWS, TODAY, columns, line
 
 SOURCE = {"id": "muravai", "as_of": "28 Sep 2026", "report_status": "SOURCE VALUES", "warnings": [], "rows": [
     {"product": "Replacement Filters, 3-Pack", "remaining": "12", "cover": "0.0", "demand": "481.8", "status": "REORDER NOW"},
@@ -59,6 +59,23 @@ class BuildUpdateTests(unittest.TestCase):
         self.assertIn("• Replacement Filters, 3-Pack: 12 units", text.split("Incoming")[0])  # on-hand unchanged
 
 
+    def test_partly_held_back_po_is_reported(self):
+        rows = [line("PO40", "T40", "Filtered Showerhead", "MUR002", "60", "In Transit", "NOT ARRIVED"),
+                line("PO40", "T40", "Nozzle", "REVIEW", "5", "In Transit", "REVIEW — NOT COUNTED")]
+        result = build_update("Muravai", SOURCE, parse_incoming(columns(rows), TODAY) | {"id": "muravai"})
+        self.assertEqual(result["held_back"], ["PO40"])
+        self.assertIn("• PO40: Filtered Showerhead 60", result["text"])
+        self.assertNotIn("Nozzle", result["text"])
+        self.assertNotIn("SKU not verified", result["text"])  # flags of held-back lines stay internal
+
+
+    def test_blank_product_name_uses_sku(self):
+        rows = [line("PO41", "T41", "", "MUR002", "60", "In Transit", "NOT ARRIVED")]
+        result = build_update("Muravai", SOURCE, parse_incoming(columns(rows), TODAY) | {"id": "muravai"})
+        self.assertEqual(result["held_back"], [])
+        self.assertIn("• PO41: MUR002 60", result["text"])
+
+
 class DailyUpdateApiTests(unittest.TestCase):
     ENV = {"INVENTORY_SHEETS_ENABLED": "true", "INVENTORY_SHEETS_JSON": "{}", "INVENTORY_SERVICE_ACCOUNT_JSON": "{}",
            "WORKSPACE_USER": "owner", "SECRET_KEY": "test-secret",
@@ -93,6 +110,13 @@ class DailyUpdateApiTests(unittest.TestCase):
         self.assertIn("Muravai Inventory Update", body["text"])
         self.assertNotIn("Incoming, not yet in stock", body["text"])
         self.assertEqual(body["incoming_error"], "No workbook")
+        self.assertIn("sheet_read_at", body)  # the dialog names which Sheet read the text came from
+
+    def test_missing_incoming_tab_is_reported(self):
+        with patch.dict("os.environ", self.ENV), patch("app.read_dashboards", return_value=[SOURCE]), \
+                patch("app.read_incoming", return_value=[{"id": "muravai", "available": False}]):
+            body = self.client.get("/api/daily-update?client_id=muravai", headers=self.AUTH).get_json()
+        self.assertIn("no Incoming Stocks tab", body["incoming_error"])
 
 
 if __name__ == "__main__":

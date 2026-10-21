@@ -48,7 +48,14 @@ SHEETS = {
         ["Replacement Filters, 3-Pack", "12", "4", "8", "478.6", "0.0", "1", "REORDER NOW", "2026-11-27", "Now",
          "14,400", "26,400", "0", "14,400", "14,400"],
         ["Shower Hose*", "0", "0", "0", "0.9", "0.0", "33.2", "OUT OF STOCK", "2026-12-03", "2026-10-04",
-         "24", "60", "0", "24", "24"]], ("2", "1", "1", "8"), status="SOURCE VALUES"),
+         "24", "60", "0", "24", "24"],
+        # Every tracked SKU is on the real Dashboard (MUR001-MUR005); these three shipped nothing that day.
+        ["Filtered Showerhead", "40", "0", "40", "1.0", "40.0", "10", "STOCK SUFFICIENT", "2026-11-07", "2026-10-20",
+         "0", "0", "0", "0", "0"],
+        ["Connector Kit Box", "30", "0", "30", "1.0", "30.0", "0", "STOCK SUFFICIENT", "2026-10-28", "2026-10-15",
+         "0", "0", "0", "0", "0"],
+        ["Bracket / Connector", "5", "0", "5", "0.1", "50.0", "0", "STOCK SUFFICIENT", "2026-11-17", "2026-11-01",
+         "0", "0", "0", "0", "0"]], ("5", "1", "1", "83"), status="SOURCE VALUES"),
 }
 NAMES = {"puravita": "PuraVita", "fascial-labs": "Fascial. Labs", "nuerosmile": "Neurosmile", "muravai": "Muravai"}
 ORGS = {"puravita": "PuraVita", "fascial-labs": "Fascial Labs", "nuerosmile": "NeuroSmile", "muravai": "Muravai"}
@@ -126,7 +133,7 @@ class CheckTests(unittest.TestCase):
         report, _ = report_for("puravita", rows)
         self.assertEqual(report["status"], REVIEW)
         self.assertFalse(report["ready_to_send"])
-        self.assertIn("Magnesium Performance Capsules (PVT001): Sheet shows 300 shipped, CSV recount is 290 (gap +10).",
+        self.assertIn("Magnesium Performance Capsules (PVT001): Sheet shows 300 shipped, ShipSidekick recount is 290 (gap +10).",
                       report["hold_reasons"])
         self.assertTrue(report["text"].startswith("HOLD, DO NOT SEND (REVIEW)"))
 
@@ -136,7 +143,7 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(report["ready_to_send"])
         report, _ = report_for("fascial-labs", [row("fascial-labs", "9/27/26", "5x x (FASCSUPP-1)", "T9")])
         self.assertEqual(report["status"], INCOMPLETE)
-        self.assertIn("The CSV has no rows dated 28 Sep 2026.", report["hold_reasons"])
+        self.assertIn("The shipments (export.csv) have no rows dated 28 Sep 2026.", report["hold_reasons"])
 
     def test_confirmed_no_shipments_passes_only_when_sheet_is_zero(self):
         values = [list(r) for r in SHEETS["fascial-labs"]]
@@ -181,6 +188,155 @@ class CheckTests(unittest.TestCase):
         report, _ = report_for("fascial-labs", rows)
         self.assertEqual(report["check"]["checks"][0]["csv"], 5)
         self.assertTrue(any("FAC3XBDL" in r and "not approved" in r for r in report["hold_reasons"]))
+
+
+class ReviewFixTests(unittest.TestCase):
+    """Fixes from the independent review of PR #22."""
+
+    def test_held_back_po_never_reaches_alerts_or_actions(self):
+        incoming = {"available": True, "shipments": [{"po": "PO-9", "flags": ["needs_transfer", "sku_unverified"], "lines": [
+            {"po": "PO-9", "product": "", "sku": "", "units": "100", "flags": ["sku_unverified", "needs_transfer"],
+             "where": "", "expected_date": ""}]}]}
+        source = parse_dashboard(SHEETS["puravita"])
+        report = build_report("puravita", "PuraVita", source, check("puravita", source, csv_for("puravita")), incoming)
+        self.assertNotIn("PO-9", "\n".join(report["sections"][3]["lines"] + report["sections"][4]["lines"]))
+        self.assertEqual(report["held_back"], ["PO-9"])
+
+    def test_no_shipments_never_hides_a_failed_read(self):
+        values = [list(r) for r in SHEETS["fascial-labs"]]
+        values[14][2] = "0"
+        result = check("fascial-labs", parse_dashboard(values), None, no_shipments_confirmed=True,
+                       missing_reason="The Daily Sales tab could not be read: denied")
+        self.assertEqual(result["status"], INCOMPLETE)
+        self.assertIn("The Daily Sales tab could not be read: denied", result["reasons"])
+
+    def test_one_bad_old_date_is_named_and_does_not_stop_the_check(self):
+        rows = csv_for("puravita") + [row("puravita", "", "1x Puravita Magnesium Performance Capsules (CAP-MAGNESIUM-360)", "T0")]
+        result = check("puravita", parse_dashboard(SHEETS["puravita"]), rows, csv_name="Daily Sales tab")
+        self.assertEqual(result["checks"][0]["csv"], 300)
+        self.assertEqual(result["status"], REVIEW)
+        self.assertTrue(any("Daily Sales tab row 3" in reason for reason in result["reasons"]))
+
+    def test_broken_channel_setting_is_no_channel_and_filename_is_safe(self):
+        report, _ = report_for("puravita")
+        with patch.dict(os.environ, {"CLIENT_CHANNELS_JSON": "{puravita: C1,}"}):
+            result = slack_draft.draft("puravita", {**report, "as_of": "Mon, 05/10/2026"})
+        self.assertIsNone(result["channel"])
+        self.assertEqual(result["attach"], "puravita-dashboard-Mon-05-10-2026.png")
+
+    def test_pending_forecast_cell_is_not_shown_and_does_not_hold(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[14][8] = "#N/A"
+        source = parse_dashboard(values)
+        self.assertEqual((source["rows"][0]["flags"], source["warnings"]), ([], []))
+        report = build_report("puravita", "PuraVita", source, check("puravita", source, csv_for("puravita")))
+        self.assertIn("order by not shown", "\n".join(report["sections"][1]["lines"]))
+        self.assertNotIn("#N/A", report["text"])
+        self.assertTrue(report["ready_to_send"])
+
+    def test_missing_incoming_tab_says_not_tracked(self):
+        source = parse_dashboard(SHEETS["puravita"])
+        report = build_report("puravita", "PuraVita", source, check("puravita", source, csv_for("puravita")),
+                              {"available": False})
+        self.assertEqual(report["sections"][2]["lines"], ["• Not tracked in this report."])
+
+
+class CodexFixTests(unittest.TestCase):
+    """Fixes from the Codex review of PR #22 (dea1f1c)."""
+
+    def setUp(self):
+        self.source = parse_dashboard(SHEETS["puravita"])
+
+    def test_truncated_incoming_holds_and_status_is_never_verified_when_held(self):
+        result = check("puravita", self.source, csv_for("puravita"))
+        report = build_report("puravita", "PuraVita", self.source, result, {"available": True, "shipments": [], "truncated": True})
+        self.assertFalse(report["ready_to_send"])
+        self.assertEqual((report["status"], report["check_status"]), ("INCOMPLETE", VERIFIED))
+        self.assertTrue(report["text"].startswith("HOLD, DO NOT SEND (INCOMPLETE)"))
+        failed = build_report("puravita", "PuraVita", self.source, result, None, "denied")
+        self.assertEqual(failed["status"], "INCOMPLETE")
+
+    def test_blank_items_hold(self):
+        rows = csv_for("puravita") + [row("puravita", "9/28/26", "  ", "T9", "#9")]
+        result = check("puravita", self.source, rows, csv_name="Daily Sales tab")
+        self.assertEqual(result["status"], REVIEW)
+        self.assertTrue(any("has no Items" in r for r in result["reasons"]))
+
+    def test_same_tracking_on_another_date_holds(self):
+        rows = csv_for("puravita") + [row("puravita", "9/27/26", "1x Puravita Magnesium Performance Capsules (CAP-MAGNESIUM-360)", "T1")]
+        result = check("puravita", self.source, rows)
+        self.assertEqual(result["status"], REVIEW)
+        self.assertTrue(any("Tracking T1 appears on more than one date" in r for r in result["reasons"]))
+
+    def test_fractional_shipped_is_not_a_whole_number(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[14][2] = "300.5"
+        result = check("puravita", parse_dashboard(values), csv_for("puravita"))
+        self.assertEqual(result["status"], REVIEW)
+        self.assertTrue(any("not a whole number" in r for r in result["reasons"]))
+
+    def test_two_dashboard_rows_for_one_sku_hold(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values.append(list(values[14]))
+        result = check("puravita", parse_dashboard(values), csv_for("puravita"))
+        self.assertEqual(result["status"], REVIEW)
+        self.assertTrue(any("More than one Dashboard row maps to PVT001" in r for r in result["reasons"]))
+
+    def test_official_action_list_comes_first(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[10] = ["Ship PO26 by Friday\n- Confirm 9,000 capsules"]
+        report = build_report("puravita", "PuraVita", parse_dashboard(values), check("puravita", parse_dashboard(values), csv_for("puravita")))
+        self.assertEqual(report["sections"][4]["lines"][:2], ["• Ship PO26 by Friday", "• Confirm 9,000 capsules"])
+
+    def test_legacy_private_channel_id_is_accepted(self):
+        self.assertEqual(slack_draft.channel_for("puravita", {"puravita": "G0ABCDEFGH1"}), "G0ABCDEFGH1")
+
+
+class CodexRoundTwoTests(unittest.TestCase):
+    """Fixes from the Codex review of PR #22 (e7b1b7a)."""
+
+    def setUp(self):
+        self.source = parse_dashboard(SHEETS["puravita"])
+
+    def test_voided_only_day_needs_the_confirmation(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[14][2] = "0"
+        source = parse_dashboard(values)
+        rows = [dict(row("puravita", "9/28/26", "1x Puravita Magnesium Performance Capsules (CAP-MAGNESIUM-360)", "T1"), Voided="Yes")]
+        self.assertEqual(check("puravita", source, rows)["status"], INCOMPLETE)
+        self.assertEqual(check("puravita", source, rows, no_shipments_confirmed=True)["status"], VERIFIED)
+
+    def test_held_back_incoming_holds_the_report(self):
+        incoming = {"available": True, "shipments": [{"po": "PO-9", "flags": ["sku_unverified"], "lines": [
+            {"po": "PO-9", "product": "", "sku": "", "units": "100", "flags": ["sku_unverified"], "where": "", "expected_date": ""}]}]}
+        report = build_report("puravita", "PuraVita", self.source, check("puravita", self.source, csv_for("puravita")), incoming)
+        self.assertFalse(report["ready_to_send"])
+        self.assertTrue(any("PO-9" in r for r in report["hold_reasons"]))
+
+    def test_action_text_with_pending_is_kept(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[10] = ["Pending client confirmation of PO26"]
+        report = build_report("puravita", "PuraVita", parse_dashboard(values), check("puravita", parse_dashboard(values), csv_for("puravita")))
+        self.assertEqual(report["sections"][4]["lines"][0], "• Pending client confirmation of PO26")
+        values[10] = ["#REF!"]
+        report = build_report("puravita", "PuraVita", parse_dashboard(values), check("puravita", parse_dashboard(values), csv_for("puravita")))
+        self.assertNotIn("#REF!", report["text"].split("\n\n", 1)[1])
+        self.assertFalse(report["ready_to_send"])
+        self.assertTrue(any("#REF!" in r for r in report["hold_reasons"]))
+
+    def test_incomplete_sheet_status_holds(self):
+        values = [list(r) for r in SHEETS["muravai"]]
+        values[3][4] = "INCOMPLETE"
+        result = check("muravai", parse_dashboard(values), csv_for("muravai"))
+        self.assertEqual(result["status"], REVIEW)
+        self.assertIn("The Sheet marks this report INCOMPLETE.", result["reasons"])
+
+    def test_unreadable_remaining_holds(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[14][3] = "see note"
+        result = check("puravita", parse_dashboard(values), csv_for("puravita"))
+        self.assertEqual(result["status"], REVIEW)
+        self.assertTrue(any("remaining value" in r for r in result["reasons"]))
 
 
 class IsolationTests(unittest.TestCase):
@@ -255,16 +411,50 @@ class EndpointTests(unittest.TestCase):
             "WORKSPACE_USER": "gly", "WORKSPACE_PASSWORD_HASH": generate_password_hash("pw"), "SECRET_KEY": "test",
             "CLIENT_CHANNELS_JSON": json.dumps(CHANNELS)})
         self.env.start()
+        from datetime import date
+        self.today = patch("app.warehouse_today", return_value=date(2026, 9, 28))
+        self.today.start()
         self.client = app.test_client()
         self.auth = {"Authorization": "Basic " + base64.b64encode(b"gly:pw").decode()}
 
     def tearDown(self):
+        self.today.stop()
         self.env.stop()
 
     def post(self, body, csrf="token"):
         with self.client.session_transaction() as session:
             session["csrf"] = "token"
         return self.client.post("/api/eod-report", json=body, headers={**self.auth, "X-CSRF-Token": csrf})
+
+    @patch("app.read_incoming", return_value=[{"id": "puravita", "available": False}])
+    @patch("app.read_dashboards")
+    def test_unreadable_uploaded_csv_is_a_400_and_extra_columns_are_dropped(self, dashboards, _incoming):
+        dashboards.return_value = [parse_dashboard(SHEETS["puravita"]) | {"id": "puravita"}]
+        self.assertEqual(self.post({"client_id": "puravita", "csv": "a,b\n" + "x" * 200000 + ",2\n"}).status_code, 400)
+        captured = {}
+        real = __import__("app").eod_check
+        def spy(client_id, source, rows, **kwargs):
+            captured["rows"] = rows
+            return real(client_id, source, rows, **kwargs)
+        csv_text = ("Tracking Code,Created Date,Organization,Order Name,Tracking Status,Voided,Mission Num,Items,"
+                    "Origin Address,Customer Name\nT1,9/28/26,PuraVita,#1,pre-transit,No,M1,"
+                    "300x Puravita Magnesium Performance Capsules (CAP-MAGNESIUM-360),\"Miami, FL, 33166\",Jane\n")
+        with patch("app.eod_check", spy):
+            self.post({"client_id": "puravita", "csv": csv_text})
+        self.assertNotIn("Customer Name", captured["rows"][0])
+
+    def test_non_object_body_is_a_400(self):
+        for body in ([], "puravita", 1):
+            self.assertEqual(self.post(body).status_code, 400, body)
+
+    @patch("app.read_incoming", return_value=[{"id": "puravita", "available": False}])
+    @patch("app.read_dashboards")
+    def test_empty_uploaded_csv_is_used_not_the_daily_sales_tab(self, dashboards, _incoming):
+        dashboards.return_value = [parse_dashboard(SHEETS["puravita"]) | {"id": "puravita"}]
+        with patch("app.daily_sales_rows") as sales:
+            data = self.post({"client_id": "puravita", "csv": ""}).get_json()
+        sales.assert_not_called()
+        self.assertEqual(data["report"]["status"], INCOMPLETE)
 
     def test_requires_sign_in_and_csrf(self):
         self.assertEqual(self.client.post("/api/eod-report", json={"client_id": "puravita"}).status_code, 401)
@@ -281,11 +471,300 @@ class EndpointTests(unittest.TestCase):
         response = self.post({"client_id": "puravita", "csv": csv_text, "csv_name": "export.csv"})
         self.assertEqual(response.status_code, 200, response.get_json())
         data = response.get_json()
-        dashboards.assert_called_once_with(["puravita"])
+        dashboards.assert_called_once_with(["puravita"], fresh=False)
         self.assertEqual(data["report"]["status"], VERIFIED)
         self.assertEqual(data["draft"]["channel"], CHANNELS["puravita"])
         self.assertFalse(data["draft"]["send"])
         self.assertTrue(data["image"].startswith("data:image/png;base64,"))
+        self.assertEqual(data["writes"], "disabled")
+
+    @patch("app.read_incoming", return_value=[{"id": "puravita", "available": False}])
+    @patch("app.read_dashboards")
+    def test_reads_the_clients_own_daily_sales_tab_by_default(self, dashboards, _incoming):
+        dashboards.return_value = [parse_dashboard(SHEETS["puravita"]) | {"id": "puravita"}]
+        with patch("app.daily_sales_rows", return_value=((csv_for("puravita"), None), None)) as sales:
+            data = self.post({"client_id": "puravita"}).get_json()
+        sales.assert_called_once_with("puravita")
+        from datetime import date
+        self.assertEqual(_incoming.call_args[0][1], date(2026, 9, 28))  # incoming judged on the report date
+        self.assertEqual(data["report"]["status"], VERIFIED)
+        self.assertEqual(data["report"]["check"]["csv"], "Daily Sales tab")
+
+    @patch("app.read_incoming", return_value=[{"id": "puravita", "available": False}])
+    @patch("app.read_dashboards")
+    def test_unreadable_daily_sales_is_incomplete_with_the_reason(self, dashboards, _incoming):
+        dashboards.return_value = [parse_dashboard(SHEETS["puravita"]) | {"id": "puravita"}]
+        with patch("app.daily_sales_rows", return_value=(None, "The Daily Sales tab could not be read: x")):
+            data = self.post({"client_id": "puravita"}).get_json()
+        self.assertEqual(data["report"]["status"], INCOMPLETE)
+        self.assertFalse(data["report"]["ready_to_send"])
+        self.assertIn("The Daily Sales tab could not be read: x", data["report"]["hold_reasons"])
+
+    @patch("app.read_incoming", return_value=[{"id": "puravita", "available": False}])
+    @patch("app.read_dashboards")
+    def test_default_request_reads_the_daily_sales_tab_through_the_real_helper(self, dashboards, _incoming):
+        # Not patching daily_sales_rows: the route must reach the inventory module, not the view function.
+        dashboards.return_value = [parse_dashboard(SHEETS["puravita"]) | {"id": "puravita"}]
+        sheet_id = "1" + "a" * 43
+        with patch("inventory.source_config", return_value=({"puravita": sheet_id}, {})), \
+                patch("ledger_sources.SheetReader") as reader:
+            reader.return_value.daily_sales.return_value = (csv_for("puravita"), [2])
+            response = self.post({"client_id": "puravita"})
+        self.assertEqual(response.status_code, 200, response.get_json())
+        reader.assert_called_once_with(sheet_id, {})
+        self.assertEqual(response.get_json()["report"]["status"], VERIFIED)
+
+    @patch("app.read_incoming", return_value=[{"id": "puravita", "available": False}])
+    @patch("app.read_dashboards")
+    def test_backdated_report_holds_because_incoming_is_as_of_today(self, dashboards, _incoming):
+        from datetime import date
+        dashboards.return_value = [parse_dashboard(SHEETS["puravita"]) | {"id": "puravita"}]
+        with patch("app.warehouse_today", return_value=date(2026, 10, 9)), \
+                patch("app.daily_sales_rows", return_value=((csv_for("puravita"), None), None)):
+            data = self.post({"client_id": "puravita"}).get_json()
+        self.assertFalse(data["report"]["ready_to_send"])
+        self.assertTrue(any("as of today" in r for r in data["report"]["hold_reasons"]))
+
+    @patch("app.read_incoming", return_value=[{"id": "puravita", "available": False}])
+    @patch("app.read_dashboards")
+    def test_no_shipments_confirmation_for_another_date_is_not_applied(self, dashboards, _incoming):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[14][2] = "0"
+        dashboards.return_value = [parse_dashboard(values) | {"id": "puravita"}]
+        with patch("app.daily_sales_rows", return_value=(([], None), None)):
+            stale = self.post({"client_id": "puravita", "no_shipments_confirmed": True, "as_of": "27 Sep 2026"}).get_json()
+            fresh = self.post({"client_id": "puravita", "no_shipments_confirmed": True, "as_of": "28 Sep 2026"}).get_json()
+        dashboards.assert_called_with(["puravita"], fresh=True)  # never the cached Dashboard
+        self.assertTrue(_incoming.call_args.kwargs.get("fresh"))  # nor the cached Incoming read
+        self.assertFalse(stale["report"]["ready_to_send"])
+        self.assertTrue(any("Confirm again" in r for r in stale["report"]["hold_reasons"]))
+        self.assertEqual(fresh["report"]["check_status"], VERIFIED)
+
+
+class CodexRoundThreeTests(unittest.TestCase):
+    """Fixes from the Codex review of PR #22 (c049d7b)."""
+
+    def test_other_clients_rows_hold_even_with_no_shipments_confirmed(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[14][2] = "0"
+        source = parse_dashboard(values)
+        rows = [row("fascial-labs", "9/28/26", "5x TrueForm Fascial Release Support (FASCSUPP-1)", "T2")]
+        result = check("puravita", source, rows, no_shipments_confirmed=True)
+        self.assertNotEqual(result["status"], VERIFIED)
+        self.assertTrue(any("excluded" in r for r in result["reasons"]))
+
+
+class CodexRoundFourTests(unittest.TestCase):
+    """Fixes from the Codex review of PR #22 (367e3f9)."""
+
+    def test_single_non_miami_origin_holds(self):
+        source = parse_dashboard(SHEETS["puravita"])
+        for origin in ("Reno, NV, 89502", ""):
+            rows = [dict(r, **{"Origin Address": origin}) for r in csv_for("puravita")]
+            result = check("puravita", source, rows)
+            self.assertNotEqual(result["status"], VERIFIED, origin)
+            self.assertTrue(any("did not originate in Miami" in r for r in result["reasons"]), origin)
+
+    def test_long_cell_text_keeps_the_image_bounded(self):
+        from io import BytesIO
+        from PIL import Image
+        source = parse_dashboard(SHEETS["puravita"])
+        source["rows"][0]["product"] = "x" * 100000
+        image = Image.open(BytesIO(render_png("PuraVita", source, VERIFIED)))
+        self.assertLess(image.width, 4000)
+
+
+class CodexRoundFiveTests(unittest.TestCase):
+    """Fixes from the Codex review of PR #22 (001d130)."""
+
+    def setUp(self):
+        self.source = parse_dashboard(SHEETS["puravita"])
+
+    def test_voided_row_with_bad_date_does_not_hold(self):
+        rows = csv_for("puravita") + [dict(row("puravita", "", "1x X", "T9"), Voided="Yes")]
+        self.assertEqual(check("puravita", self.source, rows)["status"], VERIFIED)
+
+    def test_hold_reasons_keep_original_row_numbers(self):
+        rows = [row("puravita", "9/20/26", "1x Puravita Magnesium Performance Capsules (CAP-MAGNESIUM-360)", f"E{i}")
+                for i in range(5)] + csv_for("puravita") + [row("fascial-labs", "9/28/26", "1x Y", "F1")]
+        reasons = check("puravita", self.source, rows)["reasons"]
+        self.assertTrue(any(r.startswith("Row 8:") for r in reasons), reasons)
+
+    def test_receipt_not_recorded_is_an_alert_and_action(self):
+        incoming = {"available": True, "shipments": [{"po": "PO-7", "flags": ["receipt_not_recorded"], "lines": [
+            {"po": "PO-7", "product": "Caps", "sku": "CAP-MAGNESIUM-360", "units": "100",
+             "flags": ["receipt_not_recorded"], "where": "", "expected_date": ""}]}]}
+        report = build_report("puravita", "PuraVita", self.source, check("puravita", self.source, csv_for("puravita")), incoming)
+        self.assertTrue(any("PO-7" in line for line in report["sections"][3]["lines"]))
+        self.assertTrue(any("PO-7" in line for line in report["sections"][4]["lines"]))
+
+    def test_future_dated_report_holds(self):
+        report = build_report("puravita", "PuraVita", self.source, check("puravita", self.source, csv_for("puravita")),
+                              {"available": False}, incoming_backdated=True)
+        self.assertFalse(report["ready_to_send"])
+
+    def test_cli_holds_without_incoming_and_without_a_channel(self):
+        import tempfile, csv as csvmod
+        import eod_cli
+        with tempfile.TemporaryDirectory() as folder:
+            dash, export = os.path.join(folder, "d.json"), os.path.join(folder, "e.csv")
+            with open(dash, "w") as handle:
+                json.dump(SHEETS["puravita"], handle)
+            with open(export, "w", newline="") as handle:
+                writer = csvmod.DictWriter(handle, fieldnames=list(csv_for("puravita")[0]))
+                writer.writeheader(); writer.writerows(csv_for("puravita"))
+            incoming = os.path.join(folder, "i.json")
+            with open(incoming, "w") as handle:
+                json.dump({"available": False}, handle)
+            out = os.path.join(folder, "out")
+            from datetime import date
+            today = patch("eod_cli.warehouse_today", return_value=date(2026, 9, 28))
+            today.start()
+            self.addCleanup(today.stop)
+            with patch.dict(os.environ, {"CLIENT_CHANNELS_JSON": json.dumps(CHANNELS)}):
+                self.assertEqual(eod_cli.main(["puravita", "--dashboard", dash, "--csv", export, "--out", out]), 2)
+                self.assertEqual(eod_cli.main(["puravita", "--dashboard", dash, "--csv", export, "--incoming", incoming,
+                                               "--out", out]), 0)
+            failed = os.path.join(folder, "f.json")
+            with open(failed, "w") as handle:
+                json.dump({"error": "Incoming could not be read.", "error_code": "read_failed"}, handle)
+            with patch.dict(os.environ, {"CLIENT_CHANNELS_JSON": json.dumps(CHANNELS)}):
+                self.assertEqual(eod_cli.main(["puravita", "--dashboard", dash, "--csv", export, "--incoming", failed,
+                                               "--out", out]), 2)
+                with patch("eod_cli.warehouse_today", return_value=date(2026, 10, 9)):
+                    self.assertEqual(eod_cli.main(["puravita", "--dashboard", dash, "--csv", export,
+                                                   "--incoming", incoming, "--out", out]), 2)
+            with patch.dict(os.environ, {"CLIENT_CHANNELS_JSON": "{}"}):
+                self.assertEqual(eod_cli.main(["puravita", "--dashboard", dash, "--csv", export, "--incoming", incoming,
+                                               "--out", out]), 2)
+
+
+class CodexRoundSixTests(unittest.TestCase):
+    """Fixes from the Codex review of PR #22 (1eb6f77)."""
+
+    def setUp(self):
+        self.source = parse_dashboard(SHEETS["puravita"])
+
+    def test_csv_missing_an_audit_column_is_not_a_recount(self):
+        rows = [{k: v for k, v in r.items() if k != "Voided"} for r in csv_for("puravita")]
+        result = check("puravita", self.source, rows)
+        self.assertEqual(result["status"], INCOMPLETE)
+        self.assertTrue(any("Voided" in r for r in result["reasons"]))
+        self.assertEqual(check("puravita", self.source, [], columns=["Tracking Code"],
+                               no_shipments_confirmed=True)["status"], INCOMPLETE)
+
+    def test_physical_sheet_rows_are_named(self):
+        rows = csv_for("puravita") + [row("fascial-labs", "9/28/26", "1x Y", "F1")]
+        reasons = check("puravita", self.source, rows, row_numbers=[2, 11])["reasons"]
+        self.assertTrue(any(r.startswith("Row 11:") for r in reasons), reasons)
+
+    def test_data_status_counts_shipments(self):
+        report = build_report("puravita", "PuraVita", self.source, check("puravita", self.source, csv_for("puravita")))
+        self.assertIn("(1 shipments)", report["sections"][5]["lines"][0])
+
+    def test_daily_sales_reader_reports_physical_rows(self):
+        import ledger_sources
+        from eod import REQUIRED_COLUMNS
+        reader = ledger_sources.SheetReader.__new__(ledger_sources.SheetReader)
+        values = [[["T1"]], [], [["T3"]]]
+        def batch(ranges, optional=False):
+            if len(ranges) == 1:
+                return [[list(REQUIRED_COLUMNS)]]
+            return [values if name == "Tracking Code" else [] for name in REQUIRED_COLUMNS]
+        reader.batch = batch
+        rows, numbers = reader.daily_sales(numbered=True)
+        self.assertEqual(numbers, [2, 4])
+        self.assertEqual(reader.daily_sales(), rows)
+
+
+class CodexRoundEightTests(unittest.TestCase):
+    """Fixes from the Codex review of PR #22 (0df6718)."""
+
+    def setUp(self):
+        self.source = parse_dashboard(SHEETS["puravita"])
+
+    def test_loose_shipment_holds(self):
+        rows = [dict(r, **{"Mission Num": ""}) for r in csv_for("puravita")]
+        result = check("puravita", self.source, rows)
+        self.assertNotEqual(result["status"], VERIFIED)
+        self.assertTrue(any("Mission Num" in r for r in result["reasons"]))
+
+    def test_negative_remaining_is_not_called_an_error_value(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[14][3] = "-5"
+        source = parse_dashboard(values)
+        alerts = build_report("puravita", "PuraVita", source, check("puravita", source, csv_for("puravita")))["sections"][3]["lines"]
+        self.assertFalse(any("pending or error" in a for a in alerts), alerts)
+        self.assertTrue(any("out of stock" in a for a in alerts), alerts)
+
+
+class CodexRoundNineTests(unittest.TestCase):
+    """Fixes from the Codex review of PR #22 (c9cc648)."""
+
+    def test_unreadable_voided_value_holds(self):
+        source = parse_dashboard(SHEETS["puravita"])
+        rows = [dict(r, Voided="#REF!") for r in csv_for("puravita")]
+        result = check("puravita", source, rows)
+        self.assertNotEqual(result["status"], VERIFIED)
+        self.assertTrue(any("Voided shows" in r for r in result["reasons"]))
+
+    def test_error_sku_is_unverified(self):
+        from incoming import line_flags
+        from datetime import date
+        line = {"status": "", "boxes_expected": "", "boxes_received": "", "units_received": "",
+                "received_date": "", "treatment": "", "sku": "#REF!", "expected_date": "", "included": ""}
+        with patch("incoming._history", return_value=False):
+            self.assertIn("sku_unverified", line_flags(line, date(2026, 9, 28)))
+
+
+class SelfReviewTests(unittest.TestCase):
+    """Fixes from the independent review of 6b77eba (Codex pending)."""
+
+    def setUp(self):
+        self.source = parse_dashboard(SHEETS["puravita"])
+
+    def test_held_report_never_says_verified_in_data_status(self):
+        report = build_report("puravita", "PuraVita", self.source, check("puravita", self.source, csv_for("puravita")),
+                              None, "the tab could not be read")
+        self.assertFalse(report["ready_to_send"])
+        self.assertNotIn("VERIFIED", report["sections"][5]["lines"][0])
+
+    def test_accounting_negative_remaining_alerts(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[14][3], values[14][6] = "(12)", ""
+        source = parse_dashboard(values)
+        alerts = build_report("puravita", "PuraVita", source, check("puravita", source, csv_for("puravita")))["sections"][3]["lines"]
+        self.assertTrue(any("out of stock" in a for a in alerts), alerts)
+
+    def test_error_cover_is_not_restated(self):
+        values = [list(r) for r in SHEETS["puravita"]]
+        values[14][7] = "#DIV/0!"
+        source = parse_dashboard(values)
+        report = build_report("puravita", "PuraVita", source, check("puravita", source, csv_for("puravita")))
+        self.assertNotIn("#DIV/0!", report["text"].split("\n\n", 1)[-1])
+
+
+class CodexRoundTenTests(unittest.TestCase):
+    """Fixes from the Codex review of PR #22 (6b77eba)."""
+
+    def test_tracked_sku_missing_from_dashboard_holds_even_with_no_usage(self):
+        values = [list(r) for r in SHEETS["muravai"]]
+        del values[16]  # Filtered Showerhead (MUR002), which shipped nothing
+        result = check("muravai", parse_dashboard(values), csv_for("muravai"))
+        self.assertTrue(any("MUR002 is tracked" in r for r in result["reasons"]), result["reasons"])
+
+    def test_shipment_without_tracking_code_holds(self):
+        source = parse_dashboard(SHEETS["puravita"])
+        rows = [dict(r, **{"Tracking Code": ""}) for r in csv_for("puravita")]
+        self.assertTrue(any("no Tracking Code" in r for r in check("puravita", source, rows)["reasons"]))
+
+    def test_error_product_name_is_held_back(self):
+        from daily_update import incoming_lines
+        incoming = {"available": True, "shipments": [{"po": "PO-3", "flags": [], "lines": [
+            {"po": "PO-3", "product": "#REF!", "sku": "PVT001", "units": "10", "flags": [], "where": "", "expected_date": ""}]}]}
+        listed, held_back = incoming_lines(incoming)
+        self.assertEqual(listed, [])
+        self.assertEqual(held_back, ["PO-3"])
 
 
 if __name__ == "__main__":

@@ -76,6 +76,70 @@ class ParseIncomingTests(unittest.TestCase):
                     "09/28/2026")
         self.assertEqual(parse_incoming(columns([full]), TODAY)["shipments"][0]["flags"], [])
 
+    def test_explicit_zero_receipt_counts_as_nothing_received(self):
+        late = line("PO9", "T", "Filtered Showerhead", "MUR002", "10", "In Transit", "NOT ARRIVED", "1", "0", "0",
+                    expected_date="09/20/2026")
+        self.assertEqual(parse_incoming(columns([late]), TODAY)["shipments"][0]["flags"], ["past_expected"])
+
+    def test_mixed_group_keeps_received_lines_in_history(self):
+        mixed = [line("PO30", "T30", "Filtered Showerhead", "MUR002", "60", "Arrived in warehouse",
+                      "INCLUDED IN LATEST COUNT"),
+                 line("PO30", "T30", "Replacement Filters, 3-Pack", "MUR001", "600", "In Transit", "NOT ARRIVED", "1")]
+        result = parse_incoming(columns(mixed), TODAY)
+        self.assertEqual([l["sku"] for l in result["shipments"][0]["lines"]], ["MUR001"])
+        self.assertEqual([l["sku"] for l in result["history"][0]["lines"]], ["MUR002"])
+        self.assertEqual(result["incoming_by_sku"], [{"sku": "MUR001", "product": "Replacement Filters, 3-Pack",
+                                                      "units": 600}])
+
+    def test_filled_last_row_is_reported_truncated(self):
+        many = [line(f"PO{i}", "T", "Filtered Showerhead", "MUR002", "1", "In Transit", "NOT ARRIVED")
+                for i in range(incoming.LAST_ROW - 1)]
+        self.assertTrue(parse_incoming(columns(many), TODAY)["truncated"])
+        self.assertFalse(self.result["truncated"])
+
+    def test_negated_received_status_is_not_a_receipt(self):
+        for status in ("Not received", "Not delivered", "Undelivered", "Not yet arrived"):
+            row = line("PO9", "T", "Filtered Showerhead", "MUR002", "10", status, "NOT ARRIVED", "1")
+            self.assertNotIn("receipt_not_recorded", parse_incoming(columns([row]), TODAY)["shipments"][0]["flags"])
+        row = line("PO9", "T", "Filtered Showerhead", "MUR002", "10", "Arrived in warehouse", "NOT ARRIVED", "1")
+        self.assertIn("receipt_not_recorded", parse_incoming(columns([row]), TODAY)["shipments"][0]["flags"])
+
+    def test_lines_without_quantity_are_counted_as_left_out(self):
+        rows = [line("PO9", "T", "Filtered Showerhead", "MUR002", "", "In Transit", "NOT ARRIVED"),
+                line("PO9", "T", "Replacement Filters, 3-Pack", "MUR001", "TBD", "In Transit", "NOT ARRIVED")]
+        result = parse_incoming(columns(rows), TODAY)
+        self.assertEqual((result["incoming_by_sku"], result["unverified_lines"]), ([], 2))
+
+    def test_completed_transfer_is_not_flagged(self):
+        for status, flagged in (("Transferred to Miami", False), ("Transfer complete", False),
+                                ("Needs transfer to Miami", True)):
+            row = line("PO9", "T", "Filtered Showerhead", "MUR002", "10", status, "NOT ARRIVED", "1")
+            self.assertEqual("needs_transfer" in parse_incoming(columns([row]), TODAY)["shipments"][0]["flags"],
+                             flagged, status)
+
+    def test_fractional_quantity_is_left_out_not_truncated(self):
+        row = line("PO9", "T", "Filtered Showerhead", "MUR002", "10.9", "In Transit", "NOT ARRIVED")
+        result = parse_incoming(columns([row]), TODAY)
+        self.assertEqual((result["incoming_by_sku"], result["unverified_lines"]), ([], 1))
+        self.assertEqual(incoming.whole_units("1,200"), 1200)
+        self.assertEqual(incoming.whole_units("12.0"), 12)
+
+    def test_negative_quantity_is_left_out(self):
+        self.assertIsNone(incoming.whole_units("-100"))
+        row = line("PO9", "T", "Filtered Showerhead", "MUR002", "-100", "In Transit", "NOT ARRIVED")
+        self.assertEqual(parse_incoming(columns([row]), TODAY)["incoming_by_sku"], [])
+
+    def test_negated_transfer_still_needs_transfer(self):
+        for status in ("Not transferred", "Never transferred", "Not yet transferred"):
+            row = line("PO9", "T", "Filtered Showerhead", "MUR002", "10", status, "NOT ARRIVED", "1")
+            self.assertIn("needs_transfer", parse_incoming(columns([row]), TODAY)["shipments"][0]["flags"], status)
+
+    def test_rows_without_po_or_tracking_stay_separate(self):
+        rows = [line("", "", "Filtered Showerhead", "MUR002", "10", "In Transit", "NOT ARRIVED", where="Utah"),
+                line("", "", "Shower Hose", "MUR004", "5", "In Transit", "NOT ARRIVED", where="At sea")]
+        groups = parse_incoming(columns(rows), TODAY)["shipments"]
+        self.assertEqual([g["po"] for g in groups], ["No PO (Sheet row 2)", "No PO (Sheet row 3)"])
+
     def test_values_are_not_rewritten(self):
         self.assertEqual(self.by_po["PO23"]["lines"][0]["units"], "2,880")
 
@@ -91,7 +155,10 @@ class FakeReader:
             return [self.header]
         FakeReader.last_ranges = ranges
         blocks = columns(ROWS)
-        return [blocks[key] for key in KEYS]
+        return [blocks[key] + self.beyond(key) for key in KEYS]
+
+    def beyond(self, key):
+        return []
 
 
 class ReadIncomingTests(unittest.TestCase):
@@ -109,7 +176,44 @@ class ReadIncomingTests(unittest.TestCase):
             result = incoming.read_incoming(["muravai"], TODAY)[0]
         self.assertTrue(result["available"])
         self.assertEqual(len(FakeReader.last_ranges), len(COLUMNS))
+        # Open-ended: a range starting past a short tab's last row would make Google reject the whole read.
+        self.assertTrue(all(r[-1].isalpha() for r in FakeReader.last_ranges), FakeReader.last_ranges)
         self.assertNotIn("N2", " ".join(FakeReader.last_ranges))  # Box Details column is never requested
+        self.assertFalse(result["truncated"])
+
+    def test_data_past_a_blank_last_row_is_truncated(self):
+        class More(FakeReader):
+            def beyond(self, key):
+                # Pad to the cap, then one blank row 2000 and data in row 2002.
+                pad = [[]] * (incoming.LAST_ROW - 1 - len(columns(ROWS)[key]))
+                return pad + [[], ["PO99"]] if key == KEYS[0] else []
+        with patch("incoming.SheetReader", More):
+            self.assertTrue(incoming.read_incoming(["muravai"], TODAY)[0]["truncated"])
+
+    def test_cache_is_kept_per_evaluation_date(self):
+        # Flags like "past expected date" depend on the day they are judged on, so the EOD report for an
+        # earlier as-of date must never reuse (or overwrite) today's cached read, and the reverse.
+        from datetime import timedelta
+        calls = []
+
+        class Counting(FakeReader):
+            def batch(self, ranges, optional=False):
+                calls.append(1)
+                return super().batch(ranges, optional)
+        with patch("incoming.SheetReader", Counting):
+            incoming.read_incoming(["muravai"], TODAY)
+            first = len(calls)
+            incoming.read_incoming(["muravai"], TODAY - timedelta(days=3))
+            second = len(calls)
+            incoming.read_incoming(["muravai"], TODAY)
+        self.assertGreater(second, first)
+        self.assertEqual(len(calls), second)
+        # Expired per-date entries are dropped when a new read is stored, so they never pile up.
+        for key in list(incoming._cache):
+            incoming._cache[key] = (incoming._cache[key][0] - incoming.CACHE_SECONDS - 1, incoming._cache[key][1])
+        with patch("incoming.SheetReader", Counting):
+            incoming.read_incoming(["muravai"], TODAY - timedelta(days=9))
+        self.assertEqual(len(incoming._cache), 1)
 
     def test_missing_tab_changed_header_and_missing_mapping_are_per_client(self):
         class NoTab(FakeReader):
