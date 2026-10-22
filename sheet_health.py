@@ -115,11 +115,16 @@ def cell_check(sheet: dict) -> dict:
             problems.append(_problem(WRONG, f"Dashboard summary {cell}", f"{label}: formula error {ERROR_CODE.search(value)[0].upper()}."))
         elif PENDING.search(value):
             problems.append(_problem(WARNING, f"Dashboard summary {cell}", f"{label}: the value is PENDING."))
+    action = str(sheet.get("action_list") or "")
+    if ERROR_CODE.search(action):  # the EOD report holds on this too
+        problems.append(_problem(WRONG, "Dashboard action list (A11)", f"Formula error {ERROR_CODE.search(action)[0].upper()}."))
     return _check("cells", "Formula errors", problems)
 
 
 def dashboard_check(sheet: dict) -> dict:
     problems = []
+    if not sheet.get("rows"):
+        problems.append(_problem(WRONG, "Dashboard rows 15–39", "No product rows were found on the Dashboard."))
     if str(sheet.get("report_status", "")).upper() == "REVIEW":
         problems.append(_problem(WARNING, "Dashboard report status (E4)", "The Sheet marks this report REVIEW."))
     for row in sheet.get("rows", []):
@@ -161,6 +166,21 @@ def stock_check(client_id: str, sheet: dict, store: dict | None, sheet_current: 
                 f"({item['vs_available_committed']:+,}). Which number should match is undecided (#16).")))
         elif item["status"] == "REVIEW":
             problems.append(_problem(WARNING, where, "; ".join(item["notes"]) + "."))
+    # Records that were never compared keep the check from reading OK.
+    for level in result["unmatched_ssk"]:
+        problems.append(_problem(WARNING, f"ShipSidekick SKU {level['sku'] or '(blank)'}",
+                                 f"{level['title'] or 'Untitled'}: not in this client's SKU rules; not compared."))
+    for product in result["unmatched_sheet"]:
+        problems.append(_problem(WARNING, "Dashboard", f"{product}: not in this client's SKU rules; not compared."))
+    for part in result["components"]:
+        if part["note"] != ssk_check.KIT_USED:
+            problems.append(_problem(WARNING, f"ShipSidekick SKU {part['sku'] or '(blank)'}", f"{part['note']}; not compared."))
+    if result["blank_skus"]:
+        problems.append(_problem(WARNING, "ShipSidekick", f"{result['blank_skus']} item(s) have no SKU."))
+    for sku in result["duplicate_skus"]:
+        problems.append(_problem(WARNING, f"ShipSidekick SKU {sku}", "This SKU appears more than once."))
+    if store.get("environment") == "test":
+        problems.append(_problem(WARNING, "ShipSidekick", "Reading ShipSidekick's TEST environment, not production."))
     if result["rule_status"] == "NONE":
         problems.append(_problem(UNKNOWN, "SKU rules", "This client has no SKU rules, so stock can't be matched."))
     return _check("stock", title, problems)

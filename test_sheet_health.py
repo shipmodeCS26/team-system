@@ -102,6 +102,14 @@ class CellAndDashboardTests(unittest.TestCase):
         self.assertEqual(result["state"], WRONG)
         self.assertEqual(result["problems"][0]["where"], "Dashboard summary E7")
 
+    def test_action_list_error_is_wrong(self):
+        result = sheet_health.cell_check({**sheet(), "action_list": "#REF!"})
+        self.assertEqual((result["state"], result["problems"][0]["where"]), (WRONG, "Dashboard action list (A11)"))
+
+    def test_no_product_rows_is_wrong(self):
+        result = sheet_health.dashboard_check({**sheet(), "rows": []})
+        self.assertEqual(result["state"], WRONG)
+
     def test_negative_balance_is_a_warning(self):
         result = sheet_health.dashboard_check(sheet(remaining="-5"))
         self.assertEqual(result["state"], WARNING)
@@ -117,6 +125,20 @@ class StockTests(unittest.TestCase):
         self.assertIn("SKU FAS001", result["problems"][0]["where"])
         for text in ("Sheet 110", "available 90 (-20)", "available + committed 90 (-20)"):
             self.assertIn(text, reason)
+
+    def test_records_never_compared_are_warnings(self):
+        extra = {**store(110), "levels": levels(("FASCSUPP-1", "Support", 110, 0), ("OTHER-9", "Other client", 5, 0),
+                                                ("", "No sku", 1, 0))}
+        result = sheet_health.stock_check("fascial-labs", sheet(), extra, True)
+        self.assertEqual(result["state"], WARNING)
+        text = json.dumps(result)
+        self.assertIn("OTHER-9", text)
+        self.assertIn("have no SKU", text)
+
+    def test_test_environment_is_a_warning(self):
+        result = sheet_health.stock_check("fascial-labs", sheet(), {**store(110), "environment": "test"}, True)
+        self.assertEqual(result["state"], WARNING)
+        self.assertIn("TEST environment", result["problems"][0]["reason"])
 
     def test_off_unknown_and_not_current(self):
         self.assertEqual(sheet_health.stock_check("fascial-labs", sheet(), None, True)["state"], OFF)
@@ -179,7 +201,7 @@ class EndpointTests(unittest.TestCase):
         self.client = app.test_client()
         self.auth = {"Authorization": "Basic " + base64.b64encode(b"ops:pw").decode()}
 
-    def fake_sheets(self, ids):
+    def fake_sheets(self, ids, fresh=False):
         return [sheet() if cid == "fascial-labs" else {"id": cid, "error_code": "access_denied", "error": "x"} for cid in ids]
 
     def test_requires_sign_in(self):
@@ -193,7 +215,7 @@ class EndpointTests(unittest.TestCase):
 
     def test_one_failure_never_hides_another_and_client_filter(self):
         with patch.dict(os.environ, self.ENV), patch.object(app_module, "read_dashboards", self.fake_sheets), \
-                patch.object(app_module, "read_incoming", lambda ids, today: [{"id": c, "available": False} for c in ids]), \
+                patch.object(app_module, "read_incoming", lambda ids, today, fresh=False: [{"id": c, "available": False} for c in ids]), \
                 patch.object(app_module.ssk_source, "enabled", lambda: False):
             body = self.client.get("/api/sheet-health", headers=self.auth).get_json()
             states = {c["client_id"]: c["state"] for c in body["clients"]}
@@ -215,15 +237,34 @@ class EndpointTests(unittest.TestCase):
 
     def test_result_is_shared_between_requests(self):
         calls = []
-        def counted(ids):
-            calls.append(1)
+        def counted(ids, fresh=False):
+            calls.append(fresh)
             return self.fake_sheets(ids)
         with patch.dict(os.environ, self.ENV), patch.object(app_module, "read_dashboards", counted), \
-                patch.object(app_module, "read_incoming", lambda ids, today: [{"id": c, "available": False} for c in ids]), \
+                patch.object(app_module, "read_incoming", lambda ids, today, fresh=False: [{"id": c, "available": False} for c in ids]), \
                 patch.object(app_module.ssk_source, "enabled", lambda: False):
             for _ in range(3):
                 self.client.get("/api/sheet-health", headers=self.auth)
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls, [False])
+
+    def test_refresh_skips_the_readers_caches(self):
+        seen = []
+        def sheets(ids, fresh=False):
+            seen.append(("sheets", fresh))
+            return self.fake_sheets(ids)
+        def stores(ids, fresh=False):
+            seen.append(("ssk", fresh))
+            return [{"id": c, "error_code": "not_configured"} for c in ids]
+        def extra(ids, today, fresh=False):
+            seen.append(("incoming", fresh))
+            return [{"id": c, "available": False} for c in ids]
+        with patch.dict(os.environ, self.ENV), patch.object(app_module, "read_dashboards", sheets), \
+                patch.object(app_module, "read_incoming", extra), patch.object(app_module.ssk_source, "enabled", lambda: True), \
+                patch.object(app_module.ssk_source, "read_stores", stores):
+            self.client.get("/api/sheet-health", headers=self.auth)
+            app_module._health["at"] -= 31  # past the Refresh limit
+            self.client.get("/api/sheet-health?fresh=1", headers=self.auth)
+        self.assertEqual(sorted(seen[3:]), [("incoming", True), ("sheets", True), ("ssk", True)])
 
 
 if __name__ == "__main__":

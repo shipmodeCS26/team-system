@@ -579,9 +579,11 @@ def sheet_health_snapshot(fresh=False):
         now = datetime.now(ZoneInfo("America/New_York"))
         ids = [client["id"] for client in CLIENTS]
         with ThreadPoolExecutor(max_workers=3) as pool:
-            sheets = pool.submit(_source_or_unknown, read_dashboards, ids, "Sheets")
-            extra = pool.submit(_source_or_unknown, lambda c: read_incoming(c, now.date()), ids, "Incoming")
-            stores = pool.submit(_source_or_unknown, ssk_source.read_stores, ids, "ShipSidekick") if ssk_source.enabled() else None
+            # A Refresh (fresh) also skips the readers' own short caches, so a fixed Sheet shows as fixed.
+            sheets = pool.submit(_source_or_unknown, lambda c: read_dashboards(c, fresh), ids, "Sheets")
+            extra = pool.submit(_source_or_unknown, lambda c: read_incoming(c, now.date(), fresh), ids, "Incoming")
+            stores = (pool.submit(_source_or_unknown, lambda c: ssk_source.read_stores(c, fresh), ids, "ShipSidekick")
+                      if ssk_source.enabled() else None)
             sheets, extra, stores = sheets.result(), extra.result(), stores.result() if stores else {}
         cutoff, cutoff_valid = sheet_health.parse_cutoff(os.getenv("SHEET_CUTOFF_ET"))
         names = {client["id"]: client["name"] for client in CLIENTS}

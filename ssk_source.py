@@ -343,14 +343,15 @@ def queue_snapshot(client_ids, days):
     return out
 
 
-def read_store(client_id):
+def read_store(client_id, fresh=False):
+    """`fresh` skips the cache (a Refresh must check the store as it is now)."""
     key = api_key(client_id)
     if not key:
         raise SourceError("not_configured")
     cache_key = (client_id, hashlib.sha256(key.encode()).hexdigest())
     with _lock:
         cached = _cache.get(cache_key)
-        if cached and time.monotonic() - cached[0] < CACHE_SECONDS:
+        if cached and not fresh and time.monotonic() - cached[0] < CACHE_SECONDS:
             return cached[1]
     levels, truncated = inventory_levels(key)
     result = {"id": client_id, "levels": levels, "truncated": truncated,
@@ -366,10 +367,10 @@ def failure(client_id, code, status=None):
     return {"id": client_id, "error_code": code, "error": ERRORS[code]}
 
 
-def read_stores(client_ids):
+def read_stores(client_ids, fresh=False):
     """Each store is read with its own key; one failure never hides another store."""
     with ThreadPoolExecutor(max_workers=max(1, min(6, len(client_ids)))) as pool:
-        futures = {cid: pool.submit(read_store, cid) for cid in client_ids}
+        futures = {cid: pool.submit(read_store, cid, fresh) for cid in client_ids}
         out = []
         for cid in client_ids:
             try:
