@@ -3,7 +3,7 @@
 // replace the panel (or CSV export) of a client selected later.
 const test = require("node:test");
 const assert = require("node:assert");
-const { makePanelLoader, resetPanels, makeDailyLoader } = require("./static/panels.js");
+const { makePanelLoader, resetPanels, makeDailyLoader, healthSummary } = require("./static/panels.js");
 
 function deferredApi() {
   const pending = [];
@@ -92,4 +92,13 @@ test("daily check: a result for another client is never shown", async () => {
   await check("2026-09-01");
   assert.strictEqual(state.daily.status, "failed");
   assert.strictEqual(state.daily.result, undefined);
+});
+
+test("health chip: state in words with counts, and Off is never hidden", () => {
+  const client = { state: "wrong", off: ["ShipSidekick"], checks: [
+    { problems: [{ state: "wrong" }, { state: "warning" }, { state: "warning" }] }, { problems: [{ state: "unknown" }] }] };
+  assert.deepStrictEqual(healthSummary(client), { word: "Wrong", detail: "1 wrong · 1 unknown · 2 warnings · ShipSidekick off" });
+  assert.deepStrictEqual(healthSummary({ state: "ok", off: [], checks: [] }), { word: "OK", detail: "" });
+  assert.deepStrictEqual(healthSummary({ state: "off", note: "No Sheet is connected for this client.", checks: [] }),
+    { word: "Off", detail: "No Sheet is connected for this client." });
 });

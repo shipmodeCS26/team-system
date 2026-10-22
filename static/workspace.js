@@ -1,6 +1,6 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null, inventorySources:null, inventoryAsOf:null, inventoryRequest:0, calculated:null, calculatedError:null, shopify:null, shopifyError:null, ssk:null, sskError:null, panelRequests:{}, shopifyShown:200, incoming:null, incomingError:null, incomingRequest:0, incomingHistory:false, orderRequest:0};
+const state = {section:"movement", client:"all", filter:"exceptions", search:"", carrier:"all", page:1, data:null, selected:null, inventorySources:null, inventoryAsOf:null, inventoryRequest:0, calculated:null, calculatedError:null, shopify:null, shopifyError:null, ssk:null, sskError:null, panelRequests:{}, shopifyShown:200, incoming:null, incomingError:null, incomingRequest:0, incomingHistory:false, orderRequest:0, health:null, healthError:null, healthLoading:false, healthOpen:null};
 const PAGE_SIZE = 10;
 const tierNames = {critical:"Critical",urgent:"Urgent",watch:"Watch",monitoring:"Monitoring",delivered:"Delivered",cancelled:"Cancelled",data_gap:"Missing data"};
 const statusNames = {pre_transit:"Label created",in_transit:"In transit",out_for_delivery:"Out for delivery",available_for_pickup:"Ready for pickup",delivered:"Delivered",unknown:"Unknown",failure:"Carrier exception",return_to_sender:"Returning",cancelled:"Cancelled"};
@@ -38,6 +38,7 @@ function render(){
   $("monitoring-count").textContent=`${rows.filter(r=>r.tier==="monitoring").length} under 5 days · ${rows.filter(r=>r.tier==="delivered").length} delivered`;
   document.querySelectorAll(".selected-client-name").forEach(el=>el.textContent=state.client==="all"?"all clients":clientName(state.client));
   if(state.section==="inventory"){renderInventory();renderDaily()}
+  renderHealth();
 }
 function renderInventory(){
   const sources=state.inventorySources||[], loaded=sources.filter(s=>!s.error), selected=state.client==="all"?null:loaded[0];
@@ -394,4 +395,33 @@ $("confirm-import").addEventListener("click",async()=>{
   $("confirm-import").disabled=true;
   try{const result=await api("/api/import",{method:"POST",body:JSON.stringify({client_id:$("import-client").value,csv:await file.text()})});$("import-result").textContent=`${result.inserted} added, ${result.updated} updated.`;await load()}catch(e){$("import-result").textContent=e.message}finally{$("confirm-import").disabled=false}
 });
+// #28 Sheet health strip: read-only, shared server result, polled every 5 minutes while visible.
+async function loadHealth(fresh=false){
+  if(state.healthLoading)return;
+  state.healthLoading=true;$("health-refresh").disabled=true;
+  try{state.health=await api("/api/sheet-health"+(fresh?"?fresh=1":""));state.healthError=null}
+  catch(error){state.healthError=error.message}
+  finally{state.healthLoading=false;$("health-refresh").disabled=false;renderHealth()}
+}
+function healthClients(){return (state.health?.clients||[]).filter(c=>state.client==="all"||c.client_id===state.client)}
+function renderHealth(){
+  if(!state.health&&!state.healthError)return;
+  if(state.health&&!state.health.enabled){$("health-strip").hidden=true;return}
+  $("health-strip").hidden=false;
+  $("health-checked").textContent=state.healthError?`Not checked: ${state.healthError}`:`Checked ${date(state.health.checked_at,true)}${state.health.cutoff?` · cut-off ${state.health.cutoff} ET`:" · cut-off time not set"}`;
+  $("health-chips").innerHTML=healthClients().map(c=>{const s=healthSummary(c);return `<button class="health-chip ${esc(c.state)}" data-health="${esc(c.client_id)}"><strong>${esc(c.name||clientName(c.client_id))}</strong><span class="health-state ${esc(c.state)}">${esc(s.word)}</span>${s.detail?`<small>${esc(s.detail)}</small>`:""}</button>`}).join("");
+  if($("health-dialog").open)healthDetails(state.healthOpen);
+}
+function healthDetails(id){
+  const c=(state.health?.clients||[]).find(x=>x.client_id===id);if(!c)return;
+  state.healthOpen=id;const s=healthSummary(c);
+  $("health-client").textContent=c.name||clientName(id);
+  $("health-state").textContent=s.word;$("health-state").className="health-state "+c.state;
+  $("health-content").innerHTML=(c.note?`<div class="setup-note">${esc(c.note)}</div>`:"")+c.checks.map(k=>`<div class="health-check"><div class="health-check-head"><strong>${esc(k.title)}</strong><span class="health-state ${esc(k.state)}">${esc(healthSummary({state:k.state,checks:[]}).word)}</span></div>${k.note?`<small>${esc(k.note)}</small>`:""}${k.problems.length?`<ul>${k.problems.map(p=>`<li><span class="health-state ${esc(p.state)}">${esc(healthSummary({state:p.state,checks:[]}).word)}</span> <span class="muted">${esc(p.where)}</span><br>${esc(p.reason)}</li>`).join("")}</ul>`:""}</div>`).join("");
+  $("health-open").hidden=!c.source_url;if(c.source_url)$("health-open").href=c.source_url;
+  if(!$("health-dialog").open)$("health-dialog").showModal();
+}
+$("health-chips").addEventListener("click",e=>{const b=e.target.closest("[data-health]");if(b)healthDetails(b.dataset.health)});
+$("health-refresh").addEventListener("click",()=>loadHealth(true));
+loadHealth();setInterval(()=>{if(!document.hidden)loadHealth()},300000);
 load();setInterval(()=>{if(!document.hidden && !$("detail-dialog").open && !$("import-dialog").open && !$("update-dialog").open && !$("eod-dialog").open){load();if(state.section==="inventory")loadInventory()}},60000);

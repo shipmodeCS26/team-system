@@ -8,6 +8,8 @@ import io
 import json
 import os
 import secrets
+import threading
+import time
 from datetime import datetime
 from functools import wraps
 from zoneinfo import ZoneInfo
@@ -28,6 +30,7 @@ from incoming import read_incoming
 import inventory as inventory_source
 from inventory import SHEET_ID, read_dashboards
 from ledger_sources import calculate_clients
+import sheet_health
 import shopify_source
 import sku_check
 import client_rules
@@ -550,6 +553,58 @@ def ssk_inventory():
             warnings.append("Reading ShipSidekick's TEST environment, not production.")
         clients.append(dict(result, warnings=warnings, environment=store["environment"], fetched_at=store["fetched_at"]))
     return {"clients": clients, "as_of": utcnow().isoformat(), "writes": "disabled"}
+
+
+HEALTH_SECONDS = 180  # every open tab shares one computation; the Sheets readers cache for 45 s
+HEALTH_REFRESH_SECONDS = 30  # Refresh may skip the cache, but at most this often
+_health = {"at": 0.0, "result": None}
+_health_lock = threading.Lock()
+
+
+def _source_or_unknown(read, client_ids, label):
+    """A missing or broken private setting makes each client's source Unknown, never a 500."""
+    try:
+        return {source["id"]: source for source in read(client_ids)}
+    except (ValueError, KeyError, json.JSONDecodeError):
+        app.logger.warning("sheet health: %s settings missing or invalid", label)
+        return {cid: {"id": cid, "error_code": "settings", "error": "settings missing or invalid"} for cid in client_ids}
+
+
+def sheet_health_snapshot(fresh=False):
+    """#28: one shared computation at a time; concurrent requests wait for it rather than repeat it."""
+    with _health_lock:
+        age = time.monotonic() - _health["at"]
+        if _health["result"] and age < (HEALTH_REFRESH_SECONDS if fresh else HEALTH_SECONDS):
+            return _health["result"]
+        now = datetime.now(ZoneInfo("America/New_York"))
+        ids = [client["id"] for client in CLIENTS]
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            sheets = pool.submit(_source_or_unknown, read_dashboards, ids, "Sheets")
+            extra = pool.submit(_source_or_unknown, lambda c: read_incoming(c, now.date()), ids, "Incoming")
+            stores = pool.submit(_source_or_unknown, ssk_source.read_stores, ids, "ShipSidekick") if ssk_source.enabled() else None
+            sheets, extra, stores = sheets.result(), extra.result(), stores.result() if stores else {}
+        cutoff, cutoff_valid = sheet_health.parse_cutoff(os.getenv("SHEET_CUTOFF_ET"))
+        names = {client["id"]: client["name"] for client in CLIENTS}
+        clients = [{**sheet_health.client_health(cid, sheets[cid], extra.get(cid), stores.get(cid) if stores else None,
+                                                 now, cutoff, cutoff_valid), "name": names[cid]} for cid in ids]
+        _health.update(at=time.monotonic(), result={
+            "clients": clients, "checked_at": utcnow().isoformat(), "writes": "disabled",
+            "cutoff": cutoff.strftime("%H:%M") if cutoff else ("invalid" if not cutoff_valid else None)})
+        return _health["result"]
+
+
+@app.get("/api/sheet-health")
+@protected
+def sheet_health_view():
+    """Read-only Sheet watchdog for the Problems strip. Off (not an error) when Sheets aren't connected."""
+    if not inventory_enabled():
+        return {"enabled": False, "clients": [], "writes": "disabled"}
+    selected = request.args.get("client_id", "all")
+    if selected != "all" and selected not in {client["id"] for client in CLIENTS}:
+        return jsonify(error="Unknown client."), 400
+    result = sheet_health_snapshot(fresh=request.args.get("fresh") == "1")
+    return {**result, "enabled": True,
+            "clients": [c for c in result["clients"] if selected == "all" or c["client_id"] == selected]}
 
 
 @app.get("/api/template.csv")
