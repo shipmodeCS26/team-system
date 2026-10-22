@@ -102,7 +102,7 @@ Install `requirements.txt`, then run `flask --app app run` for development.
 Render build: `pip install -r requirements.txt`.
 Render start: `gunicorn app:app --bind 0.0.0.0:$PORT`.
 Health check: `/api/health`. Auto-deploy: On Commit.
-Tests: `python -B -m unittest -v test_tracking test_inventory test_ledger test_muravai_rules test_shopify test_ssk test_incoming test_daily_update test_order_check test_daily_orders test_frontend` (test_frontend runs `node --test test_panels.js` when Node.js is installed).
+Tests: `python -B -m unittest -v test_tracking test_inventory test_ledger test_muravai_rules test_shopify test_ssk test_incoming test_daily_update test_order_check test_daily_orders test_eod_report test_sheet_health test_frontend` (test_frontend runs `node --test test_panels.js` when Node.js is installed).
 
 ## Live mode prerequisites (not activated)
 
@@ -301,6 +301,27 @@ Open rules held in code, never guessed:
 Entry points:
 - `POST /api/eod-report`: signed in, CSRF token required, one client.
 - `eod_cli.py`: builds the report from saved values. `--out` is required.
+
+## Sheet health (#28, read-only)
+
+A **Sheet health** strip sits at the top of every tab, with one chip per client (`/api/sheet-health`,
+signed in). Each chip says the state in words: **Wrong**, **Unknown**, **Warning**, **OK** or **Off**.
+Click a chip to see each check with the place (Dashboard row and column, summary cell, SKU or PO) and the
+reason. Checks: Sheet readable, Up to date, Formula errors, Dashboard warnings, Stock vs ShipSidekick and
+Incoming (`sheet_health.py`, pure functions over the existing readers).
+
+- A source that did not load is **Unknown**, never OK. A source not connected is **Off** and named on the chip.
+- Formula errors (`#REF!`, `#N/A`…) are Wrong; `PENDING` is a Warning. Forecast-only columns follow
+  the EOD report (shown as "not shown", not flagged).
+- A ShipSidekick difference is a Warning showing the Sheet number and both ShipSidekick numbers, never
+  Wrong, until #16 decides which number should match. It is only compared when the Sheet is current.
+- Reasons never echo free-text cells (Incoming status, location, tracking).
+- One shared result for every open tab, recomputed at most every 3 minutes (Refresh: at most every 30
+  seconds). The page asks every 5 minutes while visible. Nothing is checked while no page is open.
+
+Private setting `SHEET_CUTOFF_ET` (`HH:MM`, US Eastern) turns on the late-Sheet rule. Mon–Fri after the
+cut-off the Dashboard must show today; before it, the previous workday; Sat/Sun, Friday (proposed,
+awaiting approval). Unset, a Sheet not dated today is a Warning, never Wrong.
 
 ## Calculated inventory (shadow check)
 

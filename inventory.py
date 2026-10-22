@@ -100,6 +100,7 @@ def parse_dashboard(values):
         errors = {key for key, value in row.items() if key not in FORECAST_ONLY and ERROR_VALUE.search(value)}
         issues += bool(errors)
         row["flags"] = sorted(errors | ({"remaining"} if row["remaining"].startswith("-") else set()))
+        row["sheet_row"] = index + 1  # the physical Sheet row, so a problem can name its cell
         rows.append(row)
 
     warnings = []

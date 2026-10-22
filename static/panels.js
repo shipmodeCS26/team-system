@@ -66,4 +66,19 @@ function makeDailyLoader(state, api, render, wait = ms => new Promise(r => setTi
   };
 }
 
-if (typeof module !== "undefined") module.exports = { makePanelLoader, resetPanels, makeDailyLoader };
+
+// #28 Sheet health: the words shown on a client's chip. Color is never the only signal.
+const HEALTH_WORDS = { wrong: "Wrong", unknown: "Unknown", warning: "Warning", ok: "OK", off: "Off" };
+function healthSummary(client) {
+  const counts = { wrong: 0, unknown: 0, warning: 0 };
+  for (const check of client.checks || []) for (const p of check.problems || []) if (p.state in counts) counts[p.state]++;
+  const parts = [];
+  if (counts.wrong) parts.push(`${counts.wrong} wrong`);
+  if (counts.unknown) parts.push(`${counts.unknown} unknown`);
+  if (counts.warning) parts.push(`${counts.warning} warning${counts.warning === 1 ? "" : "s"}`);
+  if (client.state === "off") parts.push(client.note || "Not connected");
+  else if ((client.off || []).length) parts.push(client.off.join(", ") + " off");
+  return { word: HEALTH_WORDS[client.state] || "Unknown", detail: parts.join(" · ") };
+}
+
+if (typeof module !== "undefined") module.exports = { makePanelLoader, resetPanels, makeDailyLoader, healthSummary };
