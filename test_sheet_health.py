@@ -171,6 +171,12 @@ class StockTests(unittest.TestCase):
         self.assertEqual(result["state"], WARNING)
         self.assertIn("TEST environment", json.dumps(result))
 
+    def test_malformed_sheet_balance_is_never_echoed(self):
+        result = sheet_health.stock_check("fascial-labs", sheet(remaining="call Jane 555-0100"), store(110), True)
+        text = json.dumps(result)
+        self.assertNotIn("Jane", text)
+        self.assertIn("Sheet value is not a whole number", text)
+
     def test_off_unknown_and_not_current(self):
         self.assertEqual(sheet_health.stock_check("fascial-labs", sheet(), None, True)["state"], OFF)
         self.assertEqual(sheet_health.stock_check("fascial-labs", sheet(), {"error_code": "not_configured"}, True)["state"], OFF)
@@ -209,6 +215,14 @@ class IncomingTests(unittest.TestCase):
             result = sheet_health.incoming_check({"id": "x", **parse_incoming(columns(rows), date(2026, 10, 21))})
             self.assertEqual(result["state"], WARNING, product)
             self.assertEqual(result["problems"][0]["where"], "PO PO6 · FAS001")
+
+    def test_unreadable_derived_fields_are_flagged(self):
+        rows = [line("PO8", "", "Support", "FAS001", "40", "In transit", "", "#REF!", "", "", "", "", "PENDING")]
+        result = sheet_health.incoming_check({"id": "x", **parse_incoming(columns(rows), date(2026, 10, 21))})
+        self.assertEqual(result["state"], WARNING)
+        text = json.dumps(result)
+        self.assertIn("Boxes Expected is a formula error or PENDING", text)
+        self.assertIn("Expected in Miami is a formula error or PENDING", text)
 
     def test_off_and_unknown(self):
         self.assertEqual(sheet_health.incoming_check({"id": "x", "available": False})["state"], OFF)

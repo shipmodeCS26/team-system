@@ -17,7 +17,7 @@ import re
 from datetime import date, datetime, time, timedelta
 
 from daily_orders import sheet_day
-from incoming import FLAGS as INCOMING_FLAGS, whole_units
+from incoming import COLUMNS as INCOMING_COLUMNS, FLAGS as INCOMING_FLAGS, whole_units
 from eod_check import SHEET_OK
 from inventory import ERROR_VALUE, FORECAST_ONLY
 from ledger_sources import parse_day, parse_int
@@ -31,6 +31,7 @@ PENDING = re.compile(r"\bPENDING\b", re.I)
 COLUMNS = {"product": "Product", "starting": "Starting stock", "shipped": "Units shipped",
            "remaining": "Remaining", "demand": "Daily demand", "cover": "Days of cover",
            "status": "Reorder status"}
+DERIVED_INCOMING = ("expected_date", "received_date", "boxes_expected", "boxes_received", "units_received")
 SUMMARY = {"products": "A7", "reorder": "C7", "out": "E7", "on_hand": "G7"}
 CUTOFF = re.compile(r"([01]?\d|2[0-3]):([0-5]\d)")
 
@@ -180,7 +181,10 @@ def stock_check(client_id: str, sheet: dict, store: dict | None, sheet_current: 
                 f"{_number((ssk.get('available') or 0) + (ssk.get('committed') or 0))} "
                 f"({item['vs_available_committed']:+,}). Which number should match is undecided (#16).")))
         elif item["status"] == "REVIEW":
-            problems.append(_problem(WARNING, where, "; ".join(item["notes"]) + "."))
+            # This note quotes the raw Sheet cell; replace it with fixed wording (never echo cell text).
+            notes = ["Sheet value is not a whole number" if note.startswith("Sheet value is not a whole number") else note
+                     for note in item["notes"]]
+            problems.append(_problem(WARNING, where, "; ".join(notes) + "."))
     # Records that were never compared keep the check from reading OK.
     for level in result["unmatched_ssk"]:
         problems.append(_problem(WARNING, f"ShipSidekick SKU {level['sku'] or '(blank)'}",
@@ -215,6 +219,11 @@ def incoming_check(incoming: dict | None) -> dict:
     for shipment in incoming.get("shipments", []):
         for line in shipment["lines"]:
             label = line["sku"] if line["sku"] and not ERROR_CODE.search(line["sku"]) else line["product"] or "no product"
+            # Flags are derived from these cells; an unreadable one hides them, so it is never read as healthy.
+            for key in DERIVED_INCOMING:
+                if ERROR_VALUE.search(line.get(key) or ""):
+                    problems.append(_problem(WARNING, f"PO {shipment['po']} · {label}",
+                                             f"{INCOMING_COLUMNS[key]} is a formula error or PENDING; its flags can't be judged."))
             if "sku_unverified" not in line["flags"] and ERROR_VALUE.search(line["product"] or ""):
                 # The daily update and EOD leave this line out (never print #REF!/PENDING as a name).
                 problems.append(_problem(WARNING, f"PO {shipment['po']} · {line['sku']}",
