@@ -400,7 +400,7 @@ async function loadHealth(fresh=false){
   if(state.healthLoading)return;
   state.healthLoading=true;$("health-refresh").disabled=true;
   try{state.health=await api("/api/sheet-health"+(fresh?"?fresh=1":""));state.healthError=null}
-  catch(error){state.healthError=error.message}
+  catch(error){state.health=null;state.healthError=error.message}  // never leave older chips (maybe OK) on screen
   finally{state.healthLoading=false;$("health-refresh").disabled=false;renderHealth()}
 }
 function healthClients(){return (state.health?.clients||[]).filter(c=>state.client==="all"||c.client_id===state.client)}
@@ -410,7 +410,7 @@ function renderHealth(){
   $("health-strip").hidden=false;
   $("health-checked").textContent=state.healthError?`Not checked: ${state.healthError}`:`Checked ${date(state.health.checked_at,true)}${state.health.cutoff?` · cut-off ${state.health.cutoff} ET`:" · cut-off time not set"}`;
   $("health-chips").innerHTML=healthClients().map(c=>{const s=healthSummary(c);return `<button class="health-chip ${esc(c.state)}" data-health="${esc(c.client_id)}"><strong>${esc(c.name||clientName(c.client_id))}</strong><span class="health-state ${esc(c.state)}">${esc(s.word)}</span>${s.detail?`<small>${esc(s.detail)}</small>`:""}</button>`}).join("");
-  if($("health-dialog").open)healthDetails(state.healthOpen);
+  if($("health-dialog").open){if(state.health)healthDetails(state.healthOpen);else $("health-dialog").close()}
 }
 function healthDetails(id){
   const c=(state.health?.clients||[]).find(x=>x.client_id===id);if(!c)return;

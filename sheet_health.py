@@ -102,13 +102,14 @@ def cell_check(sheet: dict) -> dict:
     which shows them as "not shown" and does not flag them."""
     problems = []
     for row in sheet.get("rows", []):
+        name = "This product" if ERROR_VALUE.search(row["product"]) else row["product"]
         for key, label in COLUMNS.items():
             value = str(row.get(key) or "")
             where = f"Dashboard row {row.get('sheet_row', '?')} · {label}"
             if ERROR_CODE.search(value):
-                problems.append(_problem(WRONG, where, f"{row['product']}: formula error {ERROR_CODE.search(value)[0].upper()}."))
+                problems.append(_problem(WRONG, where, f"{name}: formula error {ERROR_CODE.search(value)[0].upper()}."))
             elif PENDING.search(value):
-                problems.append(_problem(WARNING, where, f"{row['product']}: the value is PENDING."))
+                problems.append(_problem(WARNING, where, f"{name}: the value is PENDING."))
     for key, cell in SUMMARY.items():
         value = str((sheet.get("summary") or {}).get(key) or "")
         label = (sheet.get("summary_labels") or {}).get(key) or "summary"
@@ -137,8 +138,12 @@ def dashboard_check(sheet: dict) -> dict:
         problems.append(_problem(WARNING, "Dashboard report status (E4)", f"The Sheet marks this report {status[:30]}."))
     for row in sheet.get("rows", []):
         remaining = str(row.get("remaining") or "")
-        number = None if ERROR_CODE.search(remaining) else parse_int(remaining)  # "(5)" is negative, as in the EOD
-        if number is not None and number < 0:
+        number = None if ERROR_VALUE.search(remaining) else parse_int(remaining)  # "(5)" is negative, as in the EOD
+        if number is None and not ERROR_VALUE.search(remaining):
+            # Blank or text such as "TBD": the EOD report holds on it (errors and PENDING are in cell_check).
+            problems.append(_problem(WARNING, f"Dashboard row {row.get('sheet_row', '?')} · Remaining",
+                                     f"{row['product']}: the remaining balance is blank or not a number."))
+        elif number is not None and number < 0:
             problems.append(_problem(WARNING, f"Dashboard row {row.get('sheet_row', '?')} · Remaining",
                                      f"{row['product']}: the remaining balance is negative."))
     if "Reorder summary disagrees with product rows" in sheet.get("warnings", []):

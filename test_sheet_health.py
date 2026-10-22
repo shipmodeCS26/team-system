@@ -102,6 +102,20 @@ class CellAndDashboardTests(unittest.TestCase):
         self.assertEqual(result["state"], WRONG)
         self.assertEqual(result["problems"][0]["where"], "Dashboard summary E7")
 
+    def test_product_cell_errors_are_scanned(self):
+        values = dashboard(HEADERS, [["#REF!", "200", "10", "110", "2", "OK", "0"]])
+        result = sheet_health.cell_check({**parse_dashboard(values), "id": "x"})
+        self.assertEqual(result["state"], WRONG)
+        self.assertEqual(result["problems"][0]["reason"], "This product: formula error #REF!.")
+        values = dashboard(HEADERS, [["PENDING", "200", "10", "110", "2", "OK", "0"]])
+        self.assertEqual(sheet_health.cell_check({**parse_dashboard(values), "id": "x"})["state"], WARNING)
+
+    def test_unreadable_remaining_is_a_warning(self):
+        for value in ("", "TBD"):
+            result = sheet_health.dashboard_check(sheet(remaining=value))
+            self.assertEqual(result["state"], WARNING, value)
+            self.assertIn("blank or not a number", result["problems"][0]["reason"])
+
     def test_action_list_error_is_wrong(self):
         result = sheet_health.cell_check({**sheet(), "action_list": "#REF!"})
         self.assertEqual((result["state"], result["problems"][0]["where"]), (WRONG, "Dashboard action list (A11)"))
