@@ -138,6 +138,11 @@ def dashboard_check(sheet: dict) -> dict:
     if status not in SHEET_OK and not ERROR_VALUE.search(status):
         problems.append(_problem(WARNING, "Dashboard report status (E4)", f"The Sheet marks this report {status[:30]}."))
     for row in sheet.get("rows", []):
+        shipped = str(row.get("shipped") or "")
+        if not ERROR_VALUE.search(shipped) and whole_units(shipped) is None:
+            # Same reading as the EOD cross-check, which holds on it (errors and PENDING are in cell_check).
+            problems.append(_problem(WARNING, f"Dashboard row {row.get('sheet_row', '?')} · Units shipped",
+                                     f"{row['product']}: units shipped is blank or not a whole number."))
         remaining = str(row.get("remaining") or "")
         number = None if ERROR_VALUE.search(remaining) else parse_int(remaining)  # "(5)" is negative, as in the EOD
         if number is None and not ERROR_VALUE.search(remaining):

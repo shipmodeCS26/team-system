@@ -116,6 +116,14 @@ class CellAndDashboardTests(unittest.TestCase):
             self.assertEqual(result["state"], WARNING, value)
             self.assertIn("blank or not a number", result["problems"][0]["reason"])
 
+    def test_unreadable_shipped_is_a_warning(self):
+        for value in ("", "2.5", "-1", "TBD"):
+            values = dashboard(HEADERS, [[PRODUCT, "200", value, "110", "2", "OK", "0"]])
+            values[3][1] = "21 Oct 2026"
+            result = sheet_health.dashboard_check(parse_dashboard(values))
+            self.assertEqual(result["state"], WARNING, value)
+            self.assertIn("units shipped is blank or not a whole number", json.dumps(result))
+
     def test_action_list_error_is_wrong(self):
         result = sheet_health.cell_check({**sheet(), "action_list": "#REF!"})
         self.assertEqual((result["state"], result["problems"][0]["where"]), (WRONG, "Dashboard action list (A11)"))
