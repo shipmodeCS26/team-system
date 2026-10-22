@@ -33,6 +33,7 @@ import sku_check
 import client_rules
 import daily_orders
 import order_check
+import carrier_check
 import ssk_check
 import ssk_source
 
@@ -216,9 +217,17 @@ def workspace():
             sources.append({"client_id": store["id"], "shipments": len(store["rows"]),
                             "truncated": store["truncated"], "skipped_statuses": store["skipped_statuses"],
                             "environment": store["environment"], "fetched_at": store["fetched_at"]})
+        shipments = [classify(dict(row, id=index + 1)) for index, row in enumerate(records)]
+        checks = None
+        if carrier_check.enabled():
+            # Issue #31: a shipment only counts as stuck once the carrier itself confirms it.
+            verdicts = carrier_check.results_for(shipments)
+            shipments = [carrier_check.apply(row, verdicts.get((row["carrier"], row["tracking_number"])))
+                         for row in shipments]
+            checks = carrier_check.progress(shipments)
         return {"mode": "ssk", "clients": CLIENTS, "sources": sources, "lookback_days": days,
-                "loading": any(src.get("loading") for src in sources),
-                "shipments": [classify(dict(row, id=index + 1)) for index, row in enumerate(records)],
+                "loading": any(src.get("loading") for src in sources), "carrier_checks": checks,
+                "shipments": shipments,
                 "as_of": utcnow().isoformat(), "writes": "disabled", "shopify_orders": shopify_order_clients(),
                 "daily_orders": daily_order_clients(),
                 "integration": "ShipSidekick API (read-only)"}

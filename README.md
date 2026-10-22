@@ -217,6 +217,29 @@ physical carrier scans reset the clock, and label-only shipments fall back to
 the label date. Addresses, prices and label files are never copied into a row; line
 items keep only SKU, product name and quantity (for the Shopify order check). Follow-up notes stay off until the database exists.
 
+Carrier check (#31): ShipSidekick stops refreshing tracking, so with
+`CARRIER_CHECK_ENABLED=true` (ShipSidekick queue on) every flagged shipment (watch, urgent,
+critical) is looked up with the carrier's official tracking API before it counts as stuck:
+USPS Tracking API v3 (`USPS_CLIENT_ID`, `USPS_CLIENT_SECRET`) and DHL Shipment Tracking -
+Unified with `service=ecommerce` (`DHL_API_KEY`). Cirro has no lookup until its API access is
+confirmed. Each shipment gets one verdict with the carrier's latest event and the check time:
+- Delivered per carrier: needs the carrier's delivered status and a dated delivery scan that is
+  not back to the sender. Leaves the stuck count.
+- Moved per carrier: a physical scan newer than ShipSidekick's; the age is recomputed from it.
+  Events USPS writes without a scan ("In Transit to Next Facility", "Arriving Late", redelivery
+  reminders, label events) never count as movement.
+- Confirmed by carrier: nothing newer at the carrier either. Really stuck.
+- Not verified: error, timeout, rate limit, not found, unknown status, a reply for another
+  tracking number, no key, or carrier not supported. Never treated as delivered or as stuck.
+
+Lookups run in the background, oldest first, within each carrier's quota (`USPS_LOOKUPS_PER_HOUR`,
+default 60; `DHL_LOOKUPS_PER_DAY`, default 250; split across `WEB_CONCURRENCY` workers) and are
+repeated every `CARRIER_RECHECK_HOURS` (default 6). Only tracking GETs and the USPS token request
+are sent. Before release, run the accuracy sign-off: `python carrier_check_cli.py sample --out
+signoff.csv`, have a person fill in what each carrier website shows, then `python
+carrier_check_cli.py score signoff.csv` must report 100% agreement for every carrier. The file
+holds order and tracking numbers; keep it out of the repository.
+
 Shopify order behind a shipment (#13): with `SHOPIFY_ENABLED=true` and the
 ShipSidekick queue on, opening a shipment in No Movement offers "Show Shopify
 order and address". It reads that one order by its exact name (read-only, needs
