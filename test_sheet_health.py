@@ -111,17 +111,27 @@ class CellAndDashboardTests(unittest.TestCase):
         self.assertEqual(result["state"], WRONG)
 
     def test_negative_balance_is_a_warning(self):
-        result = sheet_health.dashboard_check(sheet(remaining="-5"))
-        self.assertEqual(result["state"], WARNING)
-        self.assertEqual(result["problems"][0]["where"], "Dashboard row 15 · Remaining")
+        for value in ("-5", "(5)", "(1,200)"):
+            result = sheet_health.dashboard_check(sheet(remaining=value))
+            self.assertEqual(result["state"], WARNING, value)
+            self.assertEqual(result["problems"][0]["where"], "Dashboard row 15 · Remaining")
+        self.assertEqual(sheet_health.dashboard_check(sheet(remaining="5"))["state"], OK)
+
+    def test_report_status_cell_errors(self):
+        self.assertEqual(sheet_health.cell_check({**sheet(), "report_status": "#N/A"})["state"], WRONG)
+        self.assertEqual(sheet_health.cell_check({**sheet(), "report_status": "PENDING"})["state"], WARNING)
 
 
 class StockTests(unittest.TestCase):
     def test_match_and_difference(self):
-        self.assertEqual(sheet_health.stock_check("fascial-labs", sheet(), store(110), True)["state"], OK)
+        match = sheet_health.stock_check("fascial-labs", sheet(), store(110), True)
+        # Fascial Labs' SKU rules are PROPOSED, so even an exact match stays a Warning.
+        self.assertEqual([p["where"] for p in match["problems"]], ["SKU rules"])
+        with patch.object(sheet_health.ssk_check.client_rules.package("fascial-labs"), "status", "APPROVED"):
+            self.assertEqual(sheet_health.stock_check("fascial-labs", sheet(), store(110), True)["state"], OK)
         result = sheet_health.stock_check("fascial-labs", sheet(), store(90), True)
         self.assertEqual(result["state"], WARNING)  # never Wrong until #16 decides
-        reason = result["problems"][0]["reason"]
+        reason = next(p["reason"] for p in result["problems"] if p["where"].startswith("SKU FAS001"))
         self.assertIn("SKU FAS001", result["problems"][0]["where"])
         for text in ("Sheet 110", "available 90 (-20)", "available + committed 90 (-20)"):
             self.assertIn(text, reason)
@@ -138,7 +148,7 @@ class StockTests(unittest.TestCase):
     def test_test_environment_is_a_warning(self):
         result = sheet_health.stock_check("fascial-labs", sheet(), {**store(110), "environment": "test"}, True)
         self.assertEqual(result["state"], WARNING)
-        self.assertIn("TEST environment", result["problems"][0]["reason"])
+        self.assertIn("TEST environment", json.dumps(result))
 
     def test_off_unknown_and_not_current(self):
         self.assertEqual(sheet_health.stock_check("fascial-labs", sheet(), None, True)["state"], OFF)
@@ -162,6 +172,16 @@ class IncomingTests(unittest.TestCase):
         self.assertIn("PO PO77 · FAS001", text)
         self.assertIn("Receipt not recorded", text)
 
+    def test_unusable_quantity_is_flagged(self):
+        for units in ("", "10.5", "-3", "#N/A"):
+            rows = [line("PO5", "", "Support", "FAS001", units, "In transit", "")]
+            incoming = {"id": "fascial-labs", **parse_incoming(columns(rows), date(2026, 10, 21))}
+            result = sheet_health.incoming_check(incoming)
+            self.assertEqual(result["state"], WARNING, units)
+            self.assertIn("not a whole number", json.dumps(result))
+        rows = [line("PO5", "", "Support", "FAS001", "40", "In transit", "")]
+        self.assertEqual(sheet_health.incoming_check({"id": "x", **parse_incoming(columns(rows), date(2026, 10, 21))})["state"], OK)
+
     def test_off_and_unknown(self):
         self.assertEqual(sheet_health.incoming_check({"id": "x", "available": False})["state"], OFF)
         self.assertEqual(sheet_health.incoming_check({"id": "x", "error_code": "unavailable"})["state"], UNKNOWN)
@@ -169,12 +189,21 @@ class IncomingTests(unittest.TestCase):
 
 class ClientTests(unittest.TestCase):
     def test_all_clean_is_ok_and_off_sources_are_named(self):
-        result = client_health("fascial-labs", sheet(), {"id": "x", "available": False}, store(110), at(21), None)
+        result = client_health("fascial-labs", sheet(), {"id": "x", "available": False}, None, at(21), None)
         self.assertEqual(result["state"], OK)
-        self.assertEqual(result["off"], ["Incoming"])
+        self.assertEqual(result["off"], ["ShipSidekick", "Incoming"])
 
     def test_failed_sheet_is_unknown_never_ok(self):
         result = client_health("fascial-labs", {"id": "fascial-labs", "error_code": "access_denied"}, None, None, at(21), None)
+        self.assertEqual(result["state"], UNKNOWN)
+
+    def test_failed_dashboard_keeps_the_independent_checks(self):
+        rows = [line("PO9", "", "Support", "FAS001", "50", "", "", "", "", "", "", "", "10/01/2026")]
+        incoming = {"id": "fascial-labs", **parse_incoming(columns(rows), date(2026, 10, 21))}
+        result = client_health("fascial-labs", {"id": "fascial-labs", "error_code": "unavailable"}, incoming,
+                               store(110), at(21), None)
+        keys = {c["key"]: c["state"] for c in result["checks"]}
+        self.assertEqual(keys, {"sheet": UNKNOWN, "stock": UNKNOWN, "incoming": WARNING})
         self.assertEqual(result["state"], UNKNOWN)
 
     def test_unmapped_sheet_is_off(self):

@@ -17,9 +17,9 @@ import re
 from datetime import date, datetime, time, timedelta
 
 from daily_orders import sheet_day
-from incoming import FLAGS as INCOMING_FLAGS
+from incoming import FLAGS as INCOMING_FLAGS, whole_units
 from inventory import FORECAST_ONLY
-from ledger_sources import parse_day
+from ledger_sources import parse_day, parse_int
 import ssk_check
 
 OK, WARNING, WRONG, UNKNOWN, OFF = "ok", "warning", "wrong", "unknown", "off"
@@ -115,6 +115,11 @@ def cell_check(sheet: dict) -> dict:
             problems.append(_problem(WRONG, f"Dashboard summary {cell}", f"{label}: formula error {ERROR_CODE.search(value)[0].upper()}."))
         elif PENDING.search(value):
             problems.append(_problem(WARNING, f"Dashboard summary {cell}", f"{label}: the value is PENDING."))
+    status = str(sheet.get("report_status") or "")
+    if ERROR_CODE.search(status):
+        problems.append(_problem(WRONG, "Dashboard report status (E4)", f"Formula error {ERROR_CODE.search(status)[0].upper()}."))
+    elif PENDING.search(status):
+        problems.append(_problem(WARNING, "Dashboard report status (E4)", "The value is PENDING."))
     action = str(sheet.get("action_list") or "")
     if ERROR_CODE.search(action):  # the EOD report holds on this too
         problems.append(_problem(WRONG, "Dashboard action list (A11)", f"Formula error {ERROR_CODE.search(action)[0].upper()}."))
@@ -128,7 +133,9 @@ def dashboard_check(sheet: dict) -> dict:
     if str(sheet.get("report_status", "")).upper() == "REVIEW":
         problems.append(_problem(WARNING, "Dashboard report status (E4)", "The Sheet marks this report REVIEW."))
     for row in sheet.get("rows", []):
-        if str(row.get("remaining", "")).startswith("-"):
+        remaining = str(row.get("remaining") or "")
+        number = None if ERROR_CODE.search(remaining) else parse_int(remaining)  # "(5)" is negative, as in the EOD
+        if number is not None and number < 0:
             problems.append(_problem(WARNING, f"Dashboard row {row.get('sheet_row', '?')} · Remaining",
                                      f"{row['product']}: the remaining balance is negative."))
     if "Reorder summary disagrees with product rows" in sheet.get("warnings", []):
@@ -152,7 +159,7 @@ def stock_check(client_id: str, sheet: dict, store: dict | None, sheet_current: 
     if store.get("error_code"):
         return _check("stock", title, [_problem(UNKNOWN, "ShipSidekick", "ShipSidekick stock did not load.")])
     if not sheet_current:
-        return _check("stock", title, [_problem(UNKNOWN, "ShipSidekick", "Not compared: the Sheet is not current.")])
+        return _check("stock", title, [_problem(UNKNOWN, "ShipSidekick", "Not compared: the Sheet is not current or did not load.")])
     result = ssk_check.compare(client_id, store["levels"], sheet, store.get("truncated", False))
     problems = []
     for item in result["skus"]:
@@ -183,6 +190,8 @@ def stock_check(client_id: str, sheet: dict, store: dict | None, sheet_current: 
         problems.append(_problem(WARNING, "ShipSidekick", "Reading ShipSidekick's TEST environment, not production."))
     if result["rule_status"] == "NONE":
         problems.append(_problem(UNKNOWN, "SKU rules", "This client has no SKU rules, so stock can't be matched."))
+    elif result["rule_status"] != "APPROVED":
+        problems.append(_problem(WARNING, "SKU rules", "The SKU rules used to match stock are proposed, not approved by ShipMode yet."))
     return _check("stock", title, problems)
 
 
@@ -197,9 +206,11 @@ def incoming_check(incoming: dict | None) -> dict:
     problems = []
     for shipment in incoming.get("shipments", []):
         for line in shipment["lines"]:
-            if not line["flags"]:
-                continue
             label = line["sku"] if line["sku"] and not ERROR_CODE.search(line["sku"]) else line["product"] or "no product"
+            if "sku_unverified" not in line["flags"] and whole_units(line["units"]) is None:
+                # Left out of the incoming totals, and the daily/EOD reports hold on it.
+                problems.append(_problem(WARNING, f"PO {shipment['po']} · {label}",
+                                         "Verified Inventory Units is blank or not a whole number; left out of incoming totals."))
             expected = parse_day(line.get("expected_date"))
             for flag in line["flags"]:
                 reason = INCOMING_FLAGS[flag]
@@ -218,12 +229,13 @@ def client_health(client_id: str, sheet: dict, incoming: dict | None, store: dic
         return {**base, "state": OFF, "off": ["Sheet"], "checks": [],
                 "note": "No Sheet is connected for this client."}
     if sheet.get("error_code") or "rows" not in sheet:
-        check = _check("sheet", "Sheet readable", [_problem(UNKNOWN, "Dashboard tab", "The Dashboard did not load.")])
-        return {**base, "state": UNKNOWN, "off": [], "checks": [check], "note": ""}
-    dated = date_check(sheet, now, cutoff, cutoff_valid)
-    current = dated["state"] == OK
-    checks = [_check("sheet", "Sheet readable", []), dated, cell_check(sheet), dashboard_check(sheet),
-              stock_check(client_id, sheet, store, current), incoming_check(incoming)]
+        # The Dashboard checks can't run, but the independently read sources still can.
+        checks = [_check("sheet", "Sheet readable", [_problem(UNKNOWN, "Dashboard tab", "The Dashboard did not load.")]),
+                  stock_check(client_id, sheet, store, False), incoming_check(incoming)]
+    else:
+        dated = date_check(sheet, now, cutoff, cutoff_valid)
+        checks = [_check("sheet", "Sheet readable", []), dated, cell_check(sheet), dashboard_check(sheet),
+                  stock_check(client_id, sheet, store, dated["state"] == OK), incoming_check(incoming)]
     live = [c["state"] for c in checks if c["state"] != OFF]
     return {**base, "state": min(live, key=RANK.get), "checks": checks, "note": "",
             "off": [c["title"].replace("Stock vs ", "") for c in checks if c["state"] == OFF]}
