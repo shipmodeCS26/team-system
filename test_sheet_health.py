@@ -117,6 +117,13 @@ class CellAndDashboardTests(unittest.TestCase):
             self.assertEqual(result["problems"][0]["where"], "Dashboard row 15 · Remaining")
         self.assertEqual(sheet_health.dashboard_check(sheet(remaining="5"))["state"], OK)
 
+    def test_every_status_that_holds_the_eod_is_a_warning(self):
+        for status in ("REVIEW", "INCOMPLETE", "draft"):
+            result = sheet_health.dashboard_check({**sheet(), "report_status": status})
+            self.assertEqual(result["state"], WARNING, status)
+        for status in ("", "SOURCE VALUES", "VERIFIED"):
+            self.assertEqual(sheet_health.dashboard_check({**sheet(), "report_status": status})["state"], OK, status)
+
     def test_report_status_cell_errors(self):
         self.assertEqual(sheet_health.cell_check({**sheet(), "report_status": "#N/A"})["state"], WRONG)
         self.assertEqual(sheet_health.cell_check({**sheet(), "report_status": "PENDING"})["state"], WARNING)
@@ -181,6 +188,13 @@ class IncomingTests(unittest.TestCase):
             self.assertIn("not a whole number", json.dumps(result))
         rows = [line("PO5", "", "Support", "FAS001", "40", "In transit", "")]
         self.assertEqual(sheet_health.incoming_check({"id": "x", **parse_incoming(columns(rows), date(2026, 10, 21))})["state"], OK)
+
+    def test_error_product_name_is_flagged(self):
+        for product in ("#REF!", "PENDING"):
+            rows = [line("PO6", "", product, "FAS001", "40", "In transit", "")]
+            result = sheet_health.incoming_check({"id": "x", **parse_incoming(columns(rows), date(2026, 10, 21))})
+            self.assertEqual(result["state"], WARNING, product)
+            self.assertEqual(result["problems"][0]["where"], "PO PO6 · FAS001")
 
     def test_off_and_unknown(self):
         self.assertEqual(sheet_health.incoming_check({"id": "x", "available": False})["state"], OFF)

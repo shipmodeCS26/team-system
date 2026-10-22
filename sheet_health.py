@@ -18,7 +18,8 @@ from datetime import date, datetime, time, timedelta
 
 from daily_orders import sheet_day
 from incoming import FLAGS as INCOMING_FLAGS, whole_units
-from inventory import FORECAST_ONLY
+from eod_check import SHEET_OK
+from inventory import ERROR_VALUE, FORECAST_ONLY
 from ledger_sources import parse_day, parse_int
 import ssk_check
 
@@ -130,8 +131,10 @@ def dashboard_check(sheet: dict) -> dict:
     problems = []
     if not sheet.get("rows"):
         problems.append(_problem(WRONG, "Dashboard rows 15–39", "No product rows were found on the Dashboard."))
-    if str(sheet.get("report_status", "")).upper() == "REVIEW":
-        problems.append(_problem(WARNING, "Dashboard report status (E4)", "The Sheet marks this report REVIEW."))
+    status = str(sheet.get("report_status") or "").strip().upper()
+    # Same set the EOD report accepts; anything else holds it. Errors and PENDING are judged in cell_check.
+    if status not in SHEET_OK and not ERROR_VALUE.search(status):
+        problems.append(_problem(WARNING, "Dashboard report status (E4)", f"The Sheet marks this report {status[:30]}."))
     for row in sheet.get("rows", []):
         remaining = str(row.get("remaining") or "")
         number = None if ERROR_CODE.search(remaining) else parse_int(remaining)  # "(5)" is negative, as in the EOD
@@ -207,6 +210,10 @@ def incoming_check(incoming: dict | None) -> dict:
     for shipment in incoming.get("shipments", []):
         for line in shipment["lines"]:
             label = line["sku"] if line["sku"] and not ERROR_CODE.search(line["sku"]) else line["product"] or "no product"
+            if "sku_unverified" not in line["flags"] and ERROR_VALUE.search(line["product"] or ""):
+                # The daily update and EOD leave this line out (never print #REF!/PENDING as a name).
+                problems.append(_problem(WARNING, f"PO {shipment['po']} · {line['sku']}",
+                                         "The product name is a formula error or PENDING; left out of client updates."))
             if "sku_unverified" not in line["flags"] and whole_units(line["units"]) is None:
                 # Left out of the incoming totals, and the daily/EOD reports hold on it.
                 problems.append(_problem(WARNING, f"PO {shipment['po']} · {label}",
