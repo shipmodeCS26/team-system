@@ -31,6 +31,7 @@ def check_writes(client_id: str, writes: list[dict], reread: dict[tuple[str, str
     """`writes`: [{"tab", "key", "cell", "value"}]. `reread`: {(tab, cell): value} read back after
     writing. Returns one reason per problem write; an empty list means every write is in place."""
     cells = CELL_MAPS.get(client_id, {})
+    reread = {(tab, str(cell).upper()): value for (tab, cell), value in reread.items()}
     problems = []
     for write in writes:
         tab, key, cell = write.get("tab", ""), write.get("key", ""), str(write.get("cell", "")).upper()

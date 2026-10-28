@@ -24,6 +24,7 @@ class SheetWrites(unittest.TestCase):
 
     def test_cell_case_insensitive(self):
         self.assertEqual(check_writes("onset", [write("g328")], {("Incoming Stocks", "G328"): "Received"}), [])
+        self.assertEqual(check_writes("onset", [write("g328")], {("Incoming Stocks", "g328"): "Received"}), [])
 
     def test_no_approved_cell(self):
         problems = check_writes("onset", [write(key="Unknown row")], {})
