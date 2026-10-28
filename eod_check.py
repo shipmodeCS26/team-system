@@ -23,6 +23,7 @@ from inventory import ERROR_VALUE
 from ledger_sources import parse_int
 
 VERIFIED, REVIEW, INCOMPLETE = "VERIFIED", "REVIEW", "INCOMPLETE"
+DEDUCTION = "created_date"  # shipments are counted on their ShipSidekick Created Date
 SHEET_OK = {"", "SOURCE VALUES", VERIFIED}  # any other Dashboard report status (REVIEW, INCOMPLETE…) holds
 
 
@@ -38,7 +39,7 @@ def check(client_id: str, source: dict, csv_rows: list[dict] | None, *,
     CSV header, checked for every audit column (default: the first row's keys)."""
     rules = client_rules.package(client_id)
     report_date = parse_as_of(source.get("as_of", ""))
-    result = {"status": INCOMPLETE, "report_date": report_date.isoformat() if report_date else "",
+    result = {"client_id": client_id, "deduction": DEDUCTION, "status": INCOMPLETE, "report_date": report_date.isoformat() if report_date else "",
               "csv": csv_name, "rules": getattr(rules, "status", "none"), "checks": [], "reasons": [],
               "orders": 0}
     if rules is None:
