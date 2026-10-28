@@ -162,7 +162,7 @@ def build_inputs(client_id: str, counts, receipts, adjustments):
             baselines[sku] = ledger.Baseline(sku, qty, day, count_timing(record.get("Count Type", "")),
                                              record["Approved By"],
                                              record.get("Record ID") or "Manual Counts")
-    movements, seen = [], set()
+    movements, seen, skus_by_key = [], set(), {}
     for kind, tab, records, qty_field, day_field, ref_field in (
             ("RECEIPT", "Receipts", receipts, "Quantity", "Receipt Date", "PO / Tracking"),
             ("ADJUSTMENT", "Adjustments & Reships", adjustments, "Quantity Delta", "Effective Date",
@@ -176,6 +176,11 @@ def build_inputs(client_id: str, counts, receipts, adjustments):
                 movements.append(ledger.Movement(sku, qty, day, kind, record["Approved By"], ref,
                                                  source_key=key, duplicate=key in seen))
                 seen.add(key)
+                skus_by_key.setdefault(key, []).append(sku)
+    for move in movements:
+        skus = sorted(set(skus_by_key[move.source_key]))
+        if len(skus) > 1:  # one event can't belong to two SKUs: every copy is held
+            move.conflict = ", ".join(skus)
     return baselines, movements
 
 

@@ -147,6 +147,14 @@ class EventIdentityTests(unittest.TestCase):
         self.assertEqual((row.receipts, row.calculated, row.status), (200, 1200, "REVIEW"))
         self.assertIn("Receipts R-1 appears more than once", row.reasons[0])
 
+    def test_same_id_for_two_skus_holds_both(self):
+        other = {**self.record(), "SKU": "B2"}
+        moves = self.inputs([self.record(), other])
+        self.assertEqual([m.conflict for m in moves], ["A1, B2", "A1, B2"])
+        row = ledger.calculate("x", _Approved(), reports({}), self.base(), moves)["skus"][0]
+        self.assertEqual((row.receipts, row.calculated, row.status), (0, 1000, "REVIEW"))
+        self.assertIn("listed for more than one SKU", row.reasons[0])
+
     def test_rows_without_record_id_matched_on_their_values(self):
         same = self.inputs([self.record(""), self.record("")])
         self.assertEqual([m.duplicate for m in same], [False, True])
