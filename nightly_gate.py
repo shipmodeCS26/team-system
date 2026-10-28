@@ -18,6 +18,7 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import client_rules
+import ssk_check
 
 VERIFIED, REVIEW, INCOMPLETE = "VERIFIED", "REVIEW", "INCOMPLETE"
 ET = ZoneInfo("America/New_York")
@@ -32,6 +33,22 @@ BALANCE_BASIS: str | None = None
 SHIPMENT_DEDUCTION: str | None = None
 
 SSK_ERRORS = {"not_configured": "no ShipSidekick key"}
+BASIS_FIELDS = {"available": "vs_available", "available+committed": "vs_available_committed"}
+ONE_BASIS_NOTE = "Matches on one basis only"  # ssk_check's hold while the basis is undecided
+
+
+def _stock_review(row) -> str | None:
+    """Why one ssk_check row is not a match, judged on the approved basis once there is one."""
+    notes = row.get("notes") or []
+    field = BASIS_FIELDS.get(BALANCE_BASIS or "")
+    if field is None:
+        return None if row.get("status") == "MATCH" else "; ".join(notes) or "differs from the Sheet"
+    other = [note for note in notes if not note.startswith(ONE_BASIS_NOTE)]
+    if other:
+        return "; ".join(other)
+    if row.get(field) is None:
+        return "not compared"
+    return None if row[field] == 0 else f"differs from the Sheet by {row[field]:+,} ({BALANCE_BASIS})"
 
 
 def expected_sheet_date(now: datetime) -> date:
@@ -60,10 +77,13 @@ def gate(client_id: str, *, now: datetime, eod: dict | None, store: dict | None,
     elif rules.status != "APPROVED":
         review.append(f"Rule package status is {rules.status!r}, not APPROVED.")
 
-    if not WAREHOUSE_SCOPES.get(client_id):
+    scope = WAREHOUSE_SCOPES.get(client_id)
+    if not scope:
         review.append("No approved ShipSidekick warehouse scope for this client.")
     if BALANCE_BASIS is None:
         review.append("No approved balance basis (available vs available + committed).")
+    elif BALANCE_BASIS not in BASIS_FIELDS:
+        review.append(f"Balance basis {BALANCE_BASIS!r} is not recognised.")
     if SHIPMENT_DEDUCTION is None:
         review.append("No approved shipment deduction timing.")
 
@@ -93,18 +113,28 @@ def gate(client_id: str, *, now: datetime, eod: dict | None, store: dict | None,
         incomplete.append("ShipSidekick stock was not read.")
     elif store.get("error_code"):
         incomplete.append(f"ShipSidekick: {SSK_ERRORS.get(store['error_code'], store.get('error') or store['error_code'])}.")
+    elif store.get("id") != client_id:
+        incomplete.append(f"ShipSidekick stock belongs to {store.get('id')!r}, not {client_id!r}.")
     else:
+        if scope and set(store.get("scoped_locations") or ()) != set(scope):
+            # inventory_levels sums every location today, so stock must prove it was restricted.
+            review.append("ShipSidekick stock is not restricted to the approved warehouse locations.")
         if store.get("environment") != "production":
             incomplete.append("ShipSidekick data is from the test environment.")
         if store.get("truncated"):
             incomplete.append("ShipSidekick stock list was cut off (truncated).")
         if not cutoff_aligned:
             incomplete.append("ShipSidekick stock is not aligned to the end-of-day cutoff.")
-    if compare is not None and not (store or {}).get("error_code"):
+    if compare is not None and compare.get("client_id") != client_id:
+        incomplete.append(f"The stock comparison belongs to {compare.get('client_id')!r}, not {client_id!r}.")
+    elif compare is not None and not (store or {}).get("error_code"):
         for row in compare.get("skus") or []:
-            if row.get("status") != "MATCH":
-                notes = "; ".join(row.get("notes") or []) or "differs from the Sheet"
-                review.append(f"Stock {row.get('sku')}: {row.get('status')} ({notes}).")
+            reason = _stock_review(row)
+            if reason:
+                review.append(f"Stock {row.get('sku')}: {reason}.")
+        for item in compare.get("components") or []:
+            if item.get("note") != ssk_check.KIT_USED:  # not consumed by an approved kit split
+                review.append(f"ShipSidekick item {item.get('sku') or item.get('title')!r}: {item.get('note')}.")
         for item in compare.get("unmatched_ssk") or []:
             review.append(f"ShipSidekick SKU {item.get('sku') or item.get('title')!r} is not in the rules.")
         for product in compare.get("unmatched_sheet") or []:

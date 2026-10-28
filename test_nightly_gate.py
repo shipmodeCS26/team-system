@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 import nightly_gate
+import ssk_check
 from nightly_gate import INCOMPLETE, REVIEW, VERIFIED, expected_sheet_date, gate
 
 # 2026-10-28 08:00 ET: the Sheet should be current to Oct 27.
@@ -14,18 +15,24 @@ def eod(status=VERIFIED, report_date="2026-10-27", reasons=(), **extra):
     return {"status": status, "report_date": report_date, "reasons": list(reasons), **extra}
 
 
-def store(**extra):
-    return {"id": "muravai", "levels": [], "truncated": False, "environment": "production", **extra}
+def store(client_id="muravai", **extra):
+    return {"id": client_id, "levels": [], "truncated": False, "environment": "production",
+            "scoped_locations": ["Miami"], **extra}
 
 
-def compare(rows=None, **extra):
-    base = {"skus": rows if rows is not None else [{"sku": "MUR001", "status": "MATCH", "notes": []}],
-            "unmatched_ssk": [], "unmatched_sheet": [], "blank_skus": 0, "duplicate_skus": []}
+def row(sku="MUR001", status="MATCH", notes=(), available=0, committed=0):
+    return {"sku": sku, "status": status, "notes": list(notes), "vs_available": available,
+            "vs_available_committed": committed}
+
+
+def compare(rows=None, client_id="muravai", **extra):
+    base = {"client_id": client_id, "skus": rows if rows is not None else [row()],
+            "unmatched_ssk": [], "unmatched_sheet": [], "blank_skus": 0, "duplicate_skus": [], "components": []}
     return {**base, **extra}
 
 
 def clean(client_id="muravai", **overrides):
-    args = {"now": NOW, "eod": eod(), "store": store(), "compare": compare(),
+    args = {"now": NOW, "eod": eod(), "store": store(client_id), "compare": compare(client_id=client_id),
             "export_complete": True, "cutoff_aligned": True}
     args.update(overrides)
     return gate(client_id, **args)
@@ -95,11 +102,11 @@ class TruthTable(unittest.TestCase):
         self.assertStatus(clean(eod=eod(REVIEW, reasons=["Filters (MUR001): gap +5."])), REVIEW, "gap +5")
 
     def test_ssk_row_different(self):
-        self.assertStatus(clean(compare=compare([{"sku": "MUR001", "status": "DIFFERENT", "notes": []}])),
-                          REVIEW, "MUR001: DIFFERENT")
+        self.assertStatus(clean(compare=compare([row(status="DIFFERENT", available=5, committed=5)])),
+                          REVIEW, "MUR001: differs")
 
     def test_ssk_row_review(self):
-        self.assertStatus(clean(compare=compare([{"sku": "MUR003", "status": "REVIEW", "notes": ["Not found"]}])),
+        self.assertStatus(clean(compare=compare([row("MUR003", "REVIEW", ["Not found"], None, None)])),
                           REVIEW, "Not found")
 
     def test_unmatched_ssk_sku(self):
@@ -140,6 +147,41 @@ class TruthTable(unittest.TestCase):
             for client_id in ("muravai", "fascial-labs", "puravita", "nuerosmile"):
                 with self.subTest(client_id):
                     self.assertNotEqual(clean(client_id)["status"], VERIFIED)
+
+    def test_foreign_store_rejected(self):
+        self.assertStatus(clean(store=store("fascial-labs")), INCOMPLETE, "belongs to 'fascial-labs'")
+
+    def test_foreign_compare_rejected(self):
+        self.assertStatus(clean(compare=compare(client_id="fascial-labs")), INCOMPLETE, "belongs to 'fascial-labs'")
+
+    def test_stock_not_restricted_to_scope(self):
+        # Today's inventory_levels sums every location, so an unscoped total can't pass.
+        self.assertStatus(clean(store=store(scoped_locations=None)), REVIEW, "approved warehouse locations")
+        self.assertStatus(clean(store=store(scoped_locations=["Miami", "Utah"])), REVIEW, "approved warehouse locations")
+
+    def test_unresolved_component_held(self):
+        item = {"sku": "BUNDLE-1", "title": "Bundle", "note": "Bundle in ShipSidekick (isBundle): not matched to one SKU"}
+        self.assertStatus(clean(compare=compare(components=[item])), REVIEW, "BUNDLE-1")
+
+    def test_component_used_by_kit_split_is_fine(self):
+        item = {"sku": "shower hose", "title": "Shower Hose", "note": ssk_check.KIT_USED}
+        self.assertEqual(clean(compare=compare(components=[item]))["status"], VERIFIED)
+
+    def test_approved_basis_decides_one_basis_rows(self):
+        held = row(status="REVIEW", notes=["Matches on one basis only (available vs on hand is undecided)"],
+                   available=0, committed=12)
+        with patch.object(nightly_gate, "BALANCE_BASIS", "available"):
+            self.assertEqual(clean(compare=compare([held]))["status"], VERIFIED)
+        with patch.object(nightly_gate, "BALANCE_BASIS", "available+committed"):
+            self.assertStatus(clean(compare=compare([held])), REVIEW, "+12")
+
+    def test_approved_basis_keeps_other_notes(self):
+        held = row(status="REVIEW", notes=["Sheet not loaded"], available=None, committed=None)
+        self.assertStatus(clean(compare=compare([held])), REVIEW, "Sheet not loaded")
+
+    def test_unknown_basis_value(self):
+        with patch.object(nightly_gate, "BALANCE_BASIS", "on hand"):
+            self.assertStatus(clean(), REVIEW, "not recognised")
 
     def test_proposed_packages_never_verified(self):
         # Fascial, PuraVita and NeuroSmile as they stand today.
