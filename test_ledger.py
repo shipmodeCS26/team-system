@@ -122,6 +122,64 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(rows[1].status, "REVIEW")
 
 
+class EventIdentityTests(unittest.TestCase):
+    """Each inventory event is applied once (accuracy plan Phase 1, Issue #34 step 3)."""
+
+    def base(self):
+        return {"A1": ledger.Baseline("A1", 1000, date(2026, 9, 3), ledger.AFTER, "Carlos", "count")}
+
+    def record(self, record_id="R-1", qty="200", ref="PO-26", day="09/05/2026"):
+        return {"Record ID": record_id, "SKU": "A1", "Quantity": qty, "Receipt Date": day,
+                "PO / Tracking": ref, "Approved By": "Carlos", "Approval Status": "APPROVED"}
+
+    def adjustment(self, record_id="A-1", qty="-1", ref="T9"):
+        return {"Record ID": record_id, "SKU": "A1", "Quantity Delta": qty, "Effective Date": "09/05/2026",
+                "Related Order / Tracking": ref, "Approved By": "Carlos", "Approval Status": "APPROVED"}
+
+    def inputs(self, receipts=(), adjustments=()):
+        with patch.dict("os.environ", {}, clear=True):
+            return ledger_sources.build_inputs("x", [], list(receipts), list(adjustments))[1]
+
+    def test_receipt_read_twice_is_applied_once(self):
+        moves = self.inputs([self.record(), self.record()])
+        self.assertEqual([m.duplicate for m in moves], [False, True])
+        row = ledger.calculate("x", _Approved(), reports({}), self.base(), moves)["skus"][0]
+        self.assertEqual((row.receipts, row.calculated, row.status), (200, 1200, "REVIEW"))
+        self.assertIn("Receipts R-1 appears more than once", row.reasons[0])
+
+    def test_rows_without_record_id_matched_on_their_values(self):
+        same = self.inputs([self.record(""), self.record("")])
+        self.assertEqual([m.duplicate for m in same], [False, True])
+        different = self.inputs([self.record("", qty="200"), self.record("", qty="300")])
+        self.assertEqual([m.duplicate for m in different], [False, False])
+
+    def test_same_id_in_different_tabs_is_not_a_duplicate(self):
+        moves = self.inputs([self.record("X-1")], [self.adjustment("X-1")])
+        self.assertEqual([m.duplicate for m in moves], [False, False])
+
+    def test_reship_in_daily_sales_and_adjustments_is_deducted_once(self):
+        usage = reports({date(2026, 9, 5): 1})
+        usage[date(2026, 9, 5)].tracking.append("T9")
+        moves = self.inputs(adjustments=[self.adjustment(ref="T9")])
+        row = ledger.calculate("x", _Approved(), usage, self.base(), moves)["skus"][0]
+        self.assertEqual((row.usage, row.adjustments, row.calculated, row.status), (1, 0, 999, "REVIEW"))
+        self.assertIn("already counted in Daily Sales", row.reasons[0])
+
+    def test_adjustment_not_in_daily_sales_is_applied(self):
+        usage = reports({date(2026, 9, 5): 1})
+        usage[date(2026, 9, 5)].tracking.append("T1")
+        moves = self.inputs(adjustments=[self.adjustment(ref="T9")])
+        row = ledger.calculate("x", _Approved(), usage, self.base(), moves)["skus"][0]
+        self.assertEqual((row.adjustments, row.calculated, row.status), (-1, 998, "VERIFIED"))
+
+    def test_eod_records_counted_tracking_only(self):
+        rows = [sale(1, "1x Support (FASCSUPP-1)", "Fascial Labs", tracking="T1"),
+                sale(2, "1x Support (FASCSUPP-1)", "Fascial Labs", tracking="T1"),
+                sale(3, "1x Support (FASCSUPP-1)", "Fascial Labs", tracking="T3", voided="Yes")]
+        day = eod.build_eod(rows, client_rules.package("fascial-labs"))[date(2026, 9, 10)]
+        self.assertEqual(day.tracking, ["T1"])
+
+
 class SourceInputTests(unittest.TestCase):
     def test_latest_approved_count_wins_and_timing_is_read(self):
         counts = [{"Count Date": "09/01/2026", "SKU": "MUR001", "Count Quantity": "10,785",

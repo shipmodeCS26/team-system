@@ -35,6 +35,8 @@ class Movement:
     kind: str              # RECEIPT or ADJUSTMENT
     approved_by: str
     reference: str = ""
+    source_key: str = ""   # tab + Record ID (or the row's own values when it has no ID)
+    duplicate: bool = False  # the same source_key was already read: never applied twice
 
 
 @dataclass
@@ -75,14 +77,23 @@ def calculate(client_id: str, rules, eod_reports: dict, baselines: dict[str, Bas
             results.append(row)
             continue
 
-        review_days = []
+        review_days, shipped = [], set()
         for day, report in sorted(eod_reports.items()):
             if applies_after(base, day):
                 row.usage += report.usage.get(sku, 0)
+                shipped.update(getattr(report, "tracking", ()))
                 if report.needs_review:
                     review_days.append(day)
         for move in movements:
             if move.sku != sku or not applies_after(base, move.day):
+                continue
+            if move.duplicate:
+                row.reasons.append(f"Record {move.source_key} appears more than once; applied once.")
+                continue
+            if move.kind != "RECEIPT" and move.reference.strip() in shipped:
+                # A reship already counted from Daily Sales: Daily Sales wins, never deducted twice.
+                row.reasons.append(f"Adjustment {move.source_key} ({move.reference.strip()}) is already "
+                                   "counted in Daily Sales; not applied again.")
                 continue
             if move.kind == "RECEIPT":
                 row.receipts += move.quantity
