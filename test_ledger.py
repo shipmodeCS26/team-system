@@ -165,6 +165,14 @@ class EventIdentityTests(unittest.TestCase):
         self.assertEqual((row.usage, row.adjustments, row.calculated, row.status), (1, 0, 999, "REVIEW"))
         self.assertIn("already counted in Daily Sales", row.reasons[0])
 
+    def test_positive_adjustment_on_a_shipped_tracking_is_applied(self):
+        # A return or recovered unit adds stock; Daily Sales only ever deducted, so nothing is doubled.
+        usage = reports({date(2026, 9, 5): 1})
+        usage[date(2026, 9, 5)].tracking.append("T9")
+        moves = self.inputs(adjustments=[self.adjustment(qty="1", ref="T9")])
+        row = ledger.calculate("x", _Approved(), usage, self.base(), moves)["skus"][0]
+        self.assertEqual((row.adjustments, row.calculated, row.status), (1, 1000, "VERIFIED"))
+
     def test_adjustment_not_in_daily_sales_is_applied(self):
         usage = reports({date(2026, 9, 5): 1})
         usage[date(2026, 9, 5)].tracking.append("T1")

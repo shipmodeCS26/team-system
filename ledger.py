@@ -90,7 +90,7 @@ def calculate(client_id: str, rules, eod_reports: dict, baselines: dict[str, Bas
             if move.duplicate:
                 row.reasons.append(f"Record {move.source_key} appears more than once; applied once.")
                 continue
-            if move.kind != "RECEIPT" and move.reference.strip() in shipped:
+            if move.kind != "RECEIPT" and move.quantity < 0 and move.reference.strip() in shipped:
                 # A reship already counted from Daily Sales: Daily Sales wins, never deducted twice.
                 row.reasons.append(f"Adjustment {move.source_key} ({move.reference.strip()}) is already "
                                    "counted in Daily Sales; not applied again.")
