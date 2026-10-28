@@ -11,8 +11,9 @@ NOW = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
 SCOPES = {"muravai": ("Miami",), "fascial-labs": ("Miami",), "puravita": ("Miami",), "nuerosmile": ("Miami",)}
 
 
-def eod(status=VERIFIED, report_date="2026-10-27", reasons=(), **extra):
-    return {"status": status, "report_date": report_date, "reasons": list(reasons), **extra}
+def eod(status=VERIFIED, report_date="2026-10-27", reasons=(), client_id="muravai", **extra):
+    return {"client_id": client_id, "deduction": "created_date", "status": status, "report_date": report_date,
+            "reasons": list(reasons), **extra}
 
 
 def store(client_id="muravai", **extra):
@@ -26,19 +27,19 @@ def row(sku="MUR001", status="MATCH", notes=(), available=0, committed=0):
 
 
 def compare(rows=None, client_id="muravai", **extra):
-    base = {"client_id": client_id, "skus": rows if rows is not None else [row()],
+    base = {"client_id": client_id, "sheet_as_of": "10/27/2026", "skus": rows if rows is not None else [row()],
             "unmatched_ssk": [], "unmatched_sheet": [], "blank_skus": 0, "duplicate_skus": [], "components": []}
     return {**base, **extra}
 
 
 def clean(client_id="muravai", **overrides):
-    args = {"now": NOW, "eod": eod(), "store": store(client_id), "compare": compare(client_id=client_id),
+    args = {"now": NOW, "eod": eod(client_id=client_id), "store": store(client_id), "compare": compare(client_id=client_id),
             "export_complete": True, "cutoff_aligned": True}
     args.update(overrides)
     return gate(client_id, **args)
 
 
-@patch.multiple(nightly_gate, BALANCE_BASIS="available", SHIPMENT_DEDUCTION="label created")
+@patch.multiple(nightly_gate, BALANCE_BASIS="available", SHIPMENT_DEDUCTION="created_date")
 @patch.dict(nightly_gate.WAREHOUSE_SCOPES, SCOPES, clear=True)
 class TruthTable(unittest.TestCase):
     def assertStatus(self, result, status, text):
@@ -123,7 +124,8 @@ class TruthTable(unittest.TestCase):
         self.assertStatus(clean(compare=compare(duplicate_skus=["MUR001"])), REVIEW, "more than once")
 
     def test_future_sheet_date(self):
-        self.assertStatus(clean(eod=eod(report_date="2026-10-28")), REVIEW, "future")
+        self.assertStatus(clean(eod=eod(report_date="2026-10-28"), compare=compare(sheet_as_of="10/28/2026")),
+                          REVIEW, "future")
 
     def test_wrong_row_write(self):
         self.assertStatus(clean(wrong_row_writes=["Incoming Stocks G329 (expected G328)"]), REVIEW, "G329")
@@ -147,6 +149,17 @@ class TruthTable(unittest.TestCase):
             for client_id in ("muravai", "fascial-labs", "puravita", "nuerosmile"):
                 with self.subTest(client_id):
                     self.assertNotEqual(clean(client_id)["status"], VERIFIED)
+
+    def test_foreign_eod_rejected(self):
+        self.assertStatus(clean(eod=eod(client_id="fascial-labs")), INCOMPLETE, "belongs to 'fascial-labs'")
+
+    def test_compare_from_another_sheet_date(self):
+        self.assertStatus(clean(compare=compare(sheet_as_of="10/26/2026")), INCOMPLETE, "Sheet dated")
+        self.assertStatus(clean(compare=compare(sheet_as_of="")), INCOMPLETE, "Sheet dated")
+
+    def test_deduction_rule_must_match_the_recount(self):
+        with patch.object(nightly_gate, "SHIPMENT_DEDUCTION", "shipped"):
+            self.assertStatus(clean(), REVIEW, "counts shipments by 'created_date'")
 
     def test_foreign_store_rejected(self):
         self.assertStatus(clean(store=store("fascial-labs")), INCOMPLETE, "belongs to 'fascial-labs'")

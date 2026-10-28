@@ -18,6 +18,7 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import client_rules
+import eod_check
 import ssk_check
 
 VERIFIED, REVIEW, INCOMPLETE = "VERIFIED", "REVIEW", "INCOMPLETE"
@@ -30,6 +31,7 @@ WAREHOUSE_SCOPES: dict[str, tuple[str, ...]] = {}
 # "available+committed"). A MATCH on both bases (committed = 0) is not an approved basis.
 BALANCE_BASIS: str | None = None
 # Open business rule 8: which timestamp deducts a shipment, and how later cancellations/reships count.
+# Only a rule the EOD recount actually applies (eod_check.DEDUCTION, reported on each result) clears it.
 SHIPMENT_DEDUCTION: str | None = None
 
 SSK_ERRORS = {"not_configured": "no ShipSidekick key"}
@@ -86,6 +88,9 @@ def gate(client_id: str, *, now: datetime, eod: dict | None, store: dict | None,
         review.append(f"Balance basis {BALANCE_BASIS!r} is not recognised.")
     if SHIPMENT_DEDUCTION is None:
         review.append("No approved shipment deduction timing.")
+    elif eod is not None and eod.get("deduction") != SHIPMENT_DEDUCTION:
+        review.append(f"The EOD recount counts shipments by {eod.get('deduction')!r}, "
+                      f"not the approved {SHIPMENT_DEDUCTION!r}.")
 
     # Sheet date (from the Dashboard as-of the EOD check read).
     sheet_day = date.fromisoformat(eod["report_date"]) if eod and eod.get("report_date") else None
@@ -99,6 +104,8 @@ def gate(client_id: str, *, now: datetime, eod: dict | None, store: dict | None,
     # Shipped vs ShipSidekick recount.
     if eod is None:
         incomplete.append("The EOD check did not run.")
+    elif eod.get("client_id") != client_id:
+        incomplete.append(f"The EOD check belongs to {eod.get('client_id')!r}, not {client_id!r}.")
     elif eod.get("status") == INCOMPLETE:
         incomplete += [f"EOD check: {reason}" for reason in eod.get("reasons") or ["incomplete"]]
     elif eod.get("status") == REVIEW:
@@ -127,6 +134,9 @@ def gate(client_id: str, *, now: datetime, eod: dict | None, store: dict | None,
             incomplete.append("ShipSidekick stock is not aligned to the end-of-day cutoff.")
     if compare is not None and compare.get("client_id") != client_id:
         incomplete.append(f"The stock comparison belongs to {compare.get('client_id')!r}, not {client_id!r}.")
+    elif compare is not None and sheet_day and eod_check.parse_as_of(compare.get("sheet_as_of") or "") != sheet_day:
+        incomplete.append(f"The stock comparison read the Sheet dated {compare.get('sheet_as_of')!r}, "
+                          f"not {sheet_day:%d %b %Y}.")
     elif compare is not None and not (store or {}).get("error_code"):
         for row in compare.get("skus") or []:
             reason = _stock_review(row)
