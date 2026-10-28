@@ -73,8 +73,10 @@ def _usable_as_of(value):
     return bool(text) and any(c.isdigit() for c in text) and not ERROR_VALUE.search(text)
 
 
-def compare(client_id, levels, sheet, truncated=False):
-    """`sheet` is a Dashboard read result from inventory.read_dashboards, or None/an error dict."""
+def compare(client_id, levels, sheet, truncated=False, fetched_at=""):
+    """`sheet` is a Dashboard read result from inventory.read_dashboards, or None/an error dict.
+    `fetched_at` identifies the stock read the levels came from; it is echoed so callers can bind
+    the comparison to that read."""
     rules = client_rules.package(client_id)
     by_sku, unmatched, components = defaultdict(list), [], []
     for level in levels:
@@ -154,6 +156,7 @@ def compare(client_id, levels, sheet, truncated=False):
     duplicates = sorted({v["sku"] for v in levels if v["sku"] and sku_counts[v["sku"].upper()] > 1})
     return {
         "client_id": client_id,
+        "fetched_at": fetched_at,
         "rule_status": rules.status if rules else "NONE",
         "skus": out,
         "unmatched_ssk": [{"sku": v["sku"], "title": v["title"], "product": v["product"],

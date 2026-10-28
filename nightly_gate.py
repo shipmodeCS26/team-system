@@ -93,7 +93,10 @@ def gate(client_id: str, *, now: datetime, eod: dict | None, store: dict | None,
                       f"not the approved {SHIPMENT_DEDUCTION!r}.")
 
     # Sheet date (from the Dashboard as-of the EOD check read).
-    sheet_day = date.fromisoformat(eod["report_date"]) if eod and eod.get("report_date") else None
+    try:
+        sheet_day = date.fromisoformat(eod["report_date"]) if eod and eod.get("report_date") else None
+    except (TypeError, ValueError):
+        sheet_day = None
     if sheet_day is None:
         incomplete.append("Sheet as-of date is blank or unreadable.")
     elif sheet_day < expected:
@@ -137,7 +140,14 @@ def gate(client_id: str, *, now: datetime, eod: dict | None, store: dict | None,
     elif compare is not None and sheet_day and eod_check.parse_as_of(compare.get("sheet_as_of") or "") != sheet_day:
         incomplete.append(f"The stock comparison read the Sheet dated {compare.get('sheet_as_of')!r}, "
                           f"not {sheet_day:%d %b %Y}.")
+    elif compare is not None and store and not store.get("error_code") and (
+            not store.get("fetched_at") or compare.get("fetched_at") != store.get("fetched_at")):
+        incomplete.append("The stock comparison was not made from this ShipSidekick stock read.")
     elif compare is not None and not (store or {}).get("error_code"):
+        listed = {row.get("sku") for row in compare.get("skus") or []}
+        missing = [sku for sku in (rules.skus if rules else ()) if sku not in listed]
+        if missing:
+            incomplete.append(f"The stock comparison has no row for {', '.join(missing)}.")
         for row in compare.get("skus") or []:
             reason = _stock_review(row)
             if reason:

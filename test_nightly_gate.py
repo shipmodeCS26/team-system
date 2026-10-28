@@ -2,12 +2,14 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
 
+import client_rules
 import nightly_gate
 import ssk_check
 from nightly_gate import INCOMPLETE, REVIEW, VERIFIED, expected_sheet_date, gate
 
 # 2026-10-28 08:00 ET: the Sheet should be current to Oct 27.
 NOW = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
+READ_AT = "2026-10-28T11:59:00+00:00"
 SCOPES = {"muravai": ("Miami",), "fascial-labs": ("Miami",), "puravita": ("Miami",), "nuerosmile": ("Miami",)}
 
 
@@ -18,7 +20,7 @@ def eod(status=VERIFIED, report_date="2026-10-27", reasons=(), client_id="murava
 
 def store(client_id="muravai", **extra):
     return {"id": client_id, "levels": [], "truncated": False, "environment": "production",
-            "scoped_locations": ["Miami"], **extra}
+            "scoped_locations": ["Miami"], "fetched_at": READ_AT, **extra}
 
 
 def row(sku="MUR001", status="MATCH", notes=(), available=0, committed=0):
@@ -26,8 +28,14 @@ def row(sku="MUR001", status="MATCH", notes=(), available=0, committed=0):
             "vs_available_committed": committed}
 
 
-def compare(rows=None, client_id="muravai", **extra):
-    base = {"client_id": client_id, "sheet_as_of": "10/27/2026", "skus": rows if rows is not None else [row()],
+def compare(rows=(), client_id="muravai", fill=True, **extra):
+    """`rows` override single SKUs; every other tracked SKU gets a MATCH row unless fill=False."""
+    rows = list(rows)
+    given = {r["sku"] for r in rows}
+    package = client_rules.package(client_id)
+    if fill and package:
+        rows += [row(sku) for sku in package.skus if sku not in given]
+    base = {"client_id": client_id, "sheet_as_of": "10/27/2026", "fetched_at": READ_AT, "skus": rows,
             "unmatched_ssk": [], "unmatched_sheet": [], "blank_skus": 0, "duplicate_skus": [], "components": []}
     return {**base, **extra}
 
@@ -149,6 +157,19 @@ class TruthTable(unittest.TestCase):
             for client_id in ("muravai", "fascial-labs", "puravita", "nuerosmile"):
                 with self.subTest(client_id):
                     self.assertNotEqual(clean(client_id)["status"], VERIFIED)
+
+    def test_missing_sku_rows(self):
+        self.assertStatus(clean(compare=compare([row("MUR001")], fill=False)), INCOMPLETE, "no row for MUR002")
+        self.assertStatus(clean(compare=compare(fill=False)), INCOMPLETE, "no row for MUR001")
+
+    def test_compare_from_another_stock_read(self):
+        self.assertStatus(clean(compare=compare(fetched_at="2026-10-28T03:00:00+00:00")), INCOMPLETE,
+                          "not made from this ShipSidekick stock read")
+        self.assertStatus(clean(store=store(fetched_at=""), compare=compare(fetched_at="")), INCOMPLETE,
+                          "not made from this ShipSidekick stock read")
+
+    def test_malformed_report_date(self):
+        self.assertStatus(clean(eod=eod(report_date="10/27/2026")), INCOMPLETE, "blank or unreadable")
 
     def test_foreign_eod_rejected(self):
         self.assertStatus(clean(eod=eod(client_id="fascial-labs")), INCOMPLETE, "belongs to 'fascial-labs'")
