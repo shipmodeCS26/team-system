@@ -13,17 +13,19 @@ The result feeds `nightly_gate.gate(wrong_row_writes=...)`, where any entry make
 """
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
+
 # Approved expected-cell maps, per client: {(tab, row key): cell}. None are approved yet (each Sheet's
 # layout needs Gly's sign-off), so every report write is held for review until its map exists.
 CELL_MAPS: dict[str, dict[tuple[str, str], str]] = {}
 
 
 def _same(written, read) -> bool:
-    """Numbers compare by value ("1,709" == 1709); any other text must match exactly."""
-    a, b = (str(v if v is not None else "").strip() for v in (written, read))
+    """Numbers compare by exact value ("1,709" == 1709); any other text must match exactly."""
+    a, b = (str(v if v is not None else "") for v in (written, read))
     try:
-        return float(a.replace(",", "")) == float(b.replace(",", ""))
-    except ValueError:
+        return Decimal(a.replace(",", "").strip()) == Decimal(b.replace(",", "").strip())
+    except InvalidOperation:
         return a == b
 
 

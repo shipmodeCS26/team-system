@@ -48,6 +48,15 @@ class SheetWrites(unittest.TestCase):
         problems = check_writes("onset", [note], {("Incoming Stocks", "M328"): "Amazon bags OS-FOU-30"})
         self.assertIn("re-read", problems[0])
 
+    def test_whitespace_in_text_still_counts(self):
+        note = write("M328", "Amazon bags ", "OS-FOU-30 Amazon bags note")
+        self.assertIn("re-read", check_writes("onset", [note], {("Incoming Stocks", "M328"): "Amazon bags"})[0])
+
+    def test_long_numbers_compared_exactly(self):
+        problems = check_writes("onset", [write(value="9007199254740993")],
+                                {("Incoming Stocks", "G328"): "9007199254740992"})
+        self.assertIn("re-read", problems[0])
+
     def test_every_write_checked(self):
         writes = [write(), write("M329", "Amazon bags = OS-FOU-30", "OS-FOU-30 Amazon bags note")]
         problems = check_writes("onset", writes, {("Incoming Stocks", "G328"): "Received",
