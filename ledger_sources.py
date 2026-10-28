@@ -162,7 +162,7 @@ def build_inputs(client_id: str, counts, receipts, adjustments):
             baselines[sku] = ledger.Baseline(sku, qty, day, count_timing(record.get("Count Type", "")),
                                              record["Approved By"],
                                              record.get("Record ID") or "Manual Counts")
-    movements, seen, skus_by_key = [], set(), {}
+    movements, seen, versions = [], set(), {}
     for kind, tab, records, qty_field, day_field, ref_field in (
             ("RECEIPT", "Receipts", receipts, "Quantity", "Receipt Date", "PO / Tracking"),
             ("ADJUSTMENT", "Adjustments & Reships", adjustments, "Quantity Delta", "Effective Date",
@@ -176,11 +176,14 @@ def build_inputs(client_id: str, counts, receipts, adjustments):
                 movements.append(ledger.Movement(sku, qty, day, kind, record["Approved By"], ref,
                                                  source_key=key, duplicate=key in seen))
                 seen.add(key)
-                skus_by_key.setdefault(key, []).append(sku)
+                versions.setdefault(key, set()).add((sku, qty, day, ref.strip()))
     for move in movements:
-        skus = sorted(set(skus_by_key[move.source_key]))
-        if len(skus) > 1:  # one event can't belong to two SKUs: every copy is held
-            move.conflict = ", ".join(skus)
+        # An exact copy is applied once; copies that disagree (SKU, quantity, date or reference)
+        # can't say which is right, so every copy is held.
+        copies = versions[move.source_key]
+        if len(copies) > 1:
+            move.conflict = "; ".join(f"{sku} {qty:+,} on {day:%m/%d}" + (f" ({ref})" if ref else "")
+                                      for sku, qty, day, ref in sorted(copies))
     return baselines, movements
 
 

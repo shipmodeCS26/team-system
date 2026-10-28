@@ -150,10 +150,20 @@ class EventIdentityTests(unittest.TestCase):
     def test_same_id_for_two_skus_holds_both(self):
         other = {**self.record(), "SKU": "B2"}
         moves = self.inputs([self.record(), other])
-        self.assertEqual([m.conflict for m in moves], ["A1, B2", "A1, B2"])
+        self.assertTrue(all("A1" in m.conflict and "B2" in m.conflict for m in moves))
         row = ledger.calculate("x", _Approved(), reports({}), self.base(), moves)["skus"][0]
         self.assertEqual((row.receipts, row.calculated, row.status), (0, 1000, "REVIEW"))
-        self.assertIn("listed for more than one SKU", row.reasons[0])
+        self.assertIn("copies that disagree", row.reasons[0])
+
+    def test_same_id_with_different_quantities_holds_every_copy(self):
+        for order in (("200", "300"), ("300", "200")):
+            moves = self.inputs([self.record(qty=order[0]), self.record(qty=order[1])])
+            row = ledger.calculate("x", _Approved(), reports({}), self.base(), moves)["skus"][0]
+            self.assertEqual((row.receipts, row.calculated, row.status), (0, 1000, "REVIEW"))
+
+    def test_exact_copy_still_applied_once(self):
+        moves = self.inputs([self.record(), self.record()])
+        self.assertEqual([m.conflict for m in moves], ["", ""])
 
     def test_rows_without_record_id_matched_on_their_values(self):
         same = self.inputs([self.record(""), self.record("")])
@@ -190,8 +200,9 @@ class EventIdentityTests(unittest.TestCase):
     def test_duplicate_flagged_even_when_a_copy_is_before_the_count(self):
         moves = self.inputs([self.record(day="09/05/2026"), self.record(day="09/01/2026")])
         row = ledger.calculate("x", _Approved(), reports({}), self.base(), moves)["skus"][0]
-        self.assertEqual(row.status, "REVIEW")
-        self.assertIn("appears more than once", row.reasons[0])
+        # The copies disagree on the date (one before the count), so neither is applied.
+        self.assertEqual((row.receipts, row.calculated, row.status), (0, 1000, "REVIEW"))
+        self.assertIn("copies that disagree", row.reasons[0])
 
     def test_positive_adjustment_on_a_shipped_tracking_is_applied(self):
         # A return or recovered unit adds stock; Daily Sales only ever deducted, so nothing is doubled.

@@ -37,7 +37,7 @@ class Movement:
     reference: str = ""
     source_key: str = ""   # tab + Record ID (or the row's own values when it has no ID)
     duplicate: bool = False  # the same source_key was already read: never applied twice
-    conflict: str = ""       # the same source_key names other SKUs too: applied to none of them
+    conflict: str = ""       # copies of this source_key disagree: applied to none of them
 
 
 @dataclass
@@ -91,7 +91,7 @@ def calculate(client_id: str, rules, eod_reports: dict, baselines: dict[str, Bas
             if move.sku != sku:
                 continue
             if move.conflict:
-                row.reasons.append(f"Record {move.source_key} is listed for more than one SKU "
+                row.reasons.append(f"Record {move.source_key} has copies that disagree "
                                    f"({move.conflict}); not applied until it is corrected.")
                 continue
             if move.duplicate:
