@@ -5,7 +5,8 @@ Sheet remaining vs ShipSidekick stock) with the gate rules into one overall resu
 
 - INCOMPLETE: a source is missing, cut off, from the test environment, not aligned to the
   end-of-day cutoff, or the Sheet date is stale; also no rule package.
-- REVIEW: any difference or unknown, a PROPOSED package, a future date, no approved warehouse scope.
+- REVIEW: any difference or unknown, a PROPOSED package, a future date, or an open business rule the
+  check depends on (warehouse scope, balance basis, shipment deduction timing).
 - VERIFIED: every check passed, the package is APPROVED and the Sheet date is yesterday (ET).
 
 INCOMPLETE wins over REVIEW, and REVIEW wins over VERIFIED. Pure function: reads nothing and
@@ -24,6 +25,11 @@ ET = ZoneInfo("America/New_York")
 # Open business rule (plan section 6, item 7): which ShipSidekick locations each client's Dashboard
 # represents. Not set for any client until Carlos approves it, so no client can be VERIFIED yet.
 WAREHOUSE_SCOPES: dict[str, tuple[str, ...]] = {}
+# Open business rule 3: which ShipSidekick number equals the Sheet's "Remaining" ("available" or
+# "available+committed"). A MATCH on both bases (committed = 0) is not an approved basis.
+BALANCE_BASIS: str | None = None
+# Open business rule 8: which timestamp deducts a shipment, and how later cancellations/reships count.
+SHIPMENT_DEDUCTION: str | None = None
 
 SSK_ERRORS = {"not_configured": "no ShipSidekick key"}
 
@@ -56,6 +62,10 @@ def gate(client_id: str, *, now: datetime, eod: dict | None, store: dict | None,
 
     if not WAREHOUSE_SCOPES.get(client_id):
         review.append("No approved ShipSidekick warehouse scope for this client.")
+    if BALANCE_BASIS is None:
+        review.append("No approved balance basis (available vs available + committed).")
+    if SHIPMENT_DEDUCTION is None:
+        review.append("No approved shipment deduction timing.")
 
     # Sheet date (from the Dashboard as-of the EOD check read).
     sheet_day = date.fromisoformat(eod["report_date"]) if eod and eod.get("report_date") else None

@@ -31,6 +31,7 @@ def clean(client_id="muravai", **overrides):
     return gate(client_id, **args)
 
 
+@patch.multiple(nightly_gate, BALANCE_BASIS="available", SHIPMENT_DEDUCTION="label created")
 @patch.dict(nightly_gate.WAREHOUSE_SCOPES, SCOPES, clear=True)
 class TruthTable(unittest.TestCase):
     def assertStatus(self, result, status, text):
@@ -123,6 +124,22 @@ class TruthTable(unittest.TestCase):
     def test_no_warehouse_scope(self):
         with patch.dict(nightly_gate.WAREHOUSE_SCOPES, {}, clear=True):
             self.assertStatus(clean(), REVIEW, "warehouse scope")
+
+    def test_no_balance_basis_even_when_both_bases_match(self):
+        # committed = 0 makes both differences zero; that is still not an approved basis.
+        with patch.object(nightly_gate, "BALANCE_BASIS", None):
+            self.assertStatus(clean(), REVIEW, "balance basis")
+
+    def test_no_shipment_deduction_timing(self):
+        with patch.object(nightly_gate, "SHIPMENT_DEDUCTION", None):
+            self.assertStatus(clean(), REVIEW, "deduction timing")
+
+    def test_nothing_verified_with_rules_as_they_stand(self):
+        with patch.multiple(nightly_gate, BALANCE_BASIS=None, SHIPMENT_DEDUCTION=None), \
+                patch.dict(nightly_gate.WAREHOUSE_SCOPES, {}, clear=True):
+            for client_id in ("muravai", "fascial-labs", "puravita", "nuerosmile"):
+                with self.subTest(client_id):
+                    self.assertNotEqual(clean(client_id)["status"], VERIFIED)
 
     def test_proposed_packages_never_verified(self):
         # Fascial, PuraVita and NeuroSmile as they stand today.
