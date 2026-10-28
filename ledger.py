@@ -79,16 +79,21 @@ def calculate(client_id: str, rules, eod_reports: dict, baselines: dict[str, Bas
 
         review_days, shipped = [], set()
         for day, report in sorted(eod_reports.items()):
+            # Every shipment that deducted this SKU, before or after the count: a count already
+            # includes earlier shipments, so a later reship adjustment for one is still a repeat.
+            shipped.update(t for t, used in getattr(report, "tracking", {}).items() if sku in used)
             if applies_after(base, day):
                 row.usage += report.usage.get(sku, 0)
-                shipped.update(getattr(report, "tracking", ()))
                 if report.needs_review:
                     review_days.append(day)
         for move in movements:
-            if move.sku != sku or not applies_after(base, move.day):
+            if move.sku != sku:
                 continue
             if move.duplicate:
+                # Checked before the count date: the copies may disagree on which side of it they fall.
                 row.reasons.append(f"Record {move.source_key} appears more than once; applied once.")
+                continue
+            if not applies_after(base, move.day):
                 continue
             if move.kind != "RECEIPT" and move.quantity < 0 and move.reference.strip() in shipped:
                 # A reship already counted from Daily Sales: Daily Sales wins, never deducted twice.

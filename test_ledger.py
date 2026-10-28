@@ -159,23 +159,43 @@ class EventIdentityTests(unittest.TestCase):
 
     def test_reship_in_daily_sales_and_adjustments_is_deducted_once(self):
         usage = reports({date(2026, 9, 5): 1})
-        usage[date(2026, 9, 5)].tracking.append("T9")
+        usage[date(2026, 9, 5)].tracking["T9"] = ("A1",)
         moves = self.inputs(adjustments=[self.adjustment(ref="T9")])
         row = ledger.calculate("x", _Approved(), usage, self.base(), moves)["skus"][0]
         self.assertEqual((row.usage, row.adjustments, row.calculated, row.status), (1, 0, 999, "REVIEW"))
         self.assertIn("already counted in Daily Sales", row.reasons[0])
 
+    def test_reship_of_another_sku_is_applied(self):
+        usage = reports({date(2026, 9, 5): 0})
+        usage[date(2026, 9, 5)].tracking["T9"] = ("B2",)  # T9 only deducted another SKU
+        moves = self.inputs(adjustments=[self.adjustment(ref="T9")])
+        row = ledger.calculate("x", _Approved(), usage, self.base(), moves)["skus"][0]
+        self.assertEqual((row.adjustments, row.calculated, row.status), (-1, 999, "VERIFIED"))
+
+    def test_reship_of_a_shipment_before_the_count_is_not_deducted_again(self):
+        usage = reports({date(2026, 9, 2): 1})
+        usage[date(2026, 9, 2)].tracking["T9"] = ("A1",)  # shipped before the Sep 3 count
+        moves = self.inputs(adjustments=[self.adjustment(ref="T9")])  # effective Sep 5
+        row = ledger.calculate("x", _Approved(), usage, self.base(), moves)["skus"][0]
+        self.assertEqual((row.adjustments, row.calculated, row.status), (0, 1000, "REVIEW"))
+
+    def test_duplicate_flagged_even_when_a_copy_is_before_the_count(self):
+        moves = self.inputs([self.record(day="09/05/2026"), self.record(day="09/01/2026")])
+        row = ledger.calculate("x", _Approved(), reports({}), self.base(), moves)["skus"][0]
+        self.assertEqual(row.status, "REVIEW")
+        self.assertIn("appears more than once", row.reasons[0])
+
     def test_positive_adjustment_on_a_shipped_tracking_is_applied(self):
         # A return or recovered unit adds stock; Daily Sales only ever deducted, so nothing is doubled.
         usage = reports({date(2026, 9, 5): 1})
-        usage[date(2026, 9, 5)].tracking.append("T9")
+        usage[date(2026, 9, 5)].tracking["T9"] = ("A1",)
         moves = self.inputs(adjustments=[self.adjustment(qty="1", ref="T9")])
         row = ledger.calculate("x", _Approved(), usage, self.base(), moves)["skus"][0]
         self.assertEqual((row.adjustments, row.calculated, row.status), (1, 1000, "VERIFIED"))
 
     def test_adjustment_not_in_daily_sales_is_applied(self):
         usage = reports({date(2026, 9, 5): 1})
-        usage[date(2026, 9, 5)].tracking.append("T1")
+        usage[date(2026, 9, 5)].tracking["T1"] = ("A1",)
         moves = self.inputs(adjustments=[self.adjustment(ref="T9")])
         row = ledger.calculate("x", _Approved(), usage, self.base(), moves)["skus"][0]
         self.assertEqual((row.adjustments, row.calculated, row.status), (-1, 998, "VERIFIED"))
@@ -185,7 +205,7 @@ class EventIdentityTests(unittest.TestCase):
                 sale(2, "1x Support (FASCSUPP-1)", "Fascial Labs", tracking="T1"),
                 sale(3, "1x Support (FASCSUPP-1)", "Fascial Labs", tracking="T3", voided="Yes")]
         day = eod.build_eod(rows, client_rules.package("fascial-labs"))[date(2026, 9, 10)]
-        self.assertEqual(day.tracking, ["T1"])
+        self.assertEqual(day.tracking, {"T1": ("FAS001",)})
 
 
 class SourceInputTests(unittest.TestCase):

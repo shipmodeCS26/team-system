@@ -38,7 +38,7 @@ class DayReport:
     usage_by_origin: dict[str, dict[str, int]] = field(default_factory=dict)
     voided_excluded: int = 0
     duplicate_tracking_excluded: list[str] = field(default_factory=list)
-    tracking: list[str] = field(default_factory=list)  # tracking codes of the shipments counted this day
+    tracking: dict[str, tuple] = field(default_factory=dict)  # counted tracking code → SKUs it deducted
     possible_split_orders: list[str] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
     unknown_items: list[str] = field(default_factory=list)
@@ -114,7 +114,6 @@ def build_eod(rows: list[dict], rules, row_numbers: list[int] | None = None) -> 
             continue
         if tracking:
             seen_tracking[tracking] = (index,)
-            report.tracking.append(tracking)
 
         order = (row.get("Order Name") or "").strip()
         order_rows[(day, order)].append((tracking, items))
@@ -130,6 +129,8 @@ def build_eod(rows: list[dict], rules, row_numbers: list[int] | None = None) -> 
 
         result = rules.order_usage(items)
         report.orders += 1
+        if tracking:
+            report.tracking[tracking] = tuple(sku for sku in rules.skus if result.usage.get(sku))
         for sku in rules.skus:
             report.usage[sku] += result.usage.get(sku, 0)
             report.usage_by_origin.setdefault(origin_key, {s: 0 for s in rules.skus})
