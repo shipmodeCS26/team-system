@@ -18,8 +18,13 @@ from __future__ import annotations
 CELL_MAPS: dict[str, dict[tuple[str, str], str]] = {}
 
 
-def _norm(value) -> str:
-    return str(value if value is not None else "").replace(",", "").strip()
+def _same(written, read) -> bool:
+    """Numbers compare by value ("1,709" == 1709); any other text must match exactly."""
+    a, b = (str(v if v is not None else "").strip() for v in (written, read))
+    try:
+        return float(a.replace(",", "")) == float(b.replace(",", ""))
+    except ValueError:
+        return a == b
 
 
 def check_writes(client_id: str, writes: list[dict], reread: dict[tuple[str, str], object]) -> list[str]:
@@ -39,6 +44,6 @@ def check_writes(client_id: str, writes: list[dict], reread: dict[tuple[str, str
             continue
         if (tab, cell) not in reread:
             problems.append(f"{where} ({key}): not re-read after writing")
-        elif _norm(reread[(tab, cell)]) != _norm(write.get("value")):
+        elif not _same(write.get("value"), reread[(tab, cell)]):
             problems.append(f"{where} ({key}): re-read {reread[(tab, cell)]!r}, wrote {write.get('value')!r}")
     return problems

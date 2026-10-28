@@ -42,6 +42,11 @@ class SheetWrites(unittest.TestCase):
     def test_number_formatting_is_not_a_difference(self):
         self.assertEqual(check_writes("onset", [write(value=1709)], {("Incoming Stocks", "G328"): "1,709"}), [])
 
+    def test_commas_in_text_still_count(self):
+        note = write("M328", "Amazon bags, OS-FOU-30", "OS-FOU-30 Amazon bags note")
+        problems = check_writes("onset", [note], {("Incoming Stocks", "M328"): "Amazon bags OS-FOU-30"})
+        self.assertIn("re-read", problems[0])
+
     def test_every_write_checked(self):
         writes = [write(), write("M329", "Amazon bags = OS-FOU-30", "OS-FOU-30 Amazon bags note")]
         problems = check_writes("onset", writes, {("Incoming Stocks", "G328"): "Received",
