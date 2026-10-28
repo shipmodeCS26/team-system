@@ -50,7 +50,7 @@ These are rules, not one-off requests. Each one gets an owner, an evidence sourc
 ### Phase 0: process fixes this week (no code)
 - Ask Carlos for read-only SSK API keys for Onset and Vitalia, and to confirm whether Vitalia (Revly white label) is in scope as a ShipMode-tracked client.
 - Export rules until then: Eastern Time, full day 12:00 AM–11:59 PM, loaded by 9 AM ET; written into `docs/clients/`.
-- Instruction log kept in a ShipMode-owned, access-controlled store (an internal ShipMode workbook now, the app's internal store later). Never created or updated inside any client or Revly workbook. Columns: instruction, from, date, client, type (section Phase 4), owner, evidence source, status, confirmed by, confirmed on. Seeded with section 2 plus Max Gummies, D3+K2 and the Muravai "1 filter" SKU.
+- Instruction log kept in a ShipMode-owned, access-controlled store (an internal ShipMode workbook now, the app's internal store later). Never created or updated inside any client or Revly workbook. Columns: instruction, from, client, type (section Phase 4), effective at (timezone-qualified timestamp, e.g. `2026-10-28T05:02-04:00`, never a bare date; the Slack message time when no other time is given), due at (timezone-qualified timestamp, or an explicit `no deadline`), owner, evidence source, status, confirmed by, confirmed on. Seeded with section 2 plus Max Gummies, D3+K2 and the Muravai "1 filter" SKU.
 - One Slack draft per channel, date in the title; every number re-read before saving.
 - Weekly shelf count of the riskiest items, starting with Muravai kit parts (open gap: SSK +20 kits, +25 hoses, +27 brackets).
 
@@ -58,6 +58,7 @@ These are rules, not one-off requests. Each one gets an owner, an evidence sourc
 - Goal: the nightly run uses the repo's tested checks instead of a scratch script.
 - Build: run the gate for every in-scope client, every night. A client without SSK credentials or data still gets a result: INCOMPLETE with a source-specific reason (e.g. "no SSK key", "SSK request failed", "truncated"). Run `eod_check` and `ssk_check`; one table per client and product
   (shipped, remaining, Sheet vs SSK, Sheet date, unknown SKUs, rule-package status); one overall result VERIFIED / REVIEW / INCOMPLETE.
+- Starting stock: the starting stock each product row uses is reconciled to the prior approved snapshot plus every intervening inventory event (shipments, receipts, adjustments, damage, counts). A mismatch makes the client REVIEW and the starting stock, and every number derived from it, is omitted from all artifacts until it is resolved.
 - Date rule: the expected Sheet date is yesterday in America/New_York. An older or future Dashboard date gives INCOMPLETE (stale) or REVIEW (future). Tests cover no-shipment days and runs just before and after midnight ET.
 - Gate rule: a client can only be VERIFIED when its rule package is APPROVED. A PROPOSED or missing package gives INCOMPLETE (missing) or REVIEW (proposed), never VERIFIED.
 - Aggregate truth table (each row tested):
@@ -65,14 +66,14 @@ These are rules, not one-off requests. Each one gets an owner, an evidence sourc
 | Condition | Overall result |
 |---|---|
 | Missing credentials, SSK source error, truncated SSK data, missing rule package, stale Sheet date, no data for the date | INCOMPLETE |
-| `eod_check` REVIEW, any SSK row DIFFERENT or REVIEW, unmatched / duplicate / blank SKU, PROPOSED package, future date, wrong-row write | REVIEW |
+| `eod_check` REVIEW, any SSK row DIFFERENT or REVIEW, unmatched / duplicate / blank SKU, PROPOSED package, future date, wrong-row write, starting stock not reconciled | REVIEW |
 | `eod_check` VERIFIED, every SSK row MATCH, none of the above, package APPROVED, date = yesterday ET | VERIFIED |
 
   When several apply, INCOMPLETE wins over REVIEW, and REVIEW wins over VERIFIED.
 - Sheet-write check: every write the nightly run or a person makes for a report (EOD rows, status notes, Incoming Stocks rows) is checked against an approved expected-cell map (product row → cell) by re-reading after the write; a value in the wrong product row makes the client REVIEW.
 - Fixtures: sanitized, immutable test fixtures (synthetic values shaped like the real Sheet, shipment and SSK data, no real client exports or customer data) for Oct 26–27, with golden expected results.
 - Acceptance:
-  - Replaying the fixtures reproduces every mistake in section 1 rows 1–3: wrong threshold, wrong-sign adjustment, wrong-row note, stale Sheet, unknown SKU, whole-order count.
+  - Replaying the fixtures catches every gate-level mistake in section 1 rows 1–3: wrong-sign adjustment, wrong-row note, stale Sheet, unknown SKU, whole-order count, unreconciled starting stock. (The wrong forecast threshold is a forecast error and is tested in Phase 3.)
   - Every PROPOSED or missing package yields INCOMPLETE or REVIEW (tested for Fascial, PuraVita, NeuroSmile as they stand today).
   - Any unknown SKU makes the client REVIEW.
   - Tests pass in CI without network access.
@@ -83,8 +84,10 @@ These are rules, not one-off requests. Each one gets an owner, an evidence sourc
 - Includes: Fascial packs, Bundle-3, TrueSleep 3-pack, D3+K2; Neurosmile, PuraVita and ClarityMD bundles; Onset codes; Muravai CR7 as a proposed revision to `docs/clients/muravai/RULES.md`.
 - Coverage source: the complete active Shopify catalog (`sku_check.py`), the SSK product and inventory catalog, every Dashboard product row, and historical shipments, not just recent sales. Every discrepancy is resolved or explicitly held.
 - Mapping validation: against shipment rows with approved expected per-SKU quantities (e.g. FAC3XBDL = 3 TrueForm), not against daily SSK stock changes. Stock balances are reconciled separately using all inventory events (shipments, receipts, adjustments, damage, counts); which SSK number equals the Sheet's "Remaining" (available vs available + committed) is an open business rule for Carlos.
+- Client isolation: a SKU, bundle or alias is resolved only inside its own client's package and catalog. A SKU that belongs to another client (or a shared code such as a generic "Teflon tape") is unknown for this client, never borrowed.
+- CR7 effective time: if approved, CR7 applies only to PO and receipt events after its timezone-qualified effective time. Kit stock received before that time is tracked separately as legacy kit stock and is not flagged; kit own stock above that legacy balance, or a kit line on a PO created after the effective time, is flagged.
 - Approval: Carlos approves each package and the CR7 revision. Until then they stay PROPOSED, and Phase 1 keeps those clients out of VERIFIED.
-- Acceptance: every SKU in all four coverage sources is mapped or held; mapping tests pass on the approved expected quantities.
+- Acceptance: every SKU in all four coverage sources is mapped or held; mapping tests pass on the approved expected quantities; for every package, negative fixtures feed each other client's SKUs and catalog and assert they come back unknown (REVIEW), not mapped; CR7 fixtures cover a kit PO just before and just after the effective time and legacy kit stock that is not flagged.
 
 ### Phase 3: reports from checked numbers only (Issue C)
 - Goal: client posts and #inventory-updates produced by `eod_report.py` in Gly's approved format.
@@ -93,7 +96,8 @@ These are rules, not one-off requests. Each one gets an owner, an evidence sourc
 - Forecasts: demand, days of cover, run-out date, order-by date and suggested quantity come from one deterministic, tested function using approved inputs (demand window, lead time, cover target). Until Carlos approves the formula and inputs, forecast fields are kept out of VERIFIED report text and drafted separately, labelled "estimate, not verified", for Gly's manual review.
 - Last recommendation: when Gly approves a client post, its recommendation (quantities, dates, assumptions, formula version) is stored as structured, versioned data. The next forecast is recomputed from approved inputs and compared with that record to show an explicit "changed from <date>" warning; a posted Slack message is never parsed to set a quantity.
 - Held drafts: a client that isn't VERIFIED gets a held draft with reasons only. Held text, images and Slack draft payloads contain no unchecked client numbers (today `eod_report.build_report` still renders them; this phase fixes that).
-- Acceptance: identical to hand-checked drafts on 3 fixture days; a changed input after the check is rejected; tests assert that held outputs contain no inventory or forecast numbers; forecast tests reproduce the Onset ~430 vs ~335/day error as a failure; Revly-facing fixtures contain no ShipMode text, logo or link.
+- Action lists: free-text action lines (today `eod_report._official_actions`) may not carry numbers. Any quantity, date or count in an action must come from structured fields bound to the checked snapshot; numeric text that isn't bound is stripped and the client goes to REVIEW.
+- Acceptance: identical to hand-checked drafts on 3 fixture days; a changed input after the check is rejected; tests assert that held outputs contain no inventory or forecast numbers; tests assert that an action line with unbound numeric text is stripped; replaying the fixtures reproduces the Onset wrong threshold (~430 vs ~335/day) as a forecast-test failure; Revly-facing fixtures contain no ShipMode text, logo or link.
 - Delivery stays preview-only (`REPORT_SEND_SIMULATION_ONLY`).
 
 ### Phase 4: instruction compliance check (Issue D)
@@ -101,15 +105,16 @@ These are rules, not one-off requests. Each one gets an owner, an evidence sourc
 
 | Instruction type | Example | Evidence source | Pass | Fail |
 |---|---|---|---|---|
-| Order content (add/remove an item) | OS-MAX-7D back as gift; ship Fascial without D3+K2 | Order export after the instruction date | Every unshipped/new order has (or lacks) the item | Any order after the cut-off breaks it |
+| Order content (add/remove an item) | OS-MAX-7D back as gift; ship Fascial without D3+K2 | Order export, orders created after the instruction's effective timestamp | Every unshipped order created after the effective timestamp has (or lacks) the item | Any such order breaks it |
 | SKU setup | Muravai "1 filter" | SSK product catalog + reply to the client | SKU exists with barcode/dims and the client was answered | Missing field or no reply |
-| Receiving rule | CR7 kits as parts | SSK PO lines and levels | Lines match the approved rule | Kit line on a PO, or own stock above the approved rule |
-| Address change / cancellation | OR1, OR2 | SSK order vs Shopify order | Address/cancel matches before label date | Label printed with the old state |
+| Receiving rule | CR7 kits as parts | SSK PO lines, receipts and levels after the effective time | Lines after the effective time match the approved rule; legacy kit stock tracked separately | Kit line on a PO created after the effective time, or kit own stock above the legacy balance |
+| Address change / cancellation | OR1, OR2 | SSK order event history vs Shopify order | Address change or cancellation is in SSK before the earliest commit, print or label event; if the order was already committed or printed, Orlando's confirmation that the warehouse applied it | Change landed after the earliest commit/print/label event with no confirmation, or label bought on a cancelled order |
 | Inbound completeness | OR3 | Incoming Stocks row | All five fields present before ETA | Any field blank at ETA |
-| People follow-up / approval | Vitalia shelf count, pouch sealing, client approvals | Named person's confirmation in Slack | Confirmation recorded in the log | No confirmation by the due date |
+| No-movement request | OR5 | Draft #no-movement post | Every order listed has its label date and days since label (computed at the post's as-of time in ET) | Any order missing either field |
+| People follow-up / approval | Vitalia shelf count, pouch sealing, client approvals | Named person's confirmation in Slack | Confirmation recorded before the due timestamp, or still open with `no deadline` | No confirmation by the due timestamp |
 
 - Alerts are internal only: shown in the app and written as an unsent DM preview for Gly. Automated Slack delivery needs its own approval and cutover criteria.
-- Acceptance: one fixture scenario per type above (pass and fail), including the Max Gummies case caught on the first export after the instruction; an instruction never closes without its evidence.
+- Acceptance: one fixture scenario per type above (pass and fail), including the Max Gummies case caught on the first export after the instruction; order-content fixtures include orders created one minute before and one minute after the effective timestamp (only the later one is checked); address-change fixtures include a change just before and just after the earliest commit event; people follow-up fixtures cover confirmed before due, overdue, and `no deadline`; an instruction never closes without its evidence.
 
 ### Phase 5: weekly accuracy review (every Monday)
 Scorecard: reports drafted / VERIFIED / held; mistakes found by us vs by others; rules added; open instructions by age; Sheet-vs-SSK gaps.
@@ -147,7 +152,7 @@ Per `FACTORY_WORKFLOW.md`, planning Issue #33 on the ShipMode Build board is the
 
 ## 9. Review request for Codex
 
-All 21 round-1 findings are addressed in this revision. Please check:
+All 21 round-1 and 9 round-2 findings are addressed in this revision. Please check:
 1. Is any root cause in section 1 still missing a fix in section 4?
 2. Are the Phase 1–4 acceptance criteria checkable and strict enough?
 3. Any remaining conflict with `SHIPMODE_CLAUDE_BLUEPRINT.md`, `BUILD_WORKFLOW.md`, `FACTORY_WORKFLOW.md` or `docs/clients/`?
