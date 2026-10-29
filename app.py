@@ -189,6 +189,30 @@ def home():
     return render_template("workspace.html", csrf=session["csrf"])
 
 
+KNOWLEDGEBASE = [
+    {"id": "CS-014", "slug": "claude-slack-ssk", "url": "/knowledgebase/claude-slack-ssk",
+     "title": "Answer client questions with Claude, Slack and ShipSidekick",
+     "summary": "Connect Slack and Google Drive to your own Claude account, check stock against ShipSidekick in this workspace, and use the prompt library and EOD report format.",
+     "keywords": "claude slack shipsidekick ssk inventory sheets client questions eod report setup orlando",
+     "updated": "Oct 30, 2026"},
+]
+
+
+@app.get("/knowledgebase")
+@protected
+def knowledgebase():
+    """Team guides. Static content only; reads no client data."""
+    return render_template("knowledgebase.html", guides=KNOWLEDGEBASE)
+
+
+@app.get("/knowledgebase/<slug>")
+@protected
+def knowledgebase_guide(slug):
+    if slug not in {guide["slug"] for guide in KNOWLEDGEBASE}:
+        return Response("Guide not found.", 404)
+    return render_template(f"kb/{slug}.html")
+
+
 @app.get("/api/health")
 def health():
     return {"message": "Success! Your application is online.", "version": "workspace-1"}
