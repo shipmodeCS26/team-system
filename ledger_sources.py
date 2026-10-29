@@ -162,7 +162,7 @@ def build_inputs(client_id: str, counts, receipts, adjustments):
             baselines[sku] = ledger.Baseline(sku, qty, day, count_timing(record.get("Count Type", "")),
                                              record["Approved By"],
                                              record.get("Record ID") or "Manual Counts")
-    movements, seen, versions = [], set(), {}
+    movements, seen, versions, no_id = [], set(), {}, {}
     for kind, tab, records, qty_field, day_field, ref_field in (
             ("RECEIPT", "Receipts", receipts, "Quantity", "Receipt Date", "PO / Tracking"),
             ("ADJUSTMENT", "Adjustments & Reships", adjustments, "Quantity Delta", "Effective Date",
@@ -172,7 +172,10 @@ def build_inputs(client_id: str, counts, receipts, adjustments):
             if day and qty is not None and record.get("SKU"):
                 sku, ref = record["SKU"].strip(), record.get(ref_field, "")
                 # Same Record ID (or, without one, the same row values) = the same event read twice.
-                key = f"{tab} {record.get('Record ID', '').strip() or f'{sku}/{day}/{qty}/{ref.strip()}'}"
+                record_id = record.get("Record ID", "").strip()
+                key = f"{tab} {record_id or f'{sku}/{day}/{qty}/{ref.strip()}'}"
+                if not record_id:
+                    no_id[key] = no_id.get(key, 0) + 1
                 movements.append(ledger.Movement(sku, qty, day, kind, record["Approved By"], ref,
                                                  source_key=key, duplicate=key in seen))
                 seen.add(key)
@@ -184,6 +187,9 @@ def build_inputs(client_id: str, counts, receipts, adjustments):
         if len(copies) > 1:
             move.conflict = "; ".join(f"{sku} {qty:+,} on {day:%m/%d}" + (f" ({ref})" if ref else "")
                                       for sku, qty, day, ref in sorted(copies))
+        elif no_id.get(move.source_key, 0) > 1:
+            # Without a Record ID, equal rows may be two real events (two equal partial receipts).
+            move.ambiguous = f"{move.source_key} appears {no_id[move.source_key]} times with no Record ID"
     return baselines, movements
 
 

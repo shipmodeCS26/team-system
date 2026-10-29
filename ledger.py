@@ -38,6 +38,7 @@ class Movement:
     source_key: str = ""   # tab + Record ID (or the row's own values when it has no ID)
     duplicate: bool = False  # the same source_key was already read: never applied twice
     conflict: str = ""       # copies of this source_key disagree: applied to none of them
+    ambiguous: str = ""      # equal rows with no Record ID: a repeat or two real events, unknown
 
 
 @dataclass
@@ -78,7 +79,7 @@ def calculate(client_id: str, rules, eod_reports: dict, baselines: dict[str, Bas
             results.append(row)
             continue
 
-        review_days, shipped = [], set()
+        review_days, shipped, held = [], set(), False
         for day, report in sorted(eod_reports.items()):
             # Every shipment that deducted this SKU, before or after the count: a count already
             # includes earlier shipments, so a later reship adjustment for one is still a repeat.
@@ -94,6 +95,16 @@ def calculate(client_id: str, rules, eod_reports: dict, baselines: dict[str, Bas
                 row.reasons.append(f"Record {move.source_key} has copies that disagree "
                                    f"({move.conflict}); not applied until it is corrected.")
                 continue
+            if move.ambiguous:
+                if not applies_after(base, move.day):
+                    continue  # equal copies share a date: all of them are before the count
+                # Two equal partial receipts and one row read twice look the same: neither guess is made.
+                reason = (f"{move.ambiguous}: two equal events or one read twice can't be told apart. "
+                          "Balance not calculated until each row has a Record ID.")
+                if reason not in row.reasons:
+                    row.reasons.append(reason)
+                held = True
+                continue
             if move.duplicate:
                 # Checked before the count date: the copies may disagree on which side of it they fall.
                 row.reasons.append(f"Record {move.source_key} appears more than once; applied once.")
@@ -101,17 +112,20 @@ def calculate(client_id: str, rules, eod_reports: dict, baselines: dict[str, Bas
             if not applies_after(base, move.day):
                 continue
             if move.kind != "RECEIPT" and move.quantity < 0 and move.reference.strip() in shipped:
-                # A reship already counted from Daily Sales: Daily Sales wins, never deducted twice.
-                row.reasons.append(f"Adjustment {move.source_key} ({move.reference.strip()}) is already "
-                                   "counted in Daily Sales; not applied again.")
+                # Nothing records whether this repeats that shipment (a reship Daily Sales already
+                # deducted) or is a separate correction, so it is neither applied nor dropped.
+                row.reasons.append(f"Adjustment {move.source_key} ({move.reference.strip()}) refers to a shipment "
+                                   "already counted in Daily Sales; whether it repeats it or is a separate "
+                                   "correction isn't recorded. Balance not calculated until it is resolved.")
+                held = True
                 continue
             if move.kind == "RECEIPT":
                 row.receipts += move.quantity
             else:
                 row.adjustments += move.quantity
 
-        row.calculated = base.quantity + row.receipts - row.usage + row.adjustments
-        if row.calculated < 0:
+        row.calculated = None if held else base.quantity + row.receipts - row.usage + row.adjustments
+        if row.calculated is not None and row.calculated < 0:
             row.reasons.append(f"Calculated balance is {row.calculated}: a discrepancy to verify, "
                                "not a physical count.")
         if review_days:
