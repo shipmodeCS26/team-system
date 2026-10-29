@@ -134,6 +134,21 @@ class MistakeReplays(unittest.TestCase):
             result = night(shipments=None)
         self.assertEqual(result["status"], INCOMPLETE)
 
+    def test_unreadable_shipments_are_never_a_confirmed_empty_day(self):
+        empty = dashboard(nerve=("0", "3,295"), spray=("0", "838"))
+        with rules_approved():
+            failed = night(dashboard=empty, shipments=None, no_shipments_confirmed=True, export_complete=False)
+            confirmed = night(dashboard=empty, shipments=[], no_shipments_confirmed=True, export_complete=False)
+        self.assertEqual(failed["status"], INCOMPLETE)
+        self.assertTrue(any("could not be read" in r for r in failed["incomplete"]), failed["incomplete"])
+        self.assertEqual(confirmed["status"], VERIFIED, confirmed["incomplete"] + confirmed["review"])
+
+    def test_another_clients_dashboard_is_rejected(self):
+        with rules_approved():
+            result = night(dashboard={**dashboard(), "id": "puravita"})
+        self.assertEqual(result["status"], INCOMPLETE)
+        self.assertIn("belongs to 'puravita'", result["incomplete"][0])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -24,8 +24,18 @@ def run_client(client_id: str, *, now: datetime, dashboard: dict, shipments: lis
                no_shipments_confirmed: bool = False, writes: list[dict] | None = None,
                reread: dict | None = None) -> dict:
     """`dashboard` is inventory.parse_dashboard output, `shipments` the day's ShipSidekick export rows
-    (None when they could not be read), `store` ssk_source.read_store output or its error dict."""
-    eod = eod_check.check(client_id, dashboard, shipments, no_shipments_confirmed=no_shipments_confirmed)
+    (None when they could not be read; [] for a read that found none), `store` ssk_source.read_store
+    output or its error dict."""
+    if dashboard.get("id") != client_id:
+        # Another client's Sheet must never verify this one: nothing is checked against it.
+        result = nightly_gate.gate(client_id, now=now, eod=None, store=store, compare=None,
+                                   export_complete=export_complete, cutoff_aligned=cutoff_aligned)
+        result["incomplete"].insert(0, f"The Dashboard read belongs to {dashboard.get('id')!r}, not {client_id!r}.")
+        return {**result, "status": nightly_gate.INCOMPLETE, "eod": None, "compare": None, "wrong_row_writes": []}
+    # None = the export could not be read: a failed read is never a confirmed empty day.
+    missing = "The ShipSidekick shipments could not be read." if shipments is None else ""
+    eod = eod_check.check(client_id, dashboard, shipments, no_shipments_confirmed=no_shipments_confirmed,
+                          missing_reason=missing)
     compare = None
     if store is not None and not store.get("error_code"):
         compare = ssk_check.compare(client_id, store.get("levels") or [], dashboard,
