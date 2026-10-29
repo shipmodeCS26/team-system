@@ -33,6 +33,7 @@ import sku_check
 import client_rules
 import daily_orders
 import order_check
+import nightly_run
 import ssk_check
 import ssk_source
 
@@ -52,6 +53,10 @@ def inventory_enabled():
 
 def ledger_enabled():
     return inventory_enabled() and os.getenv("INVENTORY_LEDGER_ENABLED", "false").lower() == "true"
+
+
+def nightly_enabled():
+    return inventory_enabled() and os.getenv("NIGHTLY_CHECK_ENABLED", "false").lower() == "true"
 
 
 def ready():
@@ -371,6 +376,37 @@ def eod_report():
     image = base64.b64encode(render_png(names[selected], source, report["status"])).decode()
     return {"report": report, "draft": slack_draft(selected, report), "image": f"data:image/png;base64,{image}",
             "sheet_read_at": source.get("fetched_at"), "writes": "disabled"}
+
+
+@app.get("/api/nightly-check")
+@protected
+def nightly_check():
+    """Issue #34: one client's nightly result (VERIFIED / REVIEW / INCOMPLETE) from the tested checks.
+    Off unless NIGHTLY_CHECK_ENABLED=true. Reads that client's Dashboard, its Daily Sales tab and its
+    ShipSidekick stock; nothing is written to Sheets, ShipSidekick or Slack."""
+    if not nightly_enabled():
+        return jsonify(error="The nightly check is switched off."), 503
+    selected = request.args.get("client_id", "")
+    if selected not in {client["id"] for client in CLIENTS}:
+        return jsonify(error="Choose one client."), 400
+    try:
+        # Read as it is now, never the 45-second cache: the result is bound to this read.
+        source = read_dashboards([selected], fresh=True)[0]
+        sales, missing = daily_sales_rows(selected)
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return jsonify(error="Inventory configuration is invalid or incomplete."), 503
+    rows, numbers = sales if sales is not None else (None, None)
+    if ssk_source.enabled():
+        store = ssk_source.read_stores([selected])[0]
+    else:
+        store = {"id": selected, "error_code": "not_configured", "error": ssk_source.ERRORS["not_configured"]}
+    # The Daily Sales tab is a copy of the export with no page or row-count evidence, and the stock
+    # read is not rolled back to the cutoff yet (step 2): both stay unproven, so the result can't be VERIFIED.
+    result = nightly_run.run_client(selected, now=utcnow(), dashboard=source, shipments=rows,
+                                    row_numbers=numbers, missing_reason=missing or "", store=store,
+                                    export_complete=False, cutoff_aligned=False)
+    return {**result, "sheet_read_at": source.get("fetched_at"), "ssk_read_at": store.get("fetched_at"),
+            "writes": "disabled"}
 
 
 @app.get("/api/inventory/calculated")

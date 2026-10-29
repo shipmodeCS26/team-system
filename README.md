@@ -302,6 +302,12 @@ Entry points:
 - `POST /api/eod-report`: signed in, CSRF token required, one client.
 - `eod_cli.py`: builds the report from saved values. `--out` is required.
 
+## Nightly check (Issue #34)
+
+`GET /api/nightly-check?client_id=<id>`: signed in, one client, read-only. Off by default; set `NIGHTLY_CHECK_ENABLED=true` (with the Sheets settings) to turn it on. It reads that client's Dashboard, Daily Sales tab and ShipSidekick stock, runs `eod_check`, `ssk_check` and `nightly_gate`, and returns one result: VERIFIED, REVIEW or INCOMPLETE, with every reason. Nothing is written to Sheets, ShipSidekick or Slack.
+
+Until the export has completeness evidence and the stock read is rolled back to the end-of-day cutoff (step 2), every client comes back INCOMPLETE and says so. Open rules (warehouse scope, balance basis, deduction timing, package approvals) keep clients out of VERIFIED as well.
+
 ## Calculated inventory (shadow check)
 
 See `docs/V1_PLAN.md`. Off by default; set `INVENTORY_LEDGER_ENABLED=true` in the private Render settings after the Sheets connection works. Approved counts for clients without a Manual Counts tab go in `INVENTORY_BASELINES_JSON` (format in the plan). Only nine ShipSidekick columns are read; customer names and addresses are never requested.
