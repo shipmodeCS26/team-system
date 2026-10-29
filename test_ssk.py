@@ -202,6 +202,11 @@ class CompareTests(unittest.TestCase):
                                  sheet(("TrueForm Fascial Release Support", "110")))
         self.assertEqual(self.by_sku(both)["FAS001"]["status"], "MATCH")
 
+    def test_echoes_the_stock_read_it_compared(self):
+        result = ssk_check.compare("puravita", levels(("CAP-MAGNESIUM-360", "Magnesium", 50, 0)),
+                                   sheet(("Magnesium Performance Capsules", "50")), fetched_at="2026-10-28T11:59:00+00:00")
+        self.assertEqual(result["fetched_at"], "2026-10-28T11:59:00+00:00")
+
     def test_different_and_unmatched(self):
         result = ssk_check.compare("puravita", levels(("CAP-MAGNESIUM-360", "Magnesium", 50, 0),
                                                        ("GIFT", "Gift card", 0, 0)),
