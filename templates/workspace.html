@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Shipmode's six-client logistics workspace for shipment exceptions, inventory, and invoices.">
+  <meta name="description" content="Shipmode's six-client logistics workspace for shipment exceptions, inventory, invoices, and the email marketing knowledge base.">
   <meta name="csrf-token" content="{{ csrf }}">
   <title>Shipmode • Operations workspace</title>
   <link rel="icon" type="image/png" href="/static/shipmode-logo.png">
@@ -23,6 +23,7 @@
       <button data-section="movement" class="nav-item active"><span class="nav-icon">↗</span>No Movement<span id="nav-count" class="nav-count">—</span></button>
       <button data-section="inventory" class="nav-item"><span class="nav-icon">▦</span>Inventory</button>
       <button data-section="invoices" class="nav-item"><span class="nav-icon">▤</span>Invoices</button>
+      <button data-section="knowledge" class="nav-item"><span class="nav-icon">✉</span>Knowledge Base</button>
     </nav>
     <div class="sidebar-bottom"><span class="connection-dot"></span><strong>ShipSidekick</strong><small id="side-connection">Not connected</small><button class="text-button" id="connection-details">Connection details ↗</button></div>
     <div class="account"><span class="avatar small">S</span><div><strong>Shipmode</strong><small>Personal workspace</small></div><span class="version">V1</span></div>
@@ -62,6 +63,7 @@
         <div class="module-footnote">These are the sheets' displayed values, including pending or formula-error cells. This page does not verify, recalculate, or change inventory.</div>
       </section>
       <section id="invoices-section" class="module-empty" hidden><div class="module-icon">▤</div><div class="eyebrow">INVOICES</div><h2>Invoices for <span class="selected-client-name">all clients</span></h2><p>This section is reserved for client invoices and billing status. No invoice source is connected yet.</p><div class="module-footnote">Your client selection stays with you across the workspace.</div></section>
+      <section id="knowledge-section" hidden>{% include "knowledge.html" %}</section>
     </main>
     <footer class="footer"><strong>Shipmode operations</strong><span>One workspace. Six clients.</span></footer>
   </div>

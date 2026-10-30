@@ -272,14 +272,15 @@ async function loadInventory(){
 }
 function section(name){
   state.section=name;
-  const title={movement:"No Movement",inventory:"Inventory",invoices:"Invoices"}[name];
+  const title={movement:"No Movement",inventory:"Inventory",invoices:"Invoices",knowledge:"Knowledge Base"}[name];
   document.querySelectorAll("[data-section]").forEach(el=>{el.classList.toggle("active",el.dataset.section===name);el.setAttribute("aria-current",el.dataset.section===name?"page":"false")});
-  for(const key of ["movement","inventory","invoices"])$(key+"-section").hidden=key!==name;
+  for(const key of ["movement","inventory","invoices","knowledge"])$(key+"-section").hidden=key!==name;
+  $("client-select").closest(".client-control").hidden=name==="knowledge";
   $("mode-notice").hidden=name!=="movement";
   $("movement-actions").hidden=name!=="movement";$("crumb").textContent=title;
   $("title").innerHTML=esc(title)+'<span class="title-dot"></span>';
-  $("eyebrow").textContent=name==="movement"?"SHIPMENT EXCEPTIONS":"CLIENT OPERATIONS";
-  $("subtitle").textContent={movement:"Catch stalled shipments before your customers do.",inventory:"Stock visibility, organized by client.",invoices:"Client billing, in one place."}[name];
+  $("eyebrow").textContent={movement:"SHIPMENT EXCEPTIONS",knowledge:"EMAIL MARKETING PLAYBOOK"}[name]||"CLIENT OPERATIONS";
+  $("subtitle").textContent={movement:"Catch stalled shipments before your customers do.",inventory:"Stock visibility, organized by client.",invoices:"Client billing, in one place.",knowledge:"How ShipMode uses email to win and keep clients."}[name];
   render();
   if(name==="inventory")loadInventory();
 }
