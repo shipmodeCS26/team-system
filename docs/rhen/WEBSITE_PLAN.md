@@ -131,3 +131,64 @@ Generic supplement copy lists features ("contains X, Y, Z for sustained energy")
 **Roles:** Gly builds the site and is project lead. Claude: copy drafts, reviews of each section against this plan, QA checklists. Carlos: brand, photos, copy approval. Nick: prices, apps, payments, subscriptions. Quill: claims.
 
 **Needed first:** (1) the theme's GitHub repo, (2) the Shopify connector reconnected, (3) answers to items 1 to 4 in section 4, (4) the ChatGPT plan, merged into this file as agree / add / conflict.
+
+---
+
+## 6. Flowcharts
+
+### 6.1 Build flow, from access to launch
+
+Diamonds are gates. Nothing moves past a gate until its owner says yes. A "no" loops back to fix.
+
+```mermaid
+flowchart TD
+    A["Phase 0: Access<br/>Theme repo · Shopify connector · audit current theme"] --> B{"Owners answer<br/>conflicts 1-4?"}
+    B -- "Not yet" --> B1["Build with placeholders<br/>[PRICE] [LABEL] [COA]"]
+    B1 --> C
+    B -- "Yes" --> C["Phase 1: Foundations on DUPLICATE theme<br/>Brand tokens · header · footer + FDA disclaimer"]
+    C --> D["Waitlist / password page<br/>email + SMS capture"]
+    D --> E["Phase 2: Pages<br/>Home · Presence · THE CAN · Learn · About · Policies"]
+    E --> F["Write each section scene-first<br/>scene → their words → what they tried → fact"]
+    F --> G{"Carlos approves<br/>look + copy?"}
+    G -- "No" --> F
+    G -- "Yes" --> H{"Quill approves<br/>every claim?"}
+    H -- "No" --> F
+    H -- "Yes" --> I["Phase 3: Commerce<br/>Subscription app · Klaviyo · reviews · Pixel + CAPI · GA4 · checkout"]
+    I --> J{"Nick: price set from<br/>real unit economics?"}
+    J -- "No" --> J1["Keep [PRICE] placeholder<br/>store stays unpublished"]
+    J1 --> J
+    J -- "Yes" --> K["Phase 4: QA<br/>Mobile · test orders on 1, 3 and 6-month tiers<br/>cancel · refund · failed payment · tracking"]
+    K --> L{"Gate E passes?"}
+    L -- "No" --> K
+    L -- "Yes" --> M{"Inventory arrived,<br/>COA on file?"}
+    M -- "No" --> D
+    M -- "Yes" --> N["Phase 5: Publish theme<br/>owner approval only"]
+    N --> O["Soft launch to friends + waitlist (Gate H)"]
+```
+
+### 6.2 Customer journey on the site
+
+What each page has to do for the customer, following the stages in the ICP research.
+
+```mermaid
+flowchart LR
+    A["Discover<br/>Ad · creator · word of mouth"] --> B["Home<br/>Their scene first<br/>'What's your Rhēn?'"]
+    B --> C["Presence product page<br/>One buying reason, then every dose,<br/>label, prep, price, renewal terms"]
+    C --> D{"Ready to buy?"}
+    D -- "Not yet" --> E["Learn page · FAQ<br/>Two clocks · read the label<br/>coffee question"]
+    E --> C
+    D -- "Not yet" --> F["Email / SMS sign-up<br/>Welcome flow"]
+    F --> C
+    D -- "Yes" --> G{"Pick a plan"}
+    G --> G1["1-month<br/>CAN at month 3"]
+    G --> G2["3-month<br/>CAN right away"]
+    G --> G3["6-month<br/>CAN on day one"]
+    G1 --> H["Checkout<br/>Calm · one lime button · clear terms"]
+    G2 --> H
+    G3 --> H
+    H --> I["Use<br/>Tear. Stir. Proceed.<br/>Post-purchase emails"]
+    I --> J["Reminder before every renewal"]
+    J --> K{"Keep going?"}
+    K -- "Yes" --> L["Paid reorder"]
+    K -- "Skip / pause / cancel<br/>a couple of clicks" --> M["Account page"]
+```
