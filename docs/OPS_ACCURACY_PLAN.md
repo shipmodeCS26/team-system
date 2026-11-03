@@ -17,6 +17,23 @@ every mistake becomes a rule (and a test where possible) so it does not happen t
 | 5 | Draft handling | Two drafts in one Slack channel, so an older wrong version was sent; drafts lost and redone |
 | 6 | Tested checks not used | The repo already has `eod_check.py`, `ssk_check.py`, `sku_check.py`, `client_rules.py`, `eod_report.py`; the nightly run used an ad-hoc script instead |
 
+### 1b. What went wrong (Oct 29 – Nov 3)
+
+Same root causes keep coming back. Each row is a mistake that reached Gly or a client, and the rule that now prevents it.
+
+| # | Root cause | What happened | Rule / check |
+|---|---|---|---|
+| 7 | Stale "still waiting on" lines copied forward | Muravai Oct 31 report said PO-28 tracking and PO-26 ETA were pending, though the client had sent both (Nov 1, Nov 2) and they were already in Incoming Stocks. Client complained. | Before every client report, re-read that client's channel since the last report and the Incoming Stocks tab. No "waiting on" line without a check that same run. |
+| 8 | Hand totals | Muravai draft said total shipped 2,914; correct 2,915. | Every total re-added in code: shipped total = opening total − remaining total. |
+| 9 | Sheet balance not reset to a physical count | Onset Dashboard showed Urolithin 306 from the Oct 28 sheet balance, ignoring the warehouse count of 546 on Oct 30. | A physical count replaces the balance at its timestamp (Phase 1 "Starting stock"). Never report a number that conflicts with a count. |
+| 10 | Receipts without a received date | After the Onset count reset, a 30-unit receipt with no received date was added again (159 instead of 129). | Every receipt row needs a received date; after any count reset, check balance = count − sales since. |
+| 11 | Missing days reported as "updated" | Onset Daily Sales has no rows for Oct 27 and Oct 29 – Nov 1; unknown whether nothing shipped. | Gap check on every loaded sheet; a gap makes the client INCOMPLETE. |
+| 12 | Draft slot blocked | Slack keeps one draft per channel. When an older draft exists, a new draft call still says "created" but returns no draft ID and nothing is saved. #muravai- reports were lost several times; Gly also sent older Oct 31 drafts after newer ones existed. | Check every draft for a draft ID; if missing, tell Gly which old draft blocks the channel and give the text to paste. Date in every draft title. |
+| 13 | Unstable SSK figures used as facts | PuraVita backorder from SSK "available" swung −586 / −188 / −836 / −788 / −289 across five reads; a ~268 figure was sent to the client. | Backlog comes from open orders by status (confirmed vs unallocated vs on hold), never from "available". |
+| 14 | Order lines silently not picked | Fascial: from mid-September to Oct 29, the TrueSleep line on subscription orders got no pick task, so ~740 orders shipped without it. Nobody noticed until customers complained. | New nightly check: every shipped order's line items vs its shipment line items; any line ordered but not shipped is flagged per SKU and per day (Phase 1). |
+| 15 | Certainty overstated | Gave Onset 129 and PuraVita "73 confirmed" as firm answers before checking assumptions. | State what each number depends on; "not certain" when a count, a gap or an assumption is unconfirmed. |
+| 16 | Process files outside the repo | The nightly scripts and the rules file live in a scratch folder in the container, not in git; a container reset loses them. | Move the nightly scripts and the sanitized rules into the repo (Issue A). Never commit sheet IDs, keys or client exports. |
+
 ## 2. Standing instructions from Carlos and Orlando
 
 These are rules, not one-off requests. Each one gets an owner, an evidence source, and an entry in the instruction log (Phase 0).
@@ -53,6 +70,8 @@ These are rules, not one-off requests. Each one gets an owner, an evidence sourc
 - Instruction log kept in a ShipMode-owned, access-controlled store (an internal ShipMode workbook now, the app's internal store later). Never created or updated inside any client or Revly workbook. Columns: instruction, from, client, type (section Phase 4), kind (`finite task`, closed by evidence, or `standing rule`, active until an authorized revocation or end time), scope (e.g. `new orders only` or `all orders unshipped at effective time`), typed parameters for the type (see Phase 4), effective at (timezone-qualified timestamp, e.g. `2026-10-28T05:02-04:00`, never a bare date; the Slack message time when no other time is given), due at (timezone-qualified timestamp, or an explicit `no deadline`), owner, evidence source, status, confirmed by, confirmed on. Seeded with section 2 plus Max Gummies, D3+K2 and the Muravai "1 filter" SKU.
 - One Slack draft per channel, date in the title; every number re-read before saving.
 - Weekly shelf count of the riskiest items, starting with Muravai kit parts (open gap: SSK +20 kits, +25 hoses, +27 brackets).
+- Before every client report (added Nov 3): re-read the client channel and Incoming Stocks since the last report actually sent; re-add totals; save one dated draft and confirm a draft ID.
+- Count resets (added Nov 3): when a physical count resets a balance, every receipt row for that product gets a received date and the Dashboard is checked to equal count − sales since.
 
 ### Phase 1: nightly check gate (Issue A)
 - Goal: the nightly run uses the repo's tested checks instead of a scratch script.
@@ -76,6 +95,8 @@ These are rules, not one-off requests. Each one gets an owner, an evidence sourc
 | `eod_check` VERIFIED, every SSK row MATCH, none of the above, package APPROVED, date = yesterday ET | VERIFIED |
 
   When several apply, INCOMPLETE wins over REVIEW, and REVIEW wins over VERIFIED.
+- Order-vs-shipment check (added Nov 3, from section 1b row 14): for each shipped order, compare the order's line items with the shipment's line items; any SKU ordered but not shipped is listed per SKU and per day, and a rate above an approved threshold makes the client REVIEW.
+- Gap check (section 1b row 11): any calendar day with no loaded sales between the first and last loaded day is listed; the client is INCOMPLETE until the day is confirmed as a no-shipment day or loaded.
 - Sheet-write check: every write the nightly run or a person makes for a report (EOD rows, status notes, Incoming Stocks rows) is checked against an approved expected-cell map (product row → cell) by re-reading after the write; a value in the wrong product row makes the client REVIEW.
 - Fixtures: sanitized, immutable test fixtures (synthetic values shaped like the real Sheet, shipment and SSK data, no real client exports or customer data) for Oct 26–27, with golden expected results.
 - Acceptance:
