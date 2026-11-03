@@ -1,0 +1,484 @@
+<title>Connect Claude to Slack and Shopify</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600;700&family=Barlow+Condensed:ital,wght@1,800&display=swap">
+<style>
+/* Layout: one reading column; each step pairs instructions with a drawn screen, numbered callouts tie them together. ShipMode brand tokens. */
+:root {
+  --bg: #FFFFFF;
+  --fg: #1B263C;
+  --text: #2B3445;
+  --muted: #5E6675;
+  --line: #D4D7D9;
+  --surface: #F5F6F7;
+  --blue: #2563D6;
+  --blue-soft: #E7EEFB;
+  --black: #07080A;
+  --ok: #1E8E4E;
+  --ok-soft: #E4F3EA;
+  --warn: #9A6100;
+  --warn-soft: #FBF1DE;
+  --critical: #C62828;
+  --critical-soft: #FBE7E7;
+  --screen: #FFFFFF;
+  --screen-bar: #EEF0F2;
+  --display: "Barlow Condensed", "Arial Narrow", Arial, sans-serif;
+  --body: "Barlow", Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0E1117; --fg: #E8ECF3; --text: #CDD3DD; --muted: #96A0B0; --line: #2C3442;
+    --surface: #161B24; --blue: #6A98EC; --blue-soft: #1A2740; --black: #07080A;
+    --ok: #5CC48A; --ok-soft: #13291D; --warn: #E2A84A; --warn-soft: #2E2312;
+    --critical: #F07171; --critical-soft: #331718; --screen: #1A202B; --screen-bar: #222A37;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0E1117; --fg: #E8ECF3; --text: #CDD3DD; --muted: #96A0B0; --line: #2C3442;
+  --surface: #161B24; --blue: #6A98EC; --blue-soft: #1A2740; --black: #07080A;
+  --ok: #5CC48A; --ok-soft: #13291D; --warn: #E2A84A; --warn-soft: #2E2312;
+  --critical: #F07171; --critical-soft: #331718; --screen: #1A202B; --screen-bar: #222A37;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--text); font-family: var(--body); font-size: 17px; line-height: 1.55; }
+.band { background: var(--black); color: #FFFFFF; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 36px 32px; }
+.wrap { max-width: 860px; margin: 0 auto; }
+main.wrap { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 8px 64px; }
+.eyebrow { font-weight: 700; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: #9DB8EC; margin: 0 0 6px; }
+h1 { font-family: var(--display); font-style: italic; font-weight: 800; font-size: clamp(34px, 6vw, 52px); line-height: 1.02; margin: 0 0 12px; text-wrap: balance; }
+.band p { margin: 0; max-width: 62ch; color: #D4D7D9; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 18px; font-size: 14px; color: #AEB6C2; }
+h2 { font-family: var(--display); font-style: italic; font-weight: 800; font-size: 32px; color: var(--fg); margin: 0; line-height: 1.1; text-wrap: balance; }
+h3 { font-size: 19px; color: var(--fg); margin: 0 0 6px; text-wrap: balance; }
+section { padding-top: 44px; display: grid; gap: 18px; }
+.part { font-weight: 700; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--blue); }
+p { margin: 0; max-width: 65ch; }
+.lead { color: var(--muted); }
+a { color: var(--blue); }
+a:focus-visible, button:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+code, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .9em; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+
+/* Map of the three tools */
+.map { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.tool { border: 1px solid var(--line); border-radius: 8px; padding: 16px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.tool b { color: var(--fg); font-size: 18px; }
+.pill { display: inline-block; justify-self: start; font-size: 13px; font-weight: 700; padding: 2px 10px; border-radius: 999px; }
+.pill.ok { color: var(--ok); background: var(--ok-soft); }
+.pill.no { color: var(--muted); background: var(--surface); border: 1px solid var(--line); }
+.tool p { font-size: 15px; color: var(--muted); }
+
+/* Checklist */
+.check { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.check li { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; align-items: start; }
+.check input { width: 20px; height: 20px; margin-top: 3px; accent-color: var(--blue); }
+.check label { cursor: pointer; }
+.check small { display: block; color: var(--muted); font-size: 15px; }
+
+/* Steps */
+.step { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 20px; align-items: start; border-top: 1px solid var(--line); padding-top: 20px; }
+.step.solo { grid-template-columns: minmax(0, 1fr); }
+.step-text { display: grid; gap: 10px; min-width: 0; }
+.step-text ol { margin: 0; padding-left: 0; list-style: none; display: grid; gap: 8px; counter-reset: c; }
+.step-text ol li { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 8px; }
+.n { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--blue); color: #FFFFFF; font-weight: 700; font-size: 13px; font-variant-numeric: tabular-nums; flex: none; }
+.stepnum { font-family: var(--display); font-style: italic; font-weight: 800; font-size: 22px; color: var(--blue); }
+
+/* Drawn screens */
+figure { margin: 0; min-width: 0; }
+figcaption { font-size: 13px; color: var(--muted); margin-top: 6px; }
+.screen { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--screen); font-size: 13px; line-height: 1.35; box-shadow: 0 6px 18px rgba(16, 24, 40, .08); }
+.chrome { display: flex; align-items: center; gap: 8px; background: var(--screen-bar); padding: 7px 10px; border-bottom: 1px solid var(--line); }
+.dots { display: flex; gap: 4px; }
+.dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--line); display: block; }
+.url { flex: 1; min-width: 0; background: var(--screen); border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.body { padding: 14px; display: grid; gap: 10px; position: relative; }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.split { display: grid; grid-template-columns: 96px minmax(0, 1fr); min-height: 170px; }
+.side { background: var(--surface); border-right: 1px solid var(--line); padding: 10px 8px; display: grid; gap: 6px; align-content: start; }
+.side span { padding: 4px 6px; border-radius: 5px; color: var(--muted); }
+.side span.on { background: var(--blue-soft); color: var(--fg); font-weight: 700; }
+.btn { display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; padding: 4px 10px; font-weight: 700; font-size: 12.5px; border: 1px solid var(--line); color: var(--fg); background: var(--screen); white-space: nowrap; }
+.btn.primary { background: var(--blue); border-color: var(--blue); color: #FFFFFF; }
+.btn.green { background: var(--ok); border-color: var(--ok); color: #FFFFFF; }
+.field { border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; color: var(--muted); flex: 1; min-width: 0; }
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; display: flex; align-items: center; gap: 10px; }
+.logo { width: 26px; height: 26px; border-radius: 6px; display: grid; place-items: center; color: #FFFFFF; font-weight: 700; font-size: 13px; flex: none; }
+.logo.slack { background: #4A154B; }
+.logo.shop { background: #5E8E3E; }
+.logo.claude { background: #C96442; }
+.grow { flex: 1; min-width: 0; }
+.grow small { display: block; color: var(--muted); }
+.status { color: var(--ok); font-weight: 700; font-size: 12px; }
+.mark { outline: 2.5px solid var(--blue); outline-offset: 2px; border-radius: 6px; position: relative; }
+.badge { position: absolute; top: -11px; right: -11px; width: 20px; height: 20px; border-radius: 50%; background: var(--blue); color: #FFFFFF; font-size: 11px; font-weight: 700; display: grid; place-items: center; }
+.consent { max-width: 300px; margin: 0 auto; display: grid; gap: 10px; text-align: center; }
+.consent ul { text-align: left; margin: 0; padding-left: 18px; color: var(--muted); }
+.toggle { width: 30px; height: 17px; border-radius: 999px; background: var(--blue); position: relative; flex: none; }
+.toggle::after { content: ""; position: absolute; right: 2px; top: 2px; width: 13px; height: 13px; border-radius: 50%; background: #FFFFFF; }
+.chatbox { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; display: grid; gap: 8px; }
+.menu { border: 1px solid var(--line); border-radius: 8px; padding: 6px; display: grid; gap: 4px; background: var(--screen); box-shadow: 0 4px 12px rgba(16, 24, 40, .1); max-width: 230px; }
+.menu div { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px; border-radius: 5px; }
+.bubble { background: var(--surface); border-radius: 10px; padding: 8px 10px; justify-self: end; max-width: 85%; color: var(--fg); }
+.reply { color: var(--text); }
+.approve { border: 1px solid var(--line); border-radius: 8px; padding: 10px; display: grid; gap: 8px; }
+
+/* Callouts */
+.note { border-left: 4px solid var(--blue); background: var(--blue-soft); padding: 12px 14px; border-radius: 0 6px 6px 0; display: grid; gap: 6px; }
+.note.warn { border-color: var(--warn); background: var(--warn-soft); }
+.note.stop { border-color: var(--critical); background: var(--critical-soft); }
+.note strong { color: var(--fg); }
+
+/* Rules + table */
+.rules { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.rules > div { border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.rules ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.tag { font-weight: 700; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; }
+.tag.ok { color: var(--ok); }
+.tag.no { color: var(--critical); }
+.tablebox { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 15px; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { background: var(--surface); color: var(--fg); font-weight: 700; }
+tr:last-child td { border-bottom: none; }
+.prompt { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.copy { font: inherit; font-size: 13px; font-weight: 700; border: 1px solid var(--line); background: var(--bg); color: var(--blue); border-radius: 6px; padding: 3px 10px; cursor: pointer; }
+.foot { border-top: 1px solid var(--line); margin-top: 48px; padding-top: 16px; font-size: 14px; color: var(--muted); display: grid; gap: 6px; }
+
+@media (max-width: 720px) {
+  .step { grid-template-columns: minmax(0, 1fr); }
+  .map, .rules { grid-template-columns: minmax(0, 1fr); }
+  .split { grid-template-columns: 78px minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<header class="band">
+  <div class="wrap">
+    <p class="eyebrow">ShipMode SOP · Ops team</p>
+    <h1>Connect your Claude to Slack and Shopify</h1>
+    <p>Step-by-step setup for Orlando. When you finish, you can ask Claude about Slack threads and client store orders without leaving the chat. It takes about 20 minutes.</p>
+    <div class="meta"><span>Owner: Gly</span><span>Version 1 · Nov 3, 2026</span><span>Pictures are drawings of the screens, not screenshots</span></div>
+  </div>
+</header>
+
+<main class="wrap">
+
+<section aria-labelledby="what">
+  <p class="part">Overview</p>
+  <h2 id="what">What gets connected</h2>
+  <div class="map">
+    <div class="tool"><b>Slack</b><span class="pill ok">Connect in Claude</span><p>Claude can search and read ShipMode channels, DMs and files you can already see.</p></div>
+    <div class="tool"><b>Shopify</b><span class="pill ok">Connect in Claude, view only</span><p>Claude can look up orders, products and stock in the client stores you have staff access to.</p></div>
+    <div class="tool"><b>ShipSidekick</b><span class="pill no">Not connected</span><p>Claude has no ShipSidekick connector. Keep using ShipSidekick in your browser as usual. See Part 4.</p></div>
+  </div>
+</section>
+
+<section aria-labelledby="before">
+  <p class="part">Part 0</p>
+  <h2 id="before">Before you start</h2>
+  <p class="lead">Tick these off. If one is missing, message Gly in Slack before going further.</p>
+  <ul class="check">
+    <li><input type="checkbox" id="c1"><label for="c1">You can sign in to Claude at <span class="mono">claude.ai</span> with your ShipMode invite.<small>Use the same Claude account every time. The desktop app works too; the menus are the same.</small></label></li>
+    <li><input type="checkbox" id="c2"><label for="c2">You can sign in to the ShipMode Slack (<span class="mono">shipmode.slack.com</span>).</label></li>
+    <li><input type="checkbox" id="c3"><label for="c3">You have a Shopify staff login for each client store you need, with <strong>view-only</strong> permissions.<small>The store owner sends this invite to your email. Ask Gly which stores you need. Don't use anyone else's login.</small></label></li>
+    <li><input type="checkbox" id="c4"><label for="c4">You're on a computer, not your phone, with about 20 minutes free.</label></li>
+  </ul>
+</section>
+
+<section aria-labelledby="open">
+  <p class="part">Part 1</p>
+  <h2 id="open">Open Claude's Connectors page</h2>
+
+  <div class="step">
+    <div class="step-text">
+      <span class="stepnum">Step 1</span>
+      <ol>
+        <li><span class="n">1</span><span>Go to <a href="https://claude.ai/customize/connectors" target="_blank" rel="noopener">claude.ai/customize/connectors</a>. You can also click <strong>Customize</strong> in the left sidebar, then <strong>Connectors</strong>.</span></li>
+        <li><span class="n">2</span><span>Click <strong>Discover</strong> to see the list of available connectors.</span></li>
+        <li><span class="n">3</span><span>Use the <strong>Search connectors</strong> box to find each app below.</span></li>
+      </ol>
+      <p class="lead">Leave this tab open. You'll come back to it for Slack and Shopify.</p>
+    </div>
+    <figure>
+      <div class="screen" role="img" aria-label="Drawing of the Claude Connectors page with Customize selected in the sidebar, a Discover button and a search box">
+        <div class="chrome"><div class="dots"><i></i><i></i><i></i></div><div class="url">claude.ai/customize/connectors</div></div>
+        <div class="split">
+          <div class="side"><span>New chat</span><span>Chats</span><span class="on mark">Customize<em class="badge">1</em></span></div>
+          <div class="body">
+            <div class="row"><strong style="color:var(--fg)">Connectors</strong><span class="grow"></span><span class="btn mark">Discover<em class="badge">2</em></span></div>
+            <div class="row"><span class="field mark">Search connectors<em class="badge">3</em></span></div>
+            <div class="card"><span class="logo slack">S</span><span class="grow">Slack<small>Messages, channels, files</small></span></div>
+            <div class="card"><span class="logo shop">S</span><span class="grow">Shopify<small>Store orders and products</small></span></div>
+          </div>
+        </div>
+      </div>
+      <figcaption>Drawing of claude.ai. Labels may look slightly different on your screen.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section aria-labelledby="slack">
+  <p class="part">Part 2</p>
+  <h2 id="slack">Connect Slack</h2>
+
+  <div class="step">
+    <div class="step-text">
+      <span class="stepnum">Step 2</span>
+      <h3>Find Slack and click Connect</h3>
+      <ol>
+        <li><span class="n">1</span><span>Type <strong>Slack</strong> in the search box.</span></li>
+        <li><span class="n">2</span><span>Click <strong>Connect</strong> (or <strong>Connect to Claude</strong>).</span></li>
+      </ol>
+      <div class="note warn"><p><strong>See "Request" instead of Connect?</strong> Your Claude team owner hasn't turned on Slack yet. Click <strong>Request</strong> and message Gly. Stop here until it's approved.</p></div>
+    </div>
+    <figure>
+      <div class="screen" role="img" aria-label="Drawing of the connector search showing Slack with a Connect button">
+        <div class="chrome"><div class="dots"><i></i><i></i><i></i></div><div class="url">claude.ai/customize/connectors</div></div>
+        <div class="body">
+          <div class="row"><span class="field mark" style="color:var(--fg)">Slack<em class="badge">1</em></span></div>
+          <div class="card"><span class="logo slack">S</span><span class="grow"><strong style="color:var(--fg)">Slack</strong><small>Search channels, DMs and files</small></span><span class="btn primary mark">Connect<em class="badge">2</em></span></div>
+        </div>
+      </div>
+      <figcaption>Drawing. The Slack listing.</figcaption>
+    </figure>
+  </div>
+
+  <div class="step">
+    <div class="step-text">
+      <span class="stepnum">Step 3</span>
+      <h3>Approve on Slack's page</h3>
+      <ol>
+        <li><span class="n">1</span><span>A Slack page opens. Check that the workspace at the top right says <strong>ShipMode</strong>. If it shows a different workspace, use the menu there to switch.</span></li>
+        <li><span class="n">2</span><span>Read the list of what Claude can see, then click <strong>Allow</strong>.</span></li>
+      </ol>
+      <p class="lead">If Slack asks you to sign in first, use your ShipMode Slack email.</p>
+    </div>
+    <figure>
+      <div class="screen" role="img" aria-label="Drawing of the Slack permission page with the ShipMode workspace selector and an Allow button">
+        <div class="chrome"><div class="dots"><i></i><i></i><i></i></div><div class="url">slack.com/oauth/…</div></div>
+        <div class="body">
+          <div class="row"><span class="logo slack">S</span><span class="grow"></span><span class="btn mark">ShipMode ▾<em class="badge">1</em></span></div>
+          <div class="consent">
+            <strong style="color:var(--fg)">Claude is requesting permission to access the ShipMode Slack workspace</strong>
+            <ul><li>View messages and files you can see</li><li>Search channels and DMs</li></ul>
+            <div class="row" style="justify-content:center"><span class="btn">Cancel</span><span class="btn green mark">Allow<em class="badge">2</em></span></div>
+          </div>
+        </div>
+      </div>
+      <figcaption>Drawing. Slack's wording of the permission list may differ.</figcaption>
+    </figure>
+  </div>
+
+  <div class="step">
+    <div class="step-text">
+      <span class="stepnum">Step 4</span>
+      <h3>Check it says Connected</h3>
+      <p>You land back on Claude's Connectors page. Slack now shows <strong>Connected</strong> under <strong>Your connectors</strong>, and its button changes to <strong>Disconnect</strong>. Don't click that.</p>
+    </div>
+    <figure>
+      <div class="screen" role="img" aria-label="Drawing of the Your connectors list showing Slack as Connected">
+        <div class="chrome"><div class="dots"><i></i><i></i><i></i></div><div class="url">claude.ai/customize/connectors</div></div>
+        <div class="body">
+          <strong style="color:var(--fg)">Your connectors</strong>
+          <div class="card mark"><span class="logo slack">S</span><span class="grow"><strong style="color:var(--fg)">Slack</strong><small class="status">● Connected</small></span><span class="btn">Disconnect</span></div>
+        </div>
+      </div>
+      <figcaption>Drawing. What success looks like.</figcaption>
+    </figure>
+  </div>
+
+  <div class="step">
+    <div class="step-text">
+      <span class="stepnum">Step 5</span>
+      <h3>Test it in a new chat</h3>
+      <ol>
+        <li><span class="n">1</span><span>Start a <strong>New chat</strong>. Click <strong>+</strong> at the bottom left of the message box.</span></li>
+        <li><span class="n">2</span><span>Click <strong>Connectors</strong> and make sure <strong>Slack</strong> is switched on.</span></li>
+        <li><span class="n">3</span><span>Send this message:</span></li>
+      </ol>
+      <div class="prompt"><code id="p-slack">Summarize the last 10 messages in #no-movement</code><button class="copy" type="button" data-copy="p-slack">Copy</button></div>
+      <p>The first time, Claude asks permission to use Slack. Click <strong>Allow once</strong>. If you get a summary back, Slack is done.</p>
+    </div>
+    <figure>
+      <div class="screen" role="img" aria-label="Drawing of a new chat with the plus menu open, Connectors listed and Slack toggled on">
+        <div class="chrome"><div class="dots"><i></i><i></i><i></i></div><div class="url">claude.ai/new</div></div>
+        <div class="body">
+          <div class="menu">
+            <div class="mark">Connectors ›<em class="badge">2</em></div>
+            <div><span class="row" style="gap:6px"><span class="logo slack" style="width:18px;height:18px;font-size:10px">S</span>Slack</span><span class="toggle"></span></div>
+            <div><span class="row" style="gap:6px"><span class="logo shop" style="width:18px;height:18px;font-size:10px">S</span>Shopify</span><span class="toggle"></span></div>
+          </div>
+          <div class="chatbox">
+            <span style="color:var(--muted)">Summarize the last 10 messages in #no-movement</span>
+            <div class="row"><span class="btn mark">+<em class="badge">1</em></span><span class="grow"></span><span class="btn primary">↑</span></div>
+          </div>
+        </div>
+      </div>
+      <figcaption>Drawing. The + menu in a new chat.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section aria-labelledby="shopify">
+  <p class="part">Part 3</p>
+  <h2 id="shopify">Connect Shopify (view only)</h2>
+  <div class="note stop">
+    <p><strong>Read this first.</strong> The Shopify connector can change a store: edit products, set inventory, create discounts. ShipMode only <em>looks</em> at client stores. Two things keep it that way:</p>
+    <p>1. Your Shopify staff login has view-only permissions, so Shopify itself blocks changes.<br>2. You never ask Claude to change anything in a store. If Claude ever asks you to approve a change, click <strong>Deny</strong>.</p>
+  </div>
+
+  <div class="step">
+    <div class="step-text">
+      <span class="stepnum">Step 6</span>
+      <h3>Find Shopify and click Connect</h3>
+      <ol>
+        <li><span class="n">1</span><span>Back on <a href="https://claude.ai/customize/connectors" target="_blank" rel="noopener">Connectors</a>, search for <strong>Shopify</strong>.</span></li>
+        <li><span class="n">2</span><span>Click <strong>Connect</strong> (or <strong>Connect to Claude</strong>).</span></li>
+      </ol>
+      <p class="lead">Same as Slack: if you see <strong>Request</strong>, click it and message Gly.</p>
+    </div>
+    <figure>
+      <div class="screen" role="img" aria-label="Drawing of the connector search showing Shopify with a Connect button">
+        <div class="chrome"><div class="dots"><i></i><i></i><i></i></div><div class="url">claude.ai/customize/connectors</div></div>
+        <div class="body">
+          <div class="row"><span class="field mark" style="color:var(--fg)">Shopify<em class="badge">1</em></span></div>
+          <div class="card"><span class="logo shop">S</span><span class="grow"><strong style="color:var(--fg)">Shopify</strong><small>Orders, products, inventory</small></span><span class="btn primary mark">Connect<em class="badge">2</em></span></div>
+        </div>
+      </div>
+      <figcaption>Drawing. The Shopify listing.</figcaption>
+    </figure>
+  </div>
+
+  <div class="step">
+    <div class="step-text">
+      <span class="stepnum">Step 7</span>
+      <h3>Sign in to Shopify and pick a store</h3>
+      <ol>
+        <li><span class="n">1</span><span>Shopify's sign-in page opens. Use the email the store owner invited as staff, <strong>not</strong> a personal or client owner login.</span></li>
+        <li><span class="n">2</span><span>If you have access to more than one store, pick the client store you want first.</span></li>
+        <li><span class="n">3</span><span>Review the access screen and click <strong>Approve</strong> (it may say <strong>Install</strong> or <strong>Connect</strong>).</span></li>
+      </ol>
+      <p class="lead">You return to Claude, and Shopify shows <strong>Connected</strong>, like Slack in Step 4.</p>
+    </div>
+    <figure>
+      <div class="screen" role="img" aria-label="Drawing of the Shopify account page with a store list and an Approve button">
+        <div class="chrome"><div class="dots"><i></i><i></i><i></i></div><div class="url">accounts.shopify.com/…</div></div>
+        <div class="body">
+          <div class="row"><span class="logo shop">S</span><span class="grow" style="color:var(--muted)">orlando@… (staff) <em class="badge" style="position:static;display:inline-grid">1</em></span></div>
+          <strong style="color:var(--fg)">Choose a store</strong>
+          <div class="card mark"><span class="grow">Client store A<small>client-a.myshopify.com</small></span><em class="badge">2</em></div>
+          <div class="card"><span class="grow">Client store B<small>client-b.myshopify.com</small></span></div>
+          <div class="row" style="justify-content:flex-end"><span class="btn">Cancel</span><span class="btn green mark">Approve<em class="badge">3</em></span></div>
+        </div>
+      </div>
+      <figcaption>Drawing. Shopify's real screens here were not checked. Store names are placeholders.</figcaption>
+    </figure>
+  </div>
+
+  <div class="step">
+    <div class="step-text">
+      <span class="stepnum">Step 8</span>
+      <h3>Test it with a read-only question</h3>
+      <p>In a new chat, turn on <strong>Shopify</strong> under <strong>+ → Connectors</strong> and send:</p>
+      <div class="prompt"><code id="p-shop">How many orders did this store get yesterday? Just read, don't change anything.</code><button class="copy" type="button" data-copy="p-shop">Copy</button></div>
+      <p>Click <strong>Allow once</strong> when Claude asks to look up orders. To work on another client, ask: <code>Switch to the &lt;client name&gt; store.</code></p>
+      <div class="note stop"><p><strong>Click Deny</strong> if a permission box names an action like <em>update product</em>, <em>set inventory</em>, <em>create discount</em> or anything that writes. Then tell Gly what you asked.</p></div>
+    </div>
+    <figure>
+      <div class="screen" role="img" aria-label="Drawing of a chat where Claude asks to use the Shopify list orders tool with Allow once, Always allow and Deny buttons">
+        <div class="chrome"><div class="dots"><i></i><i></i><i></i></div><div class="url">claude.ai/chat/…</div></div>
+        <div class="body">
+          <div class="bubble">How many orders did this store get yesterday? Just read, don't change anything.</div>
+          <div class="approve">
+            <span class="row" style="gap:6px"><span class="logo shop" style="width:18px;height:18px;font-size:10px">S</span><strong style="color:var(--fg)">Claude wants to use Shopify: list orders</strong></span>
+            <div class="row"><span class="btn primary mark">Allow once<em class="badge">✓</em></span><span class="btn">Always allow</span><span class="btn">Deny</span></div>
+          </div>
+          <span class="reply">Yesterday the store had 312 orders… <em style="color:var(--muted)">(example)</em></span>
+        </div>
+      </div>
+      <figcaption>Drawing. A safe, read-only request. The numbers are an example.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section aria-labelledby="ssk">
+  <p class="part">Part 4</p>
+  <h2 id="ssk">ShipSidekick stays separate</h2>
+  <div class="step solo">
+    <div class="step-text">
+      <p>Claude has no ShipSidekick connector. The only way to link them is a ShipSidekick API key, and ShipMode keeps those keys locked on the server. So:</p>
+      <ul>
+        <li>Keep using ShipSidekick in your browser for labels, shipments and stock, exactly as you do now.</li>
+        <li>To check ShipSidekick stock or shipments against the Sheet, use the ShipMode workspace (Inventory and No Movement tabs). It already reads ShipSidekick, view only.</li>
+        <li>To get Claude's help with a ShipSidekick screen, copy the text you need (an order number, a tracking status) into the chat. Never paste API keys, passwords or a full customer list.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="rules">
+  <p class="part">Part 5</p>
+  <h2 id="rules">Rules for using it</h2>
+  <div class="rules">
+    <div><span class="tag ok">Do</span>
+      <ul>
+        <li>Ask Claude to find, read, count and summarize: threads, orders, stock levels, tracking.</li>
+        <li>Click <strong>Allow once</strong> for lookups.</li>
+        <li>Check anything important against the source (Sheet, Shopify, ShipSidekick) before you act on it.</li>
+        <li>Turn off connectors you don't need in that chat.</li>
+      </ul>
+    </div>
+    <div><span class="tag no">Don't</span>
+      <ul>
+        <li>Ask Claude to edit, cancel, refund, tag or fulfill anything in a client store.</li>
+        <li>Let Claude post in Slack for you. Read its draft, then post it yourself.</li>
+        <li>Choose <strong>Always allow</strong> for Shopify.</li>
+        <li>Paste passwords, API keys or client exports into a chat.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="fix">
+  <p class="part">Part 6</p>
+  <h2 id="fix">If something goes wrong</h2>
+  <div class="tablebox">
+    <table>
+      <thead><tr><th>What you see</th><th>What it means</th><th>What to do</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Request</strong> instead of Connect</td><td>The team owner hasn't turned on that connector</td><td>Click Request, message Gly, wait for approval</td></tr>
+        <tr><td>Slack asks an admin to approve the Claude app</td><td>The ShipMode Slack hasn't approved Claude yet</td><td>Message Gly; a Slack admin approves it once for everyone</td></tr>
+        <tr><td>Slack opened the wrong workspace</td><td>You're signed in to another Slack</td><td>Switch to ShipMode at the top right of Slack's page</td></tr>
+        <tr><td>Shopify shows no stores, or the wrong ones</td><td>Your staff invite isn't accepted or is for another store</td><td>Accept the invite email from the store, then connect again</td></tr>
+        <tr><td>Connector shows <strong>Reconnect</strong></td><td>The sign-in expired</td><td>Click Reconnect and sign in again</td></tr>
+        <tr><td>Claude says it can't see Slack or Shopify</td><td>The connector is off in this chat</td><td><strong>+ → Connectors</strong>, switch it on</td></tr>
+        <tr><td>A permission box asks to change a store</td><td>Claude is trying to write</td><td>Click <strong>Deny</strong> and tell Gly</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>To disconnect</strong> (for example, when a client leaves): <a href="https://claude.ai/customize/connectors" target="_blank" rel="noopener">Connectors</a> → find the app → <strong>Disconnect</strong>.</p>
+</section>
+
+<footer class="foot">
+  <p>Slack steps follow Claude's connector help pages as of Nov 3, 2026. Shopify's own screens were not checked; confirm Step 7 on the first real setup and send Gly a screenshot if anything differs.</p>
+  <p>Questions: message Gly in Slack.</p>
+</footer>
+</main>
+
+<script>
+document.querySelectorAll('.copy').forEach(function (b) {
+  b.addEventListener('click', function () {
+    var el = document.getElementById(b.getAttribute('data-copy'));
+    var text = el.textContent;
+    function done() { b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy'; }, 1600); }
+    function fallback() { var r = document.createRange(); r.selectNodeContents(el); var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); b.textContent = 'Selected, press Ctrl+C'; }
+    try { navigator.clipboard.writeText(text).then(done, fallback); } catch (e) { fallback(); }
+  });
+});
+document.querySelectorAll('.check input').forEach(function (c) {
+  try { c.checked = localStorage.getItem('sop-' + c.id) === '1'; } catch (e) {}
+  c.addEventListener('change', function () { try { localStorage.setItem('sop-' + c.id, c.checked ? '1' : '0'); } catch (e) {} });
+});
+</script>
