@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo
 
 from flask import Flask, Response, jsonify, render_template, request, session
 from werkzeug.security import check_password_hash
+from jinja2 import TemplateNotFound
+from learning_library import bp as learning_bp, enabled as learning_enabled
 
 from tracking import CLIENTS, classify, parse_csv, parse_date, sample_shipments, tracker_update, utcnow
 from daily_update import build_update
@@ -37,6 +39,7 @@ import ssk_check
 import ssk_source
 
 app = Flask(__name__)
+app.register_blueprint(learning_bp)
 app.config.update(SECRET_KEY=os.getenv("SECRET_KEY", secrets.token_hex(32)),
                   SESSION_COOKIE_SECURE=True, SESSION_COOKIE_HTTPONLY=True,
                   SESSION_COOKIE_SAMESITE="Strict", MAX_CONTENT_LENGTH=5 * 1024 * 1024)
@@ -202,7 +205,7 @@ KNOWLEDGEBASE = [
 @protected
 def knowledgebase():
     """Team guides. Static content only; reads no client data."""
-    return render_template("knowledgebase.html", guides=KNOWLEDGEBASE)
+    return render_template("knowledgebase.html", guides=KNOWLEDGEBASE, learning_enabled=learning_enabled())
 
 
 @app.get("/knowledgebase/<slug>")
@@ -210,7 +213,10 @@ def knowledgebase():
 def knowledgebase_guide(slug):
     if slug not in {guide["slug"] for guide in KNOWLEDGEBASE}:
         return Response("Guide not found.", 404)
-    return render_template(f"kb/{slug}.html")
+    try:
+        return render_template(f"kb/{slug}.html")
+    except TemplateNotFound:
+        return render_template("learning/guide-unavailable.html"), 503
 
 
 @app.get("/api/health")

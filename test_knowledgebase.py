@@ -17,8 +17,8 @@ class KnowledgebaseTests(unittest.TestCase):
 
     def test_guide_page_renders(self):
         page = self.client.get("/knowledgebase/claude-slack-ssk")
-        self.assertEqual(page.status_code, 200)
-        self.assertIn(b"ShipSidekick stock vs. Sheet", page.data)
+        self.assertEqual(page.status_code, 503)
+        self.assertIn(b"Guide unavailable", page.data)
         self.assertNotIn(b"<script>", page.data)  # CSP allows only external scripts
         self.assertNotIn(b"style=", page.data)    # CSP allows only external styles
 

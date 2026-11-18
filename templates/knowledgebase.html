@@ -1,0 +1,6 @@
+{% extends 'learning/base.html' %}
+{% block heading %}<h1>Knowledgebase</h1><p>Practical guides and internal learning, connected to the work they inform.</p>{% endblock %}
+{% block body %}<section aria-labelledby="learning-heading" class="intro"><h2 id="learning-heading">Learning and applications</h2>
+<p>Browse reusable methods separately from brand applications, sources and next actions. Private learning requires workspace sign-in.</p>
+{% if learning_enabled %}<a class="button" href="{{ url_for('learning.library') }}">Open internal library →</a>{% else %}<p class="notice">The internal learning library is not enabled yet.</p>{% endif %}</section>
+<section aria-labelledby="guides-heading"><h2 id="guides-heading">Team guides</h2><ul class="guide-list">{% for guide in guides %}<li><h3><a href="{{ guide.url }}">{{ guide.title }}</a></h3><p>{{ guide.summary }}</p><p class="muted">Updated {{ guide.updated }}</p></li>{% endfor %}</ul></section>{% endblock %}

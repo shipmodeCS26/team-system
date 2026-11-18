@@ -305,3 +305,7 @@ Entry points:
 ## Calculated inventory (shadow check)
 
 See `docs/V1_PLAN.md`. Off by default; set `INVENTORY_LEDGER_ENABLED=true` in the private Render settings after the Sheets connection works. Approved counts for clients without a Manual Counts tab go in `INVENTORY_BASELINES_JSON` (format in the plan). Only nine ShipSidekick columns are read; customer names and addresses are never requested.
+
+## Internal learning library
+
+An optional read-only learning section is prepared at `/knowledgebase/learning`, separate from general team guides. It stays disabled until authorized private content and workspace sign-in are configured. See [configuration and release checks](docs/LEARNING_LIBRARY.md). Private content and credentials must remain outside this public repository.
