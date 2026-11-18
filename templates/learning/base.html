@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}Knowledgebase{% endblock %} · Shipmode</title>
+<link rel="icon" href="{{ url_for('static', filename='shipmode-logo.png') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='brand.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='learning.css') }}"></head>
+<body><a class="skip-link" href="#main">Skip to content</a>
+<aside class="learning-sidebar"><a href="/" aria-label="Shipmode home"><img src="{{ url_for('static', filename='shipmode-logo.png') }}" alt="Shipmode" width="76" height="76"></a>
+<p class="eyebrow">Operations workspace</p><nav aria-label="Workspace"><a href="/">Back to operations</a><a href="/knowledgebase" aria-current="{% if request.path == '/knowledgebase' %}page{% else %}false{% endif %}">Knowledgebase</a></nav><p class="sidebar-note">Team learning<br>Read-only library</p></aside>
+<main id="main"><header class="page-header"><p class="eyebrow">Shipmode knowledgebase</p>{% block heading %}{% endblock %}</header>{% block body %}{% endblock %}</main></body></html>
